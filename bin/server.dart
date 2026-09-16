@@ -41,14 +41,45 @@ Future<Map<String, double>> geocodeAddress(
   };
 }
 
+Future<Map<String, dynamic>> buildRouteWaypoint({
+  required String address,
+  required String apiKey,
+  String? placeId,
+}) async {
+  if (placeId != null && placeId.isNotEmpty) {
+    return {'placeId': placeId};
+  }
+
+  final coordinates = await geocodeAddress(address, apiKey);
+
+  return {
+    'location': {
+      'latLng': {
+        'latitude': coordinates['lat'],
+        'longitude': coordinates['lng'],
+      },
+    },
+  };
+}
+
 Future<Map<String, dynamic>> calculateRoute(
   String pickup,
   String destination,
-  String apiKey,
-) async {
-  final pickupCoordinates = await geocodeAddress(pickup, apiKey);
+  String apiKey, {
+  String? pickupPlaceId,
+  String? destinationPlaceId,
+}) async {
+  final origin = await buildRouteWaypoint(
+    address: pickup,
+    apiKey: apiKey,
+    placeId: pickupPlaceId,
+  );
 
-  final destinationCoordinates = await geocodeAddress(destination, apiKey);
+  final destinationWaypoint = await buildRouteWaypoint(
+    address: destination,
+    apiKey: apiKey,
+    placeId: destinationPlaceId,
+  );
 
   final uri = Uri.parse(
     'https://routes.googleapis.com/directions/v2:computeRoutes',
@@ -62,22 +93,8 @@ Future<Map<String, dynamic>> calculateRoute(
       'X-Goog-FieldMask': 'routes.distanceMeters,routes.duration',
     },
     body: jsonEncode({
-      'origin': {
-        'location': {
-          'latLng': {
-            'latitude': pickupCoordinates['lat'],
-            'longitude': pickupCoordinates['lng'],
-          },
-        },
-      },
-      'destination': {
-        'location': {
-          'latLng': {
-            'latitude': destinationCoordinates['lat'],
-            'longitude': destinationCoordinates['lng'],
-          },
-        },
-      },
+      'origin': origin,
+      'destination': destinationWaypoint,
       'travelMode': 'DRIVE',
       'routingPreference': 'TRAFFIC_AWARE',
       'units': 'METRIC',
@@ -206,6 +223,8 @@ void main(List<String> args) async {
 
       final pickup = body['pickup'] as String?;
       final destination = body['destination'] as String?;
+      final pickupPlaceId = body['pickupPlaceId'] as String?;
+      final destinationPlaceId = body['destinationPlaceId'] as String?;
 
       if (pickup == null ||
           pickup.trim().isEmpty ||
@@ -218,7 +237,13 @@ void main(List<String> args) async {
         );
       }
 
-      final result = await calculateRoute(pickup, destination, apiKey);
+      final result = await calculateRoute(
+        pickup,
+        destination,
+        apiKey,
+        pickupPlaceId: pickupPlaceId,
+        destinationPlaceId: destinationPlaceId,
+      );
 
       return Response.ok(
         jsonEncode(result),
