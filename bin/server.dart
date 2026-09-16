@@ -129,6 +129,62 @@ Middleware corsMiddleware() {
   );
 }
 
+Future<List<Map<String, String>>> autocompletePlaces(
+  String input,
+  String apiKey, {
+  String? sessionToken,
+}) async {
+  final response = await http.post(
+    Uri.parse('https://places.googleapis.com/v1/places:autocomplete'),
+    headers: {
+      'Content-Type': 'application/json; charset=utf-8',
+      'X-Goog-Api-Key': apiKey,
+      'X-Goog-FieldMask':
+          'suggestions.placePrediction.placeId,'
+          'suggestions.placePrediction.text.text',
+    },
+    body: jsonEncode({
+      'input': input,
+      'includedRegionCodes': ['bg'],
+      'languageCode': 'bg',
+      if (sessionToken != null && sessionToken.isNotEmpty)
+        'sessionToken': sessionToken,
+    }),
+  );
+
+  if (response.statusCode != 200) {
+    throw Exception(
+      'Places autocomplete failed with status '
+      '${response.statusCode}.',
+    );
+  }
+
+  final data = jsonDecode(response.body) as Map<String, dynamic>;
+  final suggestions = data['suggestions'] as List<dynamic>? ?? <dynamic>[];
+
+  final results = <Map<String, String>>[];
+
+  for (final suggestion in suggestions) {
+    final prediction =
+        (suggestion as Map<String, dynamic>)['placePrediction']
+            as Map<String, dynamic>?;
+
+    if (prediction == null) {
+      continue;
+    }
+
+    final placeId = prediction['placeId'] as String?;
+    final textData = prediction['text'] as Map<String, dynamic>?;
+    final text = textData?['text'] as String?;
+
+    if (placeId != null && text != null) {
+      results.add({'placeId': placeId, 'text': text});
+    }
+  }
+
+  return results;
+}
+
 void main(List<String> args) async {
   final apiKey = Platform.environment['GOOGLE_MAPS_API_KEY'];
 
@@ -176,13 +232,50 @@ void main(List<String> args) async {
       );
     }
   });
+  router.post('/places/autocomplete', (Request request) async {
+    try {
+      final body =
+          jsonDecode(await request.readAsString()) as Map<String, dynamic>;
+
+      final input = body['input'] as String?;
+      final sessionToken = body['sessionToken'] as String?;
+
+      if (input == null || input.trim().isEmpty) {
+        return Response(
+          400,
+          body: jsonEncode({'error': 'Input is required.'}),
+          headers: {'Content-Type': 'application/json'},
+        );
+      }
+
+      final suggestions = await autocompletePlaces(
+        input.trim(),
+        apiKey,
+        sessionToken: sessionToken,
+      );
+
+      return Response.ok(
+        jsonEncode({'suggestions': suggestions}),
+        headers: {'Content-Type': 'application/json'},
+      );
+    } catch (error) {
+      print('Places autocomplete error: $error');
+
+      return Response.internalServerError(
+        body: jsonEncode({'error': 'Places autocomplete failed.'}),
+        headers: {'Content-Type': 'application/json'},
+      );
+    }
+  });
 
   final handler = Pipeline()
-    .addMiddleware(logRequests())
-    .addMiddleware(corsMiddleware())
-    .addHandler(router.call);
+      .addMiddleware(logRequests())
+      .addMiddleware(corsMiddleware())
+      .addHandler(router.call);
 
-  final server = await shelf_io.serve(handler, InternetAddress.anyIPv4, 8080);
+  final port = int.tryParse(Platform.environment['PORT'] ?? '') ?? 8080;
+
+  final server = await shelf_io.serve(handler, InternetAddress.anyIPv4, port);
 
   print('Server listening on port ${server.port}');
 }
