@@ -90,7 +90,11 @@ Future<Map<String, dynamic>> calculateRoute(
     headers: {
       'Content-Type': 'application/json',
       'X-Goog-Api-Key': apiKey,
-      'X-Goog-FieldMask': 'routes.distanceMeters,routes.duration',
+      'X-Goog-FieldMask':
+          'routes.distanceMeters,'
+          'routes.duration,'
+          'routes.legs.startLocation,'
+          'routes.legs.endLocation',
     },
     body: jsonEncode({
       'origin': origin,
@@ -117,11 +121,40 @@ Future<Map<String, dynamic>> calculateRoute(
   final distanceMeters = route['distanceMeters'] as int;
   final durationText = route['duration'] as String;
 
-  final durationSeconds = double.parse(durationText.replaceAll('s', ''));
+  final durationSeconds = double.parse(
+    durationText.replaceAll('s', ''),
+  );
+
+  final legs = route['legs'] as List<dynamic>?;
+
+  if (legs == null || legs.isEmpty) {
+    throw Exception('Route has no legs.');
+  }
+
+  final firstLeg = legs.first as Map<String, dynamic>;
+  final lastLeg = legs.last as Map<String, dynamic>;
+
+  final startLocation =
+      firstLeg['startLocation'] as Map<String, dynamic>;
+  final startLatLng =
+      startLocation['latLng'] as Map<String, dynamic>;
+
+  final endLocation =
+      lastLeg['endLocation'] as Map<String, dynamic>;
+  final endLatLng =
+      endLocation['latLng'] as Map<String, dynamic>;
 
   return {
     'distanceKm': distanceMeters / 1000,
     'durationMinutes': durationSeconds / 60,
+    'pickupLatitude':
+        (startLatLng['latitude'] as num).toDouble(),
+    'pickupLongitude':
+        (startLatLng['longitude'] as num).toDouble(),
+    'destinationLatitude':
+        (endLatLng['latitude'] as num).toDouble(),
+    'destinationLongitude':
+        (endLatLng['longitude'] as num).toDouble(),
   };
 }
 
@@ -177,7 +210,8 @@ Future<List<Map<String, String>>> autocompletePlaces(
   }
 
   final data = jsonDecode(response.body) as Map<String, dynamic>;
-  final suggestions = data['suggestions'] as List<dynamic>? ?? <dynamic>[];
+  final suggestions =
+      data['suggestions'] as List<dynamic>? ?? <dynamic>[];
 
   final results = <Map<String, String>>[];
 
@@ -191,11 +225,15 @@ Future<List<Map<String, String>>> autocompletePlaces(
     }
 
     final placeId = prediction['placeId'] as String?;
-    final textData = prediction['text'] as Map<String, dynamic>?;
+    final textData =
+        prediction['text'] as Map<String, dynamic>?;
     final text = textData?['text'] as String?;
 
     if (placeId != null && text != null) {
-      results.add({'placeId': placeId, 'text': text});
+      results.add({
+        'placeId': placeId,
+        'text': text,
+      });
     }
   }
 
@@ -219,12 +257,14 @@ void main(List<String> args) async {
   router.post('/route', (Request request) async {
     try {
       final body =
-          jsonDecode(await request.readAsString()) as Map<String, dynamic>;
+          jsonDecode(await request.readAsString())
+              as Map<String, dynamic>;
 
       final pickup = body['pickup'] as String?;
       final destination = body['destination'] as String?;
       final pickupPlaceId = body['pickupPlaceId'] as String?;
-      final destinationPlaceId = body['destinationPlaceId'] as String?;
+      final destinationPlaceId =
+          body['destinationPlaceId'] as String?;
 
       if (pickup == null ||
           pickup.trim().isEmpty ||
@@ -232,8 +272,12 @@ void main(List<String> args) async {
           destination.trim().isEmpty) {
         return Response(
           400,
-          body: jsonEncode({'error': 'Pickup and destination are required.'}),
-          headers: {'Content-Type': 'application/json'},
+          body: jsonEncode({
+            'error': 'Pickup and destination are required.',
+          }),
+          headers: {
+            'Content-Type': 'application/json',
+          },
         );
       }
 
@@ -247,20 +291,29 @@ void main(List<String> args) async {
 
       return Response.ok(
         jsonEncode(result),
-        headers: {'Content-Type': 'application/json'},
+        headers: {
+          'Content-Type': 'application/json',
+        },
       );
     } catch (error) {
       print('Route error: $error');
+
       return Response.internalServerError(
-        body: jsonEncode({'error': 'Route calculation failed.'}),
-        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({
+          'error': 'Route calculation failed.',
+        }),
+        headers: {
+          'Content-Type': 'application/json',
+        },
       );
     }
   });
+
   router.post('/places/autocomplete', (Request request) async {
     try {
       final body =
-          jsonDecode(await request.readAsString()) as Map<String, dynamic>;
+          jsonDecode(await request.readAsString())
+              as Map<String, dynamic>;
 
       final input = body['input'] as String?;
       final sessionToken = body['sessionToken'] as String?;
@@ -268,8 +321,12 @@ void main(List<String> args) async {
       if (input == null || input.trim().isEmpty) {
         return Response(
           400,
-          body: jsonEncode({'error': 'Input is required.'}),
-          headers: {'Content-Type': 'application/json'},
+          body: jsonEncode({
+            'error': 'Input is required.',
+          }),
+          headers: {
+            'Content-Type': 'application/json',
+          },
         );
       }
 
@@ -280,15 +337,23 @@ void main(List<String> args) async {
       );
 
       return Response.ok(
-        jsonEncode({'suggestions': suggestions}),
-        headers: {'Content-Type': 'application/json'},
+        jsonEncode({
+          'suggestions': suggestions,
+        }),
+        headers: {
+          'Content-Type': 'application/json',
+        },
       );
     } catch (error) {
       print('Places autocomplete error: $error');
 
       return Response.internalServerError(
-        body: jsonEncode({'error': 'Places autocomplete failed.'}),
-        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({
+          'error': 'Places autocomplete failed.',
+        }),
+        headers: {
+          'Content-Type': 'application/json',
+        },
       );
     }
   });
@@ -298,9 +363,14 @@ void main(List<String> args) async {
       .addMiddleware(corsMiddleware())
       .addHandler(router.call);
 
-  final port = int.tryParse(Platform.environment['PORT'] ?? '') ?? 8080;
+  final port =
+      int.tryParse(Platform.environment['PORT'] ?? '') ?? 8080;
 
-  final server = await shelf_io.serve(handler, InternetAddress.anyIPv4, port);
+  final server = await shelf_io.serve(
+    handler,
+    InternetAddress.anyIPv4,
+    port,
+  );
 
   print('Server listening on port ${server.port}');
 }
