@@ -78,11 +78,15 @@ Future<Map<String, dynamic>> calculateRoute(
   String apiKey, {
   String? pickupPlaceId,
   String? destinationPlaceId,
+  double? pickupLatitude,
+  double? pickupLongitude,
 }) async {
   final origin = await buildRouteWaypoint(
     address: pickup,
     apiKey: apiKey,
     placeId: pickupPlaceId,
+    latitude: pickupLatitude,
+    longitude: pickupLongitude,
   );
 
   final destinationWaypoint = await buildRouteWaypoint(
@@ -262,6 +266,8 @@ void main(List<String> args) async {
       final destination = body['destination'] as String?;
       final pickupPlaceId = body['pickupPlaceId'] as String?;
       final destinationPlaceId = body['destinationPlaceId'] as String?;
+      final pickupLatitude = (body['pickupLatitude'] as num?)?.toDouble();
+      final pickupLongitude = (body['pickupLongitude'] as num?)?.toDouble();
 
       if (pickup == null ||
           pickup.trim().isEmpty ||
@@ -280,6 +286,8 @@ void main(List<String> args) async {
         apiKey,
         pickupPlaceId: pickupPlaceId,
         destinationPlaceId: destinationPlaceId,
+        pickupLatitude: pickupLatitude,
+        pickupLongitude: pickupLongitude,
       );
 
       return Response.ok(
