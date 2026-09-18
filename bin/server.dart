@@ -45,7 +45,17 @@ Future<Map<String, dynamic>> buildRouteWaypoint({
   required String address,
   required String apiKey,
   String? placeId,
+  double? latitude,
+  double? longitude,
 }) async {
+  if (latitude != null && longitude != null) {
+    return {
+      'location': {
+        'latLng': {'latitude': latitude, 'longitude': longitude},
+      },
+    };
+  }
+
   if (placeId != null && placeId.isNotEmpty) {
     return {'placeId': placeId};
   }
