@@ -125,10 +125,11 @@ Future<Map<String, dynamic>> calculateRoute(
   }
 
   final data = jsonDecode(response.body) as Map<String, dynamic>;
-  final routes = data['routes'] as List<dynamic>;
+
+  final routes = data['routes'] as List<dynamic>? ?? <dynamic>[];
 
   if (routes.isEmpty) {
-    throw Exception('No route found.');
+    throw Exception('No route found. Google response: ${response.body}');
   }
 
   final route = routes.first as Map<String, dynamic>;
