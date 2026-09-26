@@ -753,4 +753,136 @@ void main() {
 
     expect(response.statusCode, 404);
   });
+  test(
+    'POST complete finishes in-progress ride and calculates commission',
+    () async {
+      final createResponse = await post(
+        Uri.parse('$host/rides'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({
+          'pickup': 'Pickup address',
+          'destination': 'Destination address',
+          'passengers': 1,
+        }),
+      );
+
+      final createdBody =
+          jsonDecode(createResponse.body) as Map<String, dynamic>;
+
+      final rideId = createdBody['id'] as String;
+
+      await post(
+        Uri.parse('$host/rides/$rideId/select'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({
+          'driverId': 'driver-001',
+          'vehicleId': 'vehicle-001',
+        }),
+      );
+
+      await post(
+        Uri.parse('$host/rides/$rideId/driver-arriving'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({'driverId': 'driver-001'}),
+      );
+
+      await post(
+        Uri.parse('$host/rides/$rideId/start'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({'driverId': 'driver-001'}),
+      );
+
+      final response = await post(
+        Uri.parse('$host/rides/$rideId/complete'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({'driverId': 'driver-001', 'meterFareMinor': 1234}),
+      );
+
+      expect(response.statusCode, 200);
+
+      final body = jsonDecode(response.body) as Map<String, dynamic>;
+
+      expect(body['status'], 'completed');
+      expect(body['currency'], 'EUR');
+      expect(body['meterFareMinor'], 1234);
+      expect(body['commissionRateBps'], 1000);
+      expect(body['commissionAmountMinor'], 123);
+      expect(body['completedByDriverId'], 'driver-001');
+      expect(body['completedAt'], isNotNull);
+    },
+  );
+
+  test('POST complete rejects wrong driver', () async {
+    final createResponse = await post(
+      Uri.parse('$host/rides'),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode({
+        'pickup': 'Pickup address',
+        'destination': 'Destination address',
+        'passengers': 1,
+      }),
+    );
+
+    final createdBody = jsonDecode(createResponse.body) as Map<String, dynamic>;
+
+    final rideId = createdBody['id'] as String;
+
+    await post(
+      Uri.parse('$host/rides/$rideId/select'),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode({'driverId': 'driver-001', 'vehicleId': 'vehicle-001'}),
+    );
+
+    await post(
+      Uri.parse('$host/rides/$rideId/driver-arriving'),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode({'driverId': 'driver-001'}),
+    );
+
+    await post(
+      Uri.parse('$host/rides/$rideId/start'),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode({'driverId': 'driver-001'}),
+    );
+
+    final response = await post(
+      Uri.parse('$host/rides/$rideId/complete'),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode({'driverId': 'driver-002', 'meterFareMinor': 1234}),
+    );
+
+    expect(response.statusCode, 409);
+
+    final body = jsonDecode(response.body) as Map<String, dynamic>;
+
+    expect(body['error'], 'Ride cannot be completed.');
+  });
+
+  test('POST complete requires positive meter fare', () async {
+    final response = await post(
+      Uri.parse('$host/rides/missing/complete'),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode({'driverId': 'driver-001', 'meterFareMinor': 0}),
+    );
+
+    expect(response.statusCode, 400);
+
+    final body = jsonDecode(response.body) as Map<String, dynamic>;
+
+    expect(body['error'], 'meterFareMinor must be a positive integer.');
+  });
+
+  test('POST complete returns 404 for missing ride', () async {
+    final response = await post(
+      Uri.parse('$host/rides/missing/complete'),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode({'driverId': 'driver-001', 'meterFareMinor': 1234}),
+    );
+
+    expect(response.statusCode, 404);
+
+    final body = jsonDecode(response.body) as Map<String, dynamic>;
+
+    expect(body['error'], 'Ride not found.');
+  });
 }

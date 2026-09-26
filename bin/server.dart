@@ -184,6 +184,10 @@ Map<String, dynamic> rideRequestToJson(RideRequest ride) {
     'status': ride.status.name,
     'assignedDriverId': ride.assignedDriverId,
     'assignedVehicleId': ride.assignedVehicleId,
+    'currency': ride.currency,
+    'meterFareMinor': ride.meterFareMinor,
+    'commissionRateBps': ride.commissionRateBps,
+    'commissionAmountMinor': ride.commissionAmountMinor,
     'completedByDriverId': ride.completedByDriverId,
     'completedAt': ride.completedAt?.toUtc().toIso8601String(),
   };
@@ -602,6 +606,7 @@ void main(List<String> args) async {
       );
     }
   });
+
   router.post('/rides/<rideId>/start', (Request request, String rideId) async {
     try {
       final decodedBody = jsonDecode(await request.readAsString());
@@ -656,6 +661,80 @@ void main(List<String> args) async {
 
       return Response.internalServerError(
         body: jsonEncode({'error': 'Failed to start ride.'}),
+        headers: {'Content-Type': 'application/json'},
+      );
+    }
+  });
+
+  router.post('/rides/<rideId>/complete', (
+    Request request,
+    String rideId,
+  ) async {
+    try {
+      final decodedBody = jsonDecode(await request.readAsString());
+
+      if (decodedBody is! Map<String, dynamic>) {
+        return Response(
+          400,
+          body: jsonEncode({'error': 'Request body must be a JSON object.'}),
+          headers: {'Content-Type': 'application/json'},
+        );
+      }
+
+      final driverId = decodedBody['driverId'];
+      final meterFareMinor = decodedBody['meterFareMinor'];
+
+      if (driverId is! String || driverId.trim().isEmpty) {
+        return Response(
+          400,
+          body: jsonEncode({'error': 'driverId is required.'}),
+          headers: {'Content-Type': 'application/json'},
+        );
+      }
+
+      if (meterFareMinor is! int || meterFareMinor <= 0) {
+        return Response(
+          400,
+          body: jsonEncode({
+            'error': 'meterFareMinor must be a positive integer.',
+          }),
+          headers: {'Content-Type': 'application/json'},
+        );
+      }
+
+      final completedRide = await rideLifecycleService.completeRide(
+        rideId: rideId,
+        driverId: driverId.trim(),
+        meterFareMinor: meterFareMinor,
+      );
+
+      return Response.ok(
+        jsonEncode(rideRequestToJson(completedRide)),
+        headers: {'Content-Type': 'application/json'},
+      );
+    } on FormatException {
+      return Response(
+        400,
+        body: jsonEncode({'error': 'Invalid JSON body.'}),
+        headers: {'Content-Type': 'application/json'},
+      );
+    } on RideLifecycleNotFoundException {
+      return Response(
+        404,
+        body: jsonEncode({'error': 'Ride not found.'}),
+        headers: {'Content-Type': 'application/json'},
+      );
+    } on RideLifecycleConflictException {
+      return Response(
+        409,
+        body: jsonEncode({'error': 'Ride cannot be completed.'}),
+        headers: {'Content-Type': 'application/json'},
+      );
+    } catch (error) {
+      print('Complete ride error: $error');
+
+      return Response.internalServerError(
+        body: jsonEncode({'error': 'Ride completion failed.'}),
         headers: {'Content-Type': 'application/json'},
       );
     }
