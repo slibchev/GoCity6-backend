@@ -1,0 +1,268 @@
+import 'package:gocity6_backend/ride/ride_lifecycle_service.dart';
+import 'package:gocity6_backend/ride/ride_request.dart';
+import 'package:gocity6_backend/ride/ride_request_repository.dart';
+import 'package:gocity6_backend/ride/ride_request_status.dart';
+import 'package:test/test.dart';
+
+class FakeRideRequestRepository implements RideRequestRepository {
+  final Map<String, RideRequest> _rides = {};
+
+  FakeRideRequestRepository([Iterable<RideRequest> rides = const []]) {
+    for (final ride in rides) {
+      _rides[ride.id] = ride;
+    }
+  }
+
+  @override
+  Future<RideRequest?> findById(String id) async {
+    return _rides[id];
+  }
+
+  @override
+  Future<List<RideRequest>> findByAssignedDriverId(String driverId) async {
+    return _rides.values
+        .where((ride) => ride.assignedDriverId == driverId)
+        .toList();
+  }
+
+  @override
+  Future<void> save(RideRequest request) async {
+    _rides[request.id] = request;
+  }
+}
+
+void main() {
+  RideRequest createRide({
+    String id = 'ride-001',
+    RideRequestStatus status = RideRequestStatus.pending,
+    String? assignedDriverId,
+    String? assignedVehicleId,
+    String? completedByDriverId,
+    DateTime? completedAt,
+  }) {
+    return RideRequest(
+      id: id,
+      pickup: 'Pickup $id',
+      destination: 'Destination $id',
+      passengers: 1,
+      requestedAt: DateTime(2026, 9, 26, 16, 0),
+      status: status,
+      assignedDriverId: assignedDriverId,
+      assignedVehicleId: assignedVehicleId,
+      completedByDriverId: completedByDriverId,
+      completedAt: completedAt,
+    );
+  }
+
+  test('submitRide moves new ride from pending to waitingForVehicle', () async {
+    final repository = FakeRideRequestRepository();
+
+    final service = RideLifecycleService(repository: repository);
+
+    final result = await service.submitRide(createRide());
+
+    expect(result.status, RideRequestStatus.waitingForVehicle);
+
+    final storedRide = await repository.findById('ride-001');
+
+    expect(storedRide?.status, RideRequestStatus.waitingForVehicle);
+  });
+
+  test('submitRide rejects duplicate ride id', () async {
+    final existingRide = createRide(
+      status: RideRequestStatus.waitingForVehicle,
+    );
+
+    final repository = FakeRideRequestRepository([existingRide]);
+
+    final service = RideLifecycleService(repository: repository);
+
+    expect(
+      () => service.submitRide(createRide()),
+      throwsA(
+        isA<RideLifecycleConflictException>().having(
+          (error) => error.conflict,
+          'conflict',
+          RideLifecycleConflict.rideAlreadyExists,
+        ),
+      ),
+    );
+  });
+
+  test('submitRide rejects ride that is not pending', () async {
+    final repository = FakeRideRequestRepository();
+
+    final service = RideLifecycleService(repository: repository);
+
+    expect(
+      () => service.submitRide(createRide(status: RideRequestStatus.accepted)),
+      throwsA(
+        isA<RideLifecycleConflictException>().having(
+          (error) => error.conflict,
+          'conflict',
+          RideLifecycleConflict.rideMustBePending,
+        ),
+      ),
+    );
+  });
+
+  test('getRide throws when ride does not exist', () async {
+    final repository = FakeRideRequestRepository();
+
+    final service = RideLifecycleService(repository: repository);
+
+    expect(
+      () => service.getRide('missing'),
+      throwsA(isA<RideLifecycleNotFoundException>()),
+    );
+  });
+
+  test('cancelRide cancels a waiting ride', () async {
+    final waitingRide = createRide(status: RideRequestStatus.waitingForVehicle);
+
+    final repository = FakeRideRequestRepository([waitingRide]);
+
+    final service = RideLifecycleService(repository: repository);
+
+    final result = await service.cancelRide('ride-001');
+
+    expect(result.status, RideRequestStatus.cancelled);
+  });
+
+  test('cancelRide rejects ride already in progress', () async {
+    final activeRide = createRide(
+      status: RideRequestStatus.inProgress,
+      assignedDriverId: 'driver-001',
+      assignedVehicleId: 'vehicle-001',
+    );
+
+    final repository = FakeRideRequestRepository([activeRide]);
+
+    final service = RideLifecycleService(repository: repository);
+
+    expect(
+      () => service.cancelRide('ride-001'),
+      throwsA(
+        isA<RideLifecycleConflictException>().having(
+          (error) => error.conflict,
+          'conflict',
+          RideLifecycleConflict.rideCannotBeCancelled,
+        ),
+      ),
+    );
+  });
+
+  test(
+    'releaseReservedRide returns ride to waiting and clears assignment',
+    () async {
+      final reservedRide = createRide(
+        status: RideRequestStatus.reserved,
+        assignedDriverId: 'driver-001',
+        assignedVehicleId: 'vehicle-001',
+      );
+
+      final repository = FakeRideRequestRepository([reservedRide]);
+
+      final service = RideLifecycleService(repository: repository);
+
+      final result = await service.releaseReservedRide(
+        rideId: 'ride-001',
+        driverId: 'driver-001',
+      );
+
+      expect(result.status, RideRequestStatus.waitingForVehicle);
+      expect(result.assignedDriverId, isNull);
+      expect(result.assignedVehicleId, isNull);
+    },
+  );
+
+  test('different driver cannot release reserved ride', () async {
+    final reservedRide = createRide(
+      status: RideRequestStatus.reserved,
+      assignedDriverId: 'driver-001',
+      assignedVehicleId: 'vehicle-001',
+    );
+
+    final repository = FakeRideRequestRepository([reservedRide]);
+
+    final service = RideLifecycleService(repository: repository);
+
+    expect(
+      () => service.releaseReservedRide(
+        rideId: 'ride-001',
+        driverId: 'driver-002',
+      ),
+      throwsA(
+        isA<RideLifecycleConflictException>().having(
+          (error) => error.conflict,
+          'conflict',
+          RideLifecycleConflict.rideAssignedToAnotherDriver,
+        ),
+      ),
+    );
+  });
+
+  test('assigned driver can mark accepted ride as driverArriving', () async {
+    final acceptedRide = createRide(
+      status: RideRequestStatus.accepted,
+      assignedDriverId: 'driver-001',
+      assignedVehicleId: 'vehicle-001',
+    );
+
+    final repository = FakeRideRequestRepository([acceptedRide]);
+
+    final service = RideLifecycleService(repository: repository);
+
+    final result = await service.markDriverArriving(
+      rideId: 'ride-001',
+      driverId: 'driver-001',
+    );
+
+    expect(result.status, RideRequestStatus.driverArriving);
+  });
+
+  test('assigned driver can start ride from driverArriving', () async {
+    final arrivingRide = createRide(
+      status: RideRequestStatus.driverArriving,
+      assignedDriverId: 'driver-001',
+      assignedVehicleId: 'vehicle-001',
+    );
+
+    final repository = FakeRideRequestRepository([arrivingRide]);
+
+    final service = RideLifecycleService(repository: repository);
+
+    final result = await service.startRide(
+      rideId: 'ride-001',
+      driverId: 'driver-001',
+    );
+
+    expect(result.status, RideRequestStatus.inProgress);
+  });
+
+  test('different driver cannot advance assigned ride', () async {
+    final acceptedRide = createRide(
+      status: RideRequestStatus.accepted,
+      assignedDriverId: 'driver-001',
+      assignedVehicleId: 'vehicle-001',
+    );
+
+    final repository = FakeRideRequestRepository([acceptedRide]);
+
+    final service = RideLifecycleService(repository: repository);
+
+    expect(
+      () => service.markDriverArriving(
+        rideId: 'ride-001',
+        driverId: 'driver-002',
+      ),
+      throwsA(
+        isA<RideLifecycleConflictException>().having(
+          (error) => error.conflict,
+          'conflict',
+          RideLifecycleConflict.rideAssignedToAnotherDriver,
+        ),
+      ),
+    );
+  });
+}
