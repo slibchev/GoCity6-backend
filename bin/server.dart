@@ -5,6 +5,9 @@ import 'package:http/http.dart' as http;
 import 'package:shelf/shelf.dart';
 import 'package:shelf/shelf_io.dart' as shelf_io;
 import 'package:shelf_router/shelf_router.dart';
+import 'package:gocity6_backend/ride/in_memory_ride_request_repository.dart';
+import 'package:gocity6_backend/ride/ride_lifecycle_service.dart';
+import 'package:gocity6_backend/ride/ride_request.dart';
 
 Future<Map<String, double>> geocodeAddress(
   String address,
@@ -169,6 +172,22 @@ Future<Map<String, dynamic>> calculateRoute(
   };
 }
 
+Map<String, dynamic> rideRequestToJson(RideRequest ride) {
+  return {
+    'id': ride.id,
+    'pickup': ride.pickup,
+    'destination': ride.destination,
+    'passengers': ride.passengers,
+    'hasLuggage': ride.hasLuggage,
+    'requestedAt': ride.requestedAt.toUtc().toIso8601String(),
+    'status': ride.status.name,
+    'assignedDriverId': ride.assignedDriverId,
+    'assignedVehicleId': ride.assignedVehicleId,
+    'completedByDriverId': ride.completedByDriverId,
+    'completedAt': ride.completedAt?.toUtc().toIso8601String(),
+  };
+}
+
 const corsResponseHeaders = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
@@ -255,9 +274,112 @@ void main(List<String> args) async {
   }
 
   final router = Router();
+  final rideRepository = InMemoryRideRequestRepository();
+
+  final rideLifecycleService = RideLifecycleService(repository: rideRepository);
+
+  var nextRideNumber = 1;
 
   router.get('/', (Request request) {
     return Response.ok('GoCity6 backend is running');
+  });
+  router.post('/rides', (Request request) async {
+    try {
+      final decodedBody = jsonDecode(await request.readAsString());
+
+      if (decodedBody is! Map<String, dynamic>) {
+        return Response(
+          400,
+          body: jsonEncode({'error': 'Request body must be a JSON object.'}),
+          headers: {'Content-Type': 'application/json'},
+        );
+      }
+
+      final pickup = decodedBody['pickup'];
+      final destination = decodedBody['destination'];
+      final passengers = decodedBody['passengers'];
+      final hasLuggage = decodedBody['hasLuggage'];
+
+      if (pickup is! String ||
+          pickup.trim().isEmpty ||
+          destination is! String ||
+          destination.trim().isEmpty) {
+        return Response(
+          400,
+          body: jsonEncode({'error': 'Pickup and destination are required.'}),
+          headers: {'Content-Type': 'application/json'},
+        );
+      }
+
+      if (passengers is! int || passengers < 1) {
+        return Response(
+          400,
+          body: jsonEncode({'error': 'Passengers must be a positive integer.'}),
+          headers: {'Content-Type': 'application/json'},
+        );
+      }
+
+      if (hasLuggage != null && hasLuggage is! bool) {
+        return Response(
+          400,
+          body: jsonEncode({'error': 'hasLuggage must be a boolean.'}),
+          headers: {'Content-Type': 'application/json'},
+        );
+      }
+
+      final ride = RideRequest(
+        id: 'ride-${nextRideNumber++}',
+        pickup: pickup.trim(),
+        destination: destination.trim(),
+        passengers: passengers,
+        hasLuggage: hasLuggage as bool? ?? false,
+        requestedAt: DateTime.now().toUtc(),
+      );
+
+      final submittedRide = await rideLifecycleService.submitRide(ride);
+
+      return Response(
+        201,
+        body: jsonEncode(rideRequestToJson(submittedRide)),
+        headers: {'Content-Type': 'application/json'},
+      );
+    } on FormatException {
+      return Response(
+        400,
+        body: jsonEncode({'error': 'Invalid JSON body.'}),
+        headers: {'Content-Type': 'application/json'},
+      );
+    } catch (error) {
+      print('Create ride error: $error');
+
+      return Response.internalServerError(
+        body: jsonEncode({'error': 'Ride creation failed.'}),
+        headers: {'Content-Type': 'application/json'},
+      );
+    }
+  });
+  router.get('/rides/<rideId>', (Request request, String rideId) async {
+    try {
+      final ride = await rideLifecycleService.getRide(rideId);
+
+      return Response.ok(
+        jsonEncode(rideRequestToJson(ride)),
+        headers: {'Content-Type': 'application/json'},
+      );
+    } on RideLifecycleNotFoundException {
+      return Response(
+        404,
+        body: jsonEncode({'error': 'Ride not found.'}),
+        headers: {'Content-Type': 'application/json'},
+      );
+    } catch (error) {
+      print('Get ride error: $error');
+
+      return Response.internalServerError(
+        body: jsonEncode({'error': 'Failed to load ride.'}),
+        headers: {'Content-Type': 'application/json'},
+      );
+    }
   });
 
   router.post('/route', (Request request) async {

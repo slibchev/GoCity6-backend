@@ -68,4 +68,73 @@ void main() {
 
     expect(response.statusCode, 404);
   });
+  test('POST rides creates waiting ride', () async {
+    final response = await post(
+      Uri.parse('$host/rides'),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode({
+        'pickup': 'Sofia Center',
+        'destination': 'Sofia Airport',
+        'passengers': 2,
+        'hasLuggage': true,
+      }),
+    );
+
+    expect(response.statusCode, 201);
+
+    final body = jsonDecode(response.body) as Map<String, dynamic>;
+
+    expect(body['id'], isNotNull);
+    expect(body['pickup'], 'Sofia Center');
+    expect(body['destination'], 'Sofia Airport');
+    expect(body['passengers'], 2);
+    expect(body['hasLuggage'], isTrue);
+    expect(body['status'], 'waitingForVehicle');
+
+    expect(body['assignedDriverId'], isNull);
+    expect(body['assignedVehicleId'], isNull);
+
+    expect(body['requestedAt'], isNotNull);
+  });
+
+  test('GET rides returns previously created ride', () async {
+    final createResponse = await post(
+      Uri.parse('$host/rides'),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode({
+        'pickup': 'Pickup address',
+        'destination': 'Destination address',
+        'passengers': 1,
+      }),
+    );
+
+    expect(createResponse.statusCode, 201);
+
+    final createdBody = jsonDecode(createResponse.body) as Map<String, dynamic>;
+
+    final rideId = createdBody['id'] as String;
+
+    final response = await get(Uri.parse('$host/rides/$rideId'));
+
+    expect(response.statusCode, 200);
+
+    final body = jsonDecode(response.body) as Map<String, dynamic>;
+
+    expect(body['id'], rideId);
+    expect(body['pickup'], 'Pickup address');
+    expect(body['destination'], 'Destination address');
+    expect(body['passengers'], 1);
+    expect(body['hasLuggage'], isFalse);
+    expect(body['status'], 'waitingForVehicle');
+  });
+
+  test('GET rides returns 404 for missing ride', () async {
+    final response = await get(Uri.parse('$host/rides/missing'));
+
+    expect(response.statusCode, 404);
+
+    final body = jsonDecode(response.body) as Map<String, dynamic>;
+
+    expect(body['error'], 'Ride not found.');
+  });
 }
