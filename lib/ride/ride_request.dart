@@ -1,4 +1,5 @@
 import 'ride_request_status.dart';
+import 'ride_state_machine.dart';
 
 const Object _notProvided = Object();
 
@@ -41,7 +42,6 @@ class RideRequest {
     int? passengers,
     bool? hasLuggage,
     DateTime? requestedAt,
-    RideRequestStatus? status,
     Object? assignedDriverId = _notProvided,
     Object? assignedVehicleId = _notProvided,
     Object? completedByDriverId = _notProvided,
@@ -54,7 +54,7 @@ class RideRequest {
       passengers: passengers ?? this.passengers,
       hasLuggage: hasLuggage ?? this.hasLuggage,
       requestedAt: requestedAt ?? this.requestedAt,
-      status: status ?? this.status,
+      status: status,
       assignedDriverId: identical(assignedDriverId, _notProvided)
           ? this.assignedDriverId
           : assignedDriverId as String?,
@@ -67,6 +67,24 @@ class RideRequest {
       completedAt: identical(completedAt, _notProvided)
           ? this.completedAt
           : completedAt as DateTime?,
+    );
+  }
+
+  RideRequest transitionTo(RideRequestStatus newStatus) {
+    RideStateMachine.validateTransition(from: status, to: newStatus);
+
+    return RideRequest(
+      id: id,
+      pickup: pickup,
+      destination: destination,
+      passengers: passengers,
+      hasLuggage: hasLuggage,
+      requestedAt: requestedAt,
+      status: newStatus,
+      assignedDriverId: assignedDriverId,
+      assignedVehicleId: assignedVehicleId,
+      completedByDriverId: completedByDriverId,
+      completedAt: completedAt,
     );
   }
 }
