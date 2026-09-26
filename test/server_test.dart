@@ -137,4 +137,79 @@ void main() {
 
     expect(body['error'], 'Ride not found.');
   });
+  test('POST ride cancel cancels waiting ride', () async {
+    final createResponse = await post(
+      Uri.parse('$host/rides'),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode({
+        'pickup': 'Pickup address',
+        'destination': 'Destination address',
+        'passengers': 1,
+      }),
+    );
+
+    expect(createResponse.statusCode, 201);
+
+    final createdBody = jsonDecode(createResponse.body) as Map<String, dynamic>;
+
+    final rideId = createdBody['id'] as String;
+
+    final response = await post(Uri.parse('$host/rides/$rideId/cancel'));
+
+    expect(response.statusCode, 200);
+
+    final body = jsonDecode(response.body) as Map<String, dynamic>;
+
+    expect(body['id'], rideId);
+    expect(body['status'], 'cancelled');
+  });
+
+  test('POST ride cancel returns 404 for missing ride', () async {
+    final response = await post(Uri.parse('$host/rides/missing/cancel'));
+
+    expect(response.statusCode, 404);
+
+    final body = jsonDecode(response.body) as Map<String, dynamic>;
+
+    expect(body['error'], 'Ride not found.');
+  });
+
+  test(
+    'POST ride cancel returns conflict when ride is already cancelled',
+    () async {
+      final createResponse = await post(
+        Uri.parse('$host/rides'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({
+          'pickup': 'Pickup address',
+          'destination': 'Destination address',
+          'passengers': 1,
+        }),
+      );
+
+      expect(createResponse.statusCode, 201);
+
+      final createdBody =
+          jsonDecode(createResponse.body) as Map<String, dynamic>;
+
+      final rideId = createdBody['id'] as String;
+
+      final firstCancelResponse = await post(
+        Uri.parse('$host/rides/$rideId/cancel'),
+      );
+
+      expect(firstCancelResponse.statusCode, 200);
+
+      final secondCancelResponse = await post(
+        Uri.parse('$host/rides/$rideId/cancel'),
+      );
+
+      expect(secondCancelResponse.statusCode, 409);
+
+      final body =
+          jsonDecode(secondCancelResponse.body) as Map<String, dynamic>;
+
+      expect(body['error'], 'Ride cannot be cancelled.');
+    },
+  );
 }
