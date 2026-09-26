@@ -391,4 +391,194 @@ void main() {
 
     expect(body['error'], 'driverId is required.');
   });
+  test(
+    'POST ride promote rejects reserved ride while driver is busy',
+    () async {
+      Future<String> createRide(String pickup) async {
+        final response = await post(
+          Uri.parse('$host/rides'),
+          headers: {'Content-Type': 'application/json'},
+          body: jsonEncode({
+            'pickup': pickup,
+            'destination': 'Destination address',
+            'passengers': 1,
+          }),
+        );
+
+        expect(response.statusCode, 201);
+
+        final body = jsonDecode(response.body) as Map<String, dynamic>;
+
+        return body['id'] as String;
+      }
+
+      final firstRideId = await createRide('First pickup');
+      final secondRideId = await createRide('Second pickup');
+
+      final firstSelection = await post(
+        Uri.parse('$host/rides/$firstRideId/select'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({
+          'driverId': 'driver-001',
+          'vehicleId': 'vehicle-001',
+        }),
+      );
+
+      expect(firstSelection.statusCode, 200);
+
+      final secondSelection = await post(
+        Uri.parse('$host/rides/$secondRideId/select'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({
+          'driverId': 'driver-001',
+          'vehicleId': 'vehicle-001',
+        }),
+      );
+
+      expect(secondSelection.statusCode, 200);
+
+      final secondBody =
+          jsonDecode(secondSelection.body) as Map<String, dynamic>;
+
+      expect(secondBody['status'], 'reserved');
+
+      final response = await post(
+        Uri.parse('$host/rides/$secondRideId/promote'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({'driverId': 'driver-001'}),
+      );
+
+      expect(response.statusCode, 409);
+
+      final body = jsonDecode(response.body) as Map<String, dynamic>;
+
+      expect(body['error'], 'Reserved ride cannot be promoted.');
+    },
+  );
+
+  test('POST ride promote accepts reserved ride when driver is free', () async {
+    Future<String> createRide(String pickup) async {
+      final response = await post(
+        Uri.parse('$host/rides'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({
+          'pickup': pickup,
+          'destination': 'Destination address',
+          'passengers': 1,
+        }),
+      );
+
+      expect(response.statusCode, 201);
+
+      final body = jsonDecode(response.body) as Map<String, dynamic>;
+
+      return body['id'] as String;
+    }
+
+    final firstRideId = await createRide('First pickup');
+    final secondRideId = await createRide('Second pickup');
+
+    final firstSelection = await post(
+      Uri.parse('$host/rides/$firstRideId/select'),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode({'driverId': 'driver-001', 'vehicleId': 'vehicle-001'}),
+    );
+
+    expect(firstSelection.statusCode, 200);
+
+    final secondSelection = await post(
+      Uri.parse('$host/rides/$secondRideId/select'),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode({'driverId': 'driver-001', 'vehicleId': 'vehicle-001'}),
+    );
+
+    expect(secondSelection.statusCode, 200);
+
+    final reservedBody =
+        jsonDecode(secondSelection.body) as Map<String, dynamic>;
+
+    expect(reservedBody['status'], 'reserved');
+
+    final cancelFirstRide = await post(
+      Uri.parse('$host/rides/$firstRideId/cancel'),
+    );
+
+    expect(cancelFirstRide.statusCode, 200);
+
+    final response = await post(
+      Uri.parse('$host/rides/$secondRideId/promote'),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode({'driverId': 'driver-001'}),
+    );
+
+    expect(response.statusCode, 200);
+
+    final body = jsonDecode(response.body) as Map<String, dynamic>;
+
+    expect(body['id'], secondRideId);
+    expect(body['status'], 'accepted');
+    expect(body['assignedDriverId'], 'driver-001');
+    expect(body['assignedVehicleId'], 'vehicle-001');
+  });
+
+  test('POST ride promote rejects different driver', () async {
+    Future<String> createRide(String pickup) async {
+      final response = await post(
+        Uri.parse('$host/rides'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({
+          'pickup': pickup,
+          'destination': 'Destination address',
+          'passengers': 1,
+        }),
+      );
+
+      expect(response.statusCode, 201);
+
+      final body = jsonDecode(response.body) as Map<String, dynamic>;
+
+      return body['id'] as String;
+    }
+
+    final firstRideId = await createRide('First pickup');
+    final secondRideId = await createRide('Second pickup');
+
+    await post(
+      Uri.parse('$host/rides/$firstRideId/select'),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode({'driverId': 'driver-001', 'vehicleId': 'vehicle-001'}),
+    );
+
+    await post(
+      Uri.parse('$host/rides/$secondRideId/select'),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode({'driverId': 'driver-001', 'vehicleId': 'vehicle-001'}),
+    );
+
+    final response = await post(
+      Uri.parse('$host/rides/$secondRideId/promote'),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode({'driverId': 'driver-002'}),
+    );
+
+    expect(response.statusCode, 409);
+
+    final body = jsonDecode(response.body) as Map<String, dynamic>;
+
+    expect(body['error'], 'Reserved ride cannot be promoted.');
+  });
+
+  test('POST ride promote returns 404 for missing ride', () async {
+    final response = await post(
+      Uri.parse('$host/rides/missing/promote'),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode({'driverId': 'driver-001'}),
+    );
+
+    expect(response.statusCode, 404);
+
+    final body = jsonDecode(response.body) as Map<String, dynamic>;
+
+    expect(body['error'], 'Ride not found.');
+  });
 }
