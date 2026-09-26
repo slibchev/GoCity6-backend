@@ -133,11 +133,13 @@ Future<Map<String, dynamic>> calculateRoute(
   }
 
   final route = routes.first as Map<String, dynamic>;
+  print('Google route response: ${response.body}');
   final polyline = route['polyline'] as Map<String, dynamic>?;
   final encodedPolyline = polyline?['encodedPolyline'] as String?;
 
-  final distanceMeters = route['distanceMeters'] as int;
-  final durationText = route['duration'] as String;
+  final distanceMeters = (route['distanceMeters'] as num?)?.toDouble() ?? 0.0;
+
+  final durationText = route['duration'] as String? ?? '0s';
 
   final durationSeconds = double.parse(durationText.replaceAll('s', ''));
 
