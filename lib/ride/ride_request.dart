@@ -1,3 +1,4 @@
+import 'ride_money.dart';
 import 'ride_request_status.dart';
 import 'ride_state_machine.dart';
 
@@ -18,6 +19,11 @@ class RideRequest {
   final String? assignedDriverId;
   final String? assignedVehicleId;
 
+  final String currency;
+  final int? meterFareMinor;
+  final int? commissionRateBps;
+  final int? commissionAmountMinor;
+
   final String? completedByDriverId;
   final DateTime? completedAt;
 
@@ -31,6 +37,10 @@ class RideRequest {
     this.status = RideRequestStatus.pending,
     this.assignedDriverId,
     this.assignedVehicleId,
+    this.currency = RideMoney.currency,
+    this.meterFareMinor,
+    this.commissionRateBps,
+    this.commissionAmountMinor,
     this.completedByDriverId,
     this.completedAt,
   });
@@ -44,6 +54,10 @@ class RideRequest {
     DateTime? requestedAt,
     Object? assignedDriverId = _notProvided,
     Object? assignedVehicleId = _notProvided,
+    String? currency,
+    Object? meterFareMinor = _notProvided,
+    Object? commissionRateBps = _notProvided,
+    Object? commissionAmountMinor = _notProvided,
     Object? completedByDriverId = _notProvided,
     Object? completedAt = _notProvided,
   }) {
@@ -61,6 +75,16 @@ class RideRequest {
       assignedVehicleId: identical(assignedVehicleId, _notProvided)
           ? this.assignedVehicleId
           : assignedVehicleId as String?,
+      currency: currency ?? this.currency,
+      meterFareMinor: identical(meterFareMinor, _notProvided)
+          ? this.meterFareMinor
+          : meterFareMinor as int?,
+      commissionRateBps: identical(commissionRateBps, _notProvided)
+          ? this.commissionRateBps
+          : commissionRateBps as int?,
+      commissionAmountMinor: identical(commissionAmountMinor, _notProvided)
+          ? this.commissionAmountMinor
+          : commissionAmountMinor as int?,
       completedByDriverId: identical(completedByDriverId, _notProvided)
           ? this.completedByDriverId
           : completedByDriverId as String?,
@@ -83,6 +107,10 @@ class RideRequest {
       status: newStatus,
       assignedDriverId: assignedDriverId,
       assignedVehicleId: assignedVehicleId,
+      currency: currency,
+      meterFareMinor: meterFareMinor,
+      commissionRateBps: commissionRateBps,
+      commissionAmountMinor: commissionAmountMinor,
       completedByDriverId: completedByDriverId,
       completedAt: completedAt,
     );

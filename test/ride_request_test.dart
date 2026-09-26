@@ -192,4 +192,24 @@ void main() {
       throwsA(isA<RideStateTransitionException>()),
     );
   });
+  test('RideRequest uses EUR by default', () {
+    final request = createRequest();
+
+    expect(request.currency, 'EUR');
+  });
+
+  test('RideRequest stores and preserves financial data', () {
+    final request = createRequest().copyWith(
+      meterFareMinor: 1234,
+      commissionRateBps: 1000,
+      commissionAmountMinor: 123,
+    );
+
+    final updated = request.copyWith(pickup: 'Updated pickup');
+
+    expect(updated.currency, 'EUR');
+    expect(updated.meterFareMinor, 1234);
+    expect(updated.commissionRateBps, 1000);
+    expect(updated.commissionAmountMinor, 123);
+  });
 }
