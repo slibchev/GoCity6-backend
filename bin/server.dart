@@ -541,6 +541,125 @@ void main(List<String> args) async {
       );
     }
   });
+  router.post('/rides/<rideId>/driver-arriving', (
+    Request request,
+    String rideId,
+  ) async {
+    try {
+      final decodedBody = jsonDecode(await request.readAsString());
+
+      if (decodedBody is! Map<String, dynamic>) {
+        return Response(
+          400,
+          body: jsonEncode({'error': 'Request body must be a JSON object.'}),
+          headers: {'Content-Type': 'application/json'},
+        );
+      }
+
+      final driverId = decodedBody['driverId'];
+
+      if (driverId is! String || driverId.trim().isEmpty) {
+        return Response(
+          400,
+          body: jsonEncode({'error': 'driverId is required.'}),
+          headers: {'Content-Type': 'application/json'},
+        );
+      }
+
+      final updatedRide = await rideLifecycleService.markDriverArriving(
+        rideId: rideId,
+        driverId: driverId.trim(),
+      );
+
+      return Response.ok(
+        jsonEncode(rideRequestToJson(updatedRide)),
+        headers: {'Content-Type': 'application/json'},
+      );
+    } on FormatException {
+      return Response(
+        400,
+        body: jsonEncode({'error': 'Invalid JSON body.'}),
+        headers: {'Content-Type': 'application/json'},
+      );
+    } on RideLifecycleNotFoundException {
+      return Response(
+        404,
+        body: jsonEncode({'error': 'Ride not found.'}),
+        headers: {'Content-Type': 'application/json'},
+      );
+    } on RideLifecycleConflictException {
+      return Response(
+        409,
+        body: jsonEncode({'error': 'Ride cannot move to driverArriving.'}),
+        headers: {'Content-Type': 'application/json'},
+      );
+    } catch (error) {
+      print('Driver arriving error: $error');
+
+      return Response.internalServerError(
+        body: jsonEncode({'error': 'Failed to update ride.'}),
+        headers: {'Content-Type': 'application/json'},
+      );
+    }
+  });
+  router.post('/rides/<rideId>/start', (Request request, String rideId) async {
+    try {
+      final decodedBody = jsonDecode(await request.readAsString());
+
+      if (decodedBody is! Map<String, dynamic>) {
+        return Response(
+          400,
+          body: jsonEncode({'error': 'Request body must be a JSON object.'}),
+          headers: {'Content-Type': 'application/json'},
+        );
+      }
+
+      final driverId = decodedBody['driverId'];
+
+      if (driverId is! String || driverId.trim().isEmpty) {
+        return Response(
+          400,
+          body: jsonEncode({'error': 'driverId is required.'}),
+          headers: {'Content-Type': 'application/json'},
+        );
+      }
+
+      final updatedRide = await rideLifecycleService.startRide(
+        rideId: rideId,
+        driverId: driverId.trim(),
+      );
+
+      return Response.ok(
+        jsonEncode(rideRequestToJson(updatedRide)),
+        headers: {'Content-Type': 'application/json'},
+      );
+    } on FormatException {
+      return Response(
+        400,
+        body: jsonEncode({'error': 'Invalid JSON body.'}),
+        headers: {'Content-Type': 'application/json'},
+      );
+    } on RideLifecycleNotFoundException {
+      return Response(
+        404,
+        body: jsonEncode({'error': 'Ride not found.'}),
+        headers: {'Content-Type': 'application/json'},
+      );
+    } on RideLifecycleConflictException {
+      return Response(
+        409,
+        body: jsonEncode({'error': 'Ride cannot be started.'}),
+        headers: {'Content-Type': 'application/json'},
+      );
+    } catch (error) {
+      print('Start ride error: $error');
+
+      return Response.internalServerError(
+        body: jsonEncode({'error': 'Failed to start ride.'}),
+        headers: {'Content-Type': 'application/json'},
+      );
+    }
+  });
 
   router.post('/route', (Request request) async {
     try {

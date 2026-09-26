@@ -581,4 +581,176 @@ void main() {
 
     expect(body['error'], 'Ride not found.');
   });
+  test('POST driver-arriving moves accepted ride to driverArriving', () async {
+    final createResponse = await post(
+      Uri.parse('$host/rides'),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode({
+        'pickup': 'Pickup address',
+        'destination': 'Destination address',
+        'passengers': 1,
+      }),
+    );
+
+    final createdBody = jsonDecode(createResponse.body) as Map<String, dynamic>;
+
+    final rideId = createdBody['id'] as String;
+
+    final selectResponse = await post(
+      Uri.parse('$host/rides/$rideId/select'),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode({'driverId': 'driver-001', 'vehicleId': 'vehicle-001'}),
+    );
+
+    expect(selectResponse.statusCode, 200);
+
+    final response = await post(
+      Uri.parse('$host/rides/$rideId/driver-arriving'),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode({'driverId': 'driver-001'}),
+    );
+
+    expect(response.statusCode, 200);
+
+    final body = jsonDecode(response.body) as Map<String, dynamic>;
+
+    expect(body['status'], 'driverArriving');
+    expect(body['assignedDriverId'], 'driver-001');
+    expect(body['assignedVehicleId'], 'vehicle-001');
+  });
+
+  test('POST driver-arriving rejects different driver', () async {
+    final createResponse = await post(
+      Uri.parse('$host/rides'),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode({
+        'pickup': 'Pickup address',
+        'destination': 'Destination address',
+        'passengers': 1,
+      }),
+    );
+
+    final createdBody = jsonDecode(createResponse.body) as Map<String, dynamic>;
+
+    final rideId = createdBody['id'] as String;
+
+    await post(
+      Uri.parse('$host/rides/$rideId/select'),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode({'driverId': 'driver-001', 'vehicleId': 'vehicle-001'}),
+    );
+
+    final response = await post(
+      Uri.parse('$host/rides/$rideId/driver-arriving'),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode({'driverId': 'driver-002'}),
+    );
+
+    expect(response.statusCode, 409);
+
+    final body = jsonDecode(response.body) as Map<String, dynamic>;
+
+    expect(body['error'], 'Ride cannot move to driverArriving.');
+  });
+
+  test('POST driver-arriving returns 404 for missing ride', () async {
+    final response = await post(
+      Uri.parse('$host/rides/missing/driver-arriving'),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode({'driverId': 'driver-001'}),
+    );
+
+    expect(response.statusCode, 404);
+  });
+
+  test('POST start moves driverArriving ride to inProgress', () async {
+    final createResponse = await post(
+      Uri.parse('$host/rides'),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode({
+        'pickup': 'Pickup address',
+        'destination': 'Destination address',
+        'passengers': 1,
+      }),
+    );
+
+    final createdBody = jsonDecode(createResponse.body) as Map<String, dynamic>;
+
+    final rideId = createdBody['id'] as String;
+
+    await post(
+      Uri.parse('$host/rides/$rideId/select'),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode({'driverId': 'driver-001', 'vehicleId': 'vehicle-001'}),
+    );
+
+    await post(
+      Uri.parse('$host/rides/$rideId/driver-arriving'),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode({'driverId': 'driver-001'}),
+    );
+
+    final response = await post(
+      Uri.parse('$host/rides/$rideId/start'),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode({'driverId': 'driver-001'}),
+    );
+
+    expect(response.statusCode, 200);
+
+    final body = jsonDecode(response.body) as Map<String, dynamic>;
+
+    expect(body['status'], 'inProgress');
+    expect(body['assignedDriverId'], 'driver-001');
+  });
+
+  test('POST start rejects different driver', () async {
+    final createResponse = await post(
+      Uri.parse('$host/rides'),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode({
+        'pickup': 'Pickup address',
+        'destination': 'Destination address',
+        'passengers': 1,
+      }),
+    );
+
+    final createdBody = jsonDecode(createResponse.body) as Map<String, dynamic>;
+
+    final rideId = createdBody['id'] as String;
+
+    await post(
+      Uri.parse('$host/rides/$rideId/select'),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode({'driverId': 'driver-001', 'vehicleId': 'vehicle-001'}),
+    );
+
+    await post(
+      Uri.parse('$host/rides/$rideId/driver-arriving'),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode({'driverId': 'driver-001'}),
+    );
+
+    final response = await post(
+      Uri.parse('$host/rides/$rideId/start'),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode({'driverId': 'driver-002'}),
+    );
+
+    expect(response.statusCode, 409);
+
+    final body = jsonDecode(response.body) as Map<String, dynamic>;
+
+    expect(body['error'], 'Ride cannot be started.');
+  });
+
+  test('POST start returns 404 for missing ride', () async {
+    final response = await post(
+      Uri.parse('$host/rides/missing/start'),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode({'driverId': 'driver-001'}),
+    );
+
+    expect(response.statusCode, 404);
+  });
 }
