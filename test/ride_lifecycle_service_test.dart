@@ -265,4 +265,207 @@ void main() {
       ),
     );
   });
+  test('assigned driver can complete in-progress ride', () async {
+    final inProgressRide = createRide(
+      status: RideRequestStatus.inProgress,
+      assignedDriverId: 'driver-001',
+      assignedVehicleId: 'vehicle-001',
+    );
+
+    final repository = FakeRideRequestRepository([inProgressRide]);
+
+    final completedAt = DateTime.utc(2026, 9, 26, 16, 45);
+
+    final service = RideLifecycleService(
+      repository: repository,
+      commissionRateBps: 1000,
+      now: () => completedAt,
+    );
+
+    final result = await service.completeRide(
+      rideId: 'ride-001',
+      driverId: 'driver-001',
+      meterFareMinor: 1234,
+    );
+
+    expect(result.status, RideRequestStatus.completed);
+
+    expect(result.currency, 'EUR');
+    expect(result.meterFareMinor, 1234);
+    expect(result.commissionRateBps, 1000);
+    expect(result.commissionAmountMinor, 123);
+
+    expect(result.completedByDriverId, 'driver-001');
+    expect(result.completedAt, completedAt);
+
+    expect(result.assignedDriverId, 'driver-001');
+    expect(result.assignedVehicleId, 'vehicle-001');
+  });
+
+  test('completeRide applies commission rounding', () async {
+    final inProgressRide = createRide(
+      status: RideRequestStatus.inProgress,
+      assignedDriverId: 'driver-001',
+      assignedVehicleId: 'vehicle-001',
+    );
+
+    final repository = FakeRideRequestRepository([inProgressRide]);
+
+    final service = RideLifecycleService(
+      repository: repository,
+      commissionRateBps: 1000,
+    );
+
+    final result = await service.completeRide(
+      rideId: 'ride-001',
+      driverId: 'driver-001',
+      meterFareMinor: 1235,
+    );
+
+    expect(result.meterFareMinor, 1235);
+    expect(result.commissionAmountMinor, 124);
+  });
+
+  test('different driver cannot complete ride', () async {
+    final inProgressRide = createRide(
+      status: RideRequestStatus.inProgress,
+      assignedDriverId: 'driver-001',
+      assignedVehicleId: 'vehicle-001',
+    );
+
+    final repository = FakeRideRequestRepository([inProgressRide]);
+
+    final service = RideLifecycleService(repository: repository);
+
+    expect(
+      () => service.completeRide(
+        rideId: 'ride-001',
+        driverId: 'driver-002',
+        meterFareMinor: 1234,
+      ),
+      throwsA(
+        isA<RideLifecycleConflictException>().having(
+          (error) => error.conflict,
+          'conflict',
+          RideLifecycleConflict.rideAssignedToAnotherDriver,
+        ),
+      ),
+    );
+  });
+
+  test('ride outside inProgress cannot be completed', () async {
+    final acceptedRide = createRide(
+      status: RideRequestStatus.accepted,
+      assignedDriverId: 'driver-001',
+      assignedVehicleId: 'vehicle-001',
+    );
+
+    final repository = FakeRideRequestRepository([acceptedRide]);
+
+    final service = RideLifecycleService(repository: repository);
+
+    expect(
+      () => service.completeRide(
+        rideId: 'ride-001',
+        driverId: 'driver-001',
+        meterFareMinor: 1234,
+      ),
+      throwsA(
+        isA<RideLifecycleConflictException>().having(
+          (error) => error.conflict,
+          'conflict',
+          RideLifecycleConflict.rideMustBeInProgress,
+        ),
+      ),
+    );
+  });
+
+  test('completeRide rejects zero meter fare', () async {
+    final inProgressRide = createRide(
+      status: RideRequestStatus.inProgress,
+      assignedDriverId: 'driver-001',
+      assignedVehicleId: 'vehicle-001',
+    );
+
+    final repository = FakeRideRequestRepository([inProgressRide]);
+
+    final service = RideLifecycleService(repository: repository);
+
+    expect(
+      () => service.completeRide(
+        rideId: 'ride-001',
+        driverId: 'driver-001',
+        meterFareMinor: 0,
+      ),
+      throwsA(
+        isA<RideLifecycleConflictException>().having(
+          (error) => error.conflict,
+          'conflict',
+          RideLifecycleConflict.invalidMeterFare,
+        ),
+      ),
+    );
+  });
+
+  test('completeRide rejects negative meter fare', () async {
+    final inProgressRide = createRide(
+      status: RideRequestStatus.inProgress,
+      assignedDriverId: 'driver-001',
+      assignedVehicleId: 'vehicle-001',
+    );
+
+    final repository = FakeRideRequestRepository([inProgressRide]);
+
+    final service = RideLifecycleService(repository: repository);
+
+    expect(
+      () => service.completeRide(
+        rideId: 'ride-001',
+        driverId: 'driver-001',
+        meterFareMinor: -1,
+      ),
+      throwsA(
+        isA<RideLifecycleConflictException>().having(
+          (error) => error.conflict,
+          'conflict',
+          RideLifecycleConflict.invalidMeterFare,
+        ),
+      ),
+    );
+  });
+
+  test('completed ride cannot be completed twice', () async {
+    final inProgressRide = createRide(
+      status: RideRequestStatus.inProgress,
+      assignedDriverId: 'driver-001',
+      assignedVehicleId: 'vehicle-001',
+    );
+
+    final repository = FakeRideRequestRepository([inProgressRide]);
+
+    final service = RideLifecycleService(repository: repository);
+
+    final firstResult = await service.completeRide(
+      rideId: 'ride-001',
+      driverId: 'driver-001',
+      meterFareMinor: 1234,
+    );
+
+    expect(firstResult.status, RideRequestStatus.completed);
+
+    expect(
+      () => service.completeRide(
+        rideId: 'ride-001',
+        driverId: 'driver-001',
+        meterFareMinor: 1500,
+      ),
+      throwsA(
+        isA<RideLifecycleConflictException>().having(
+          (error) => error.conflict,
+          'conflict',
+          RideLifecycleConflict.rideMustBeInProgress,
+        ),
+      ),
+    );
+  });
 }

@@ -1,3 +1,4 @@
+import 'ride_money.dart';
 import 'ride_request.dart';
 import 'ride_request_repository.dart';
 import 'ride_request_status.dart';
@@ -12,6 +13,8 @@ enum RideLifecycleConflict {
   rideAssignedToAnotherDriver,
   rideMustBeAccepted,
   rideMustBeDriverArriving,
+  rideMustBeInProgress,
+  invalidMeterFare,
 }
 
 class RideLifecycleNotFoundException implements Exception {
@@ -38,8 +41,14 @@ class RideLifecycleConflictException implements Exception {
 
 class RideLifecycleService {
   final RideRequestRepository repository;
+  final int commissionRateBps;
+  final DateTime Function() now;
 
-  const RideLifecycleService({required this.repository});
+  RideLifecycleService({
+    required this.repository,
+    this.commissionRateBps = 1000,
+    DateTime Function()? now,
+  }) : now = now ?? DateTime.now;
 
   Future<RideRequest> submitRide(RideRequest request) async {
     final existingRide = await repository.findById(request.id);
@@ -160,6 +169,47 @@ class RideLifecycleService {
     await repository.save(updatedRide);
 
     return updatedRide;
+  }
+
+  Future<RideRequest> completeRide({
+    required String rideId,
+    required String driverId,
+    required int meterFareMinor,
+  }) async {
+    final ride = await _requireRide(rideId);
+
+    if (ride.status != RideRequestStatus.inProgress) {
+      throw const RideLifecycleConflictException(
+        RideLifecycleConflict.rideMustBeInProgress,
+      );
+    }
+
+    _requireAssignedDriver(ride: ride, driverId: driverId);
+
+    if (meterFareMinor <= 0) {
+      throw const RideLifecycleConflictException(
+        RideLifecycleConflict.invalidMeterFare,
+      );
+    }
+
+    final commissionAmountMinor = RideMoney.calculateCommissionMinor(
+      meterFareMinor: meterFareMinor,
+      commissionRateBps: commissionRateBps,
+    );
+
+    final completedRide = ride
+        .copyWith(
+          meterFareMinor: meterFareMinor,
+          commissionRateBps: commissionRateBps,
+          commissionAmountMinor: commissionAmountMinor,
+          completedByDriverId: driverId,
+          completedAt: now().toUtc(),
+        )
+        .transitionTo(RideRequestStatus.completed);
+
+    await repository.save(completedRide);
+
+    return completedRide;
   }
 
   Future<RideRequest> _requireRide(String rideId) async {
