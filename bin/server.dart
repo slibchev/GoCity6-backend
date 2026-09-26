@@ -8,6 +8,7 @@ import 'package:shelf_router/shelf_router.dart';
 import 'package:gocity6_backend/ride/in_memory_ride_request_repository.dart';
 import 'package:gocity6_backend/ride/ride_lifecycle_service.dart';
 import 'package:gocity6_backend/ride/ride_request.dart';
+import 'package:gocity6_backend/ride/ride_dispatch_service.dart';
 
 Future<Map<String, double>> geocodeAddress(
   String address,
@@ -277,6 +278,7 @@ void main(List<String> args) async {
   final rideRepository = InMemoryRideRequestRepository();
 
   final rideLifecycleService = RideLifecycleService(repository: rideRepository);
+  final rideDispatchService = RideDispatchService(repository: rideRepository);
 
   var nextRideNumber = 1;
 
@@ -406,6 +408,74 @@ void main(List<String> args) async {
 
       return Response.internalServerError(
         body: jsonEncode({'error': 'Ride cancellation failed.'}),
+        headers: {'Content-Type': 'application/json'},
+      );
+    }
+  });
+  router.post('/rides/<rideId>/select', (Request request, String rideId) async {
+    try {
+      final decodedBody = jsonDecode(await request.readAsString());
+
+      if (decodedBody is! Map<String, dynamic>) {
+        return Response(
+          400,
+          body: jsonEncode({'error': 'Request body must be a JSON object.'}),
+          headers: {'Content-Type': 'application/json'},
+        );
+      }
+
+      final driverId = decodedBody['driverId'];
+      final vehicleId = decodedBody['vehicleId'];
+
+      if (driverId is! String || driverId.trim().isEmpty) {
+        return Response(
+          400,
+          body: jsonEncode({'error': 'driverId is required.'}),
+          headers: {'Content-Type': 'application/json'},
+        );
+      }
+
+      if (vehicleId is! String || vehicleId.trim().isEmpty) {
+        return Response(
+          400,
+          body: jsonEncode({'error': 'vehicleId is required.'}),
+          headers: {'Content-Type': 'application/json'},
+        );
+      }
+
+      final selectedRide = await rideDispatchService.selectWaitingRide(
+        rideId: rideId,
+        driverId: driverId.trim(),
+        vehicleId: vehicleId.trim(),
+      );
+
+      return Response.ok(
+        jsonEncode(rideRequestToJson(selectedRide)),
+        headers: {'Content-Type': 'application/json'},
+      );
+    } on FormatException {
+      return Response(
+        400,
+        body: jsonEncode({'error': 'Invalid JSON body.'}),
+        headers: {'Content-Type': 'application/json'},
+      );
+    } on RideNotFoundException {
+      return Response(
+        404,
+        body: jsonEncode({'error': 'Ride not found.'}),
+        headers: {'Content-Type': 'application/json'},
+      );
+    } on RideDispatchConflictException {
+      return Response(
+        409,
+        body: jsonEncode({'error': 'Ride cannot be selected.'}),
+        headers: {'Content-Type': 'application/json'},
+      );
+    } catch (error) {
+      print('Select ride error: $error');
+
+      return Response.internalServerError(
+        body: jsonEncode({'error': 'Ride selection failed.'}),
         headers: {'Content-Type': 'application/json'},
       );
     }
