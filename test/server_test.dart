@@ -90,11 +90,10 @@ void main() {
     expect(body['passengers'], 2);
     expect(body['hasLuggage'], isTrue);
     expect(body['status'], 'waitingForVehicle');
-
     expect(body['assignedDriverId'], isNull);
     expect(body['assignedVehicleId'], isNull);
-
     expect(body['requestedAt'], isNotNull);
+    expect(body['currency'], 'EUR');
   });
 
   test('GET rides returns previously created ride', () async {
