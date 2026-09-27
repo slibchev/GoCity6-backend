@@ -9,6 +9,10 @@ import 'package:gocity6_backend/ride/in_memory_ride_request_repository.dart';
 import 'package:gocity6_backend/ride/ride_lifecycle_service.dart';
 import 'package:gocity6_backend/ride/ride_request.dart';
 import 'package:gocity6_backend/ride/ride_dispatch_service.dart';
+import 'package:postgres/postgres.dart';
+import 'package:gocity6_backend/ride/postgres_ride_request_repository.dart';
+import 'package:gocity6_backend/ride/ride_request_repository.dart';
+import 'package:uuid/uuid.dart';
 
 Future<Map<String, double>> geocodeAddress(
   String address,
@@ -279,12 +283,48 @@ void main(List<String> args) async {
   }
 
   final router = Router();
-  final rideRepository = InMemoryRideRequestRepository();
+  final rideStorage = Platform.environment['CITY6_RIDE_STORAGE'] ?? 'memory';
+
+  late final RideRequestRepository rideRepository;
+
+  if (rideStorage == 'postgres') {
+    final databasePassword = Platform.environment['CITY6_DB_PASSWORD'];
+
+    if (databasePassword == null || databasePassword.isEmpty) {
+      throw StateError(
+        'CITY6_DB_PASSWORD is required when '
+        'CITY6_RIDE_STORAGE=postgres.',
+      );
+    }
+
+    final databasePool = Pool.withEndpoints([
+      Endpoint(
+        host: 'localhost',
+        port: 5432,
+        database: 'city6',
+        username: 'city6_app',
+        password: databasePassword,
+      ),
+    ], settings: PoolSettings(sslMode: SslMode.disable, maxConnectionCount: 5));
+
+    await databasePool.execute('SELECT 1');
+
+    rideRepository = PostgresRideRequestRepository(database: databasePool);
+
+    print('Ride storage: PostgreSQL');
+  } else if (rideStorage == 'memory') {
+    rideRepository = InMemoryRideRequestRepository();
+
+    print('Ride storage: in-memory');
+  } else {
+    throw StateError('Unsupported CITY6_RIDE_STORAGE: $rideStorage');
+  }
 
   final rideLifecycleService = RideLifecycleService(repository: rideRepository);
+
   final rideDispatchService = RideDispatchService(repository: rideRepository);
 
-  var nextRideNumber = 1;
+  const uuid = Uuid();
 
   router.get('/', (Request request) {
     return Response.ok('GoCity6 backend is running');
@@ -334,7 +374,7 @@ void main(List<String> args) async {
       }
 
       final ride = RideRequest(
-        id: 'ride-${nextRideNumber++}',
+        id: uuid.v4(),
         pickup: pickup.trim(),
         destination: destination.trim(),
         passengers: passengers,
