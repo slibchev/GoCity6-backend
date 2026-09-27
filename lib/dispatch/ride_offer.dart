@@ -90,6 +90,74 @@ class RideOffer {
     );
   }
 
+  factory RideOffer.restore({
+    required String id,
+    required String rideId,
+    required String driverId,
+    required String vehicleId,
+    required int etaSeconds,
+    required int distanceMeters,
+    required DateTime offeredAt,
+    required DateTime expiresAt,
+    required RideOfferStatus status,
+    required DateTime? resolvedAt,
+  }) {
+    if (etaSeconds < 0) {
+      throw ArgumentError.value(
+        etaSeconds,
+        'etaSeconds',
+        'ETA cannot be negative.',
+      );
+    }
+
+    if (distanceMeters < 0) {
+      throw ArgumentError.value(
+        distanceMeters,
+        'distanceMeters',
+        'Distance cannot be negative.',
+      );
+    }
+
+    if (!expiresAt.isAfter(offeredAt)) {
+      throw ArgumentError('Offer expiration must be after offeredAt.');
+    }
+
+    switch (status) {
+      case RideOfferStatus.pending:
+        if (resolvedAt != null) {
+          throw ArgumentError('Pending offer cannot have resolvedAt.');
+        }
+
+      case RideOfferStatus.accepted:
+      case RideOfferStatus.rejected:
+        if (resolvedAt == null || !resolvedAt.isBefore(expiresAt)) {
+          throw ArgumentError(
+            'Accepted or rejected offer must be resolved before expiration.',
+          );
+        }
+
+      case RideOfferStatus.expired:
+        if (resolvedAt == null || resolvedAt.isBefore(expiresAt)) {
+          throw ArgumentError(
+            'Expired offer must be resolved at or after expiration.',
+          );
+        }
+    }
+
+    return RideOffer._(
+      id: id,
+      rideId: rideId,
+      driverId: driverId,
+      vehicleId: vehicleId,
+      etaSeconds: etaSeconds,
+      distanceMeters: distanceMeters,
+      offeredAt: offeredAt,
+      expiresAt: expiresAt,
+      status: status,
+      resolvedAt: resolvedAt,
+    );
+  }
+
   bool get isPending => status == RideOfferStatus.pending;
 
   bool isExpiredAt(DateTime now) {
