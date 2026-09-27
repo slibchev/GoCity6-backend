@@ -7,6 +7,16 @@ class DispatchCandidateSelector {
   const DispatchCandidateSelector({this.policy = const DispatchPolicy()});
 
   DispatchCandidate? select(List<DispatchCandidate> candidates) {
+    final rankedCandidates = rank(candidates);
+
+    if (rankedCandidates.isEmpty) {
+      return null;
+    }
+
+    return rankedCandidates.first;
+  }
+
+  List<DispatchCandidate> rank(List<DispatchCandidate> candidates) {
     final autoOfferCandidates = candidates
         .where(
           (candidate) => candidate.etaSeconds <= policy.maxAutoOfferEtaSeconds,
@@ -14,7 +24,7 @@ class DispatchCandidateSelector {
         .toList();
 
     if (autoOfferCandidates.isEmpty) {
-      return null;
+      return const [];
     }
 
     final bestEtaSeconds = autoOfferCandidates
@@ -43,7 +53,7 @@ class DispatchCandidateSelector {
 
     distanceCandidates.sort(_compareCandidates);
 
-    return distanceCandidates.first;
+    return List.unmodifiable(distanceCandidates);
   }
 
   int _compareCandidates(DispatchCandidate a, DispatchCandidate b) {

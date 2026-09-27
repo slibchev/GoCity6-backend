@@ -1,3 +1,5 @@
+import 'driver_queue_state.dart';
+
 class DispatchCandidate {
   final String driverId;
   final String vehicleId;
@@ -32,5 +34,30 @@ class DispatchCandidate {
         'Distance cannot be negative.',
       );
     }
+  }
+
+  static DispatchCandidate? fromQueueState({
+    required DriverQueueState queueState,
+    required String vehicleId,
+    required int etaSeconds,
+    required int distanceMeters,
+    required DateTime now,
+    bool hasCustomerCancellationPriority = false,
+  }) {
+    final effectiveState = queueState.effectiveAt(now);
+
+    if (effectiveState.availability != DriverQueueAvailability.available ||
+        effectiveState.hasPendingOffer) {
+      return null;
+    }
+
+    return DispatchCandidate(
+      driverId: effectiveState.driverId,
+      vehicleId: vehicleId,
+      etaSeconds: etaSeconds,
+      distanceMeters: distanceMeters,
+      queuePrioritySince: effectiveState.queuePrioritySince,
+      hasCustomerCancellationPriority: hasCustomerCancellationPriority,
+    );
   }
 }
