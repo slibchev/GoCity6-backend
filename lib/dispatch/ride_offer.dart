@@ -1,15 +1,6 @@
-enum RideOfferStatus {
-  pending,
-  accepted,
-  rejected,
-  expired,
-}
+enum RideOfferStatus { pending, accepted, rejected, expired }
 
-enum RideOfferConflict {
-  notPending,
-  alreadyExpired,
-  notExpiredYet,
-}
+enum RideOfferConflict { notPending, alreadyExpired, notExpiredYet }
 
 class RideOfferConflictException implements Exception {
   final RideOfferConflict conflict;
@@ -109,52 +100,35 @@ class RideOffer {
     _requirePending();
 
     if (isExpiredAt(now)) {
-      throw const RideOfferConflictException(
-        RideOfferConflict.alreadyExpired,
-      );
+      throw const RideOfferConflictException(RideOfferConflict.alreadyExpired);
     }
 
-    return _resolved(
-      status: RideOfferStatus.accepted,
-      resolvedAt: now,
-    );
+    return _resolved(status: RideOfferStatus.accepted, resolvedAt: now);
   }
 
   RideOffer reject(DateTime now) {
     _requirePending();
 
     if (isExpiredAt(now)) {
-      throw const RideOfferConflictException(
-        RideOfferConflict.alreadyExpired,
-      );
+      throw const RideOfferConflictException(RideOfferConflict.alreadyExpired);
     }
 
-    return _resolved(
-      status: RideOfferStatus.rejected,
-      resolvedAt: now,
-    );
+    return _resolved(status: RideOfferStatus.rejected, resolvedAt: now);
   }
 
   RideOffer expire(DateTime now) {
     _requirePending();
 
     if (!isExpiredAt(now)) {
-      throw const RideOfferConflictException(
-        RideOfferConflict.notExpiredYet,
-      );
+      throw const RideOfferConflictException(RideOfferConflict.notExpiredYet);
     }
 
-    return _resolved(
-      status: RideOfferStatus.expired,
-      resolvedAt: now,
-    );
+    return _resolved(status: RideOfferStatus.expired, resolvedAt: now);
   }
 
   void _requirePending() {
     if (!isPending) {
-      throw const RideOfferConflictException(
-        RideOfferConflict.notPending,
-      );
+      throw const RideOfferConflictException(RideOfferConflict.notPending);
     }
   }
 

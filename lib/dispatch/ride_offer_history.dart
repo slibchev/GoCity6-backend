@@ -19,41 +19,70 @@ class RideOfferHistory {
     }
 
     if (this.offers.any((offer) => offer.rideId != rideId)) {
-      throw ArgumentError(
-        'All offers must belong to ride $rideId.',
-      );
+      throw ArgumentError('All offers must belong to ride $rideId.');
     }
   }
 
   int get attemptsUsed => offers.length;
 
-  bool get maxAttemptsReached =>
-      attemptsUsed >= maxAttempts;
+  bool get maxAttemptsReached => attemptsUsed >= maxAttempts;
 
   bool get hasPendingOffer =>
-      offers.any(
-        (offer) => offer.status == RideOfferStatus.pending,
-      );
+      offers.any((offer) => offer.status == RideOfferStatus.pending);
 
   bool get hasAcceptedOffer =>
-      offers.any(
-        (offer) => offer.status == RideOfferStatus.accepted,
-      );
+      offers.any((offer) => offer.status == RideOfferStatus.accepted);
 
   bool hasBeenOfferedToDriver(String driverId) {
-    return offers.any(
-      (offer) => offer.driverId == driverId,
-    );
+    return offers.any((offer) => offer.driverId == driverId);
   }
 
   bool get canCreateAnotherOffer {
-    return !maxAttemptsReached &&
-        !hasPendingOffer &&
-        !hasAcceptedOffer;
+    return !maxAttemptsReached && !hasPendingOffer && !hasAcceptedOffer;
   }
 
   bool canOfferDriver(String driverId) {
-    return canCreateAnotherOffer &&
-        !hasBeenOfferedToDriver(driverId);
+    return canCreateAnotherOffer && !hasBeenOfferedToDriver(driverId);
+  }
+
+  RideOfferHistory addOffer(RideOffer offer) {
+    if (offer.rideId != rideId) {
+      throw ArgumentError('Offer ${offer.id} does not belong to ride $rideId.');
+    }
+
+    if (!canOfferDriver(offer.driverId)) {
+      throw StateError(
+        'Cannot create another offer for driver ${offer.driverId}.',
+      );
+    }
+
+    return RideOfferHistory(
+      rideId: rideId,
+      maxAttempts: maxAttempts,
+      offers: [...offers, offer],
+    );
+  }
+
+  RideOfferHistory replaceOffer(RideOffer offer) {
+    if (offer.rideId != rideId) {
+      throw ArgumentError('Offer ${offer.id} does not belong to ride $rideId.');
+    }
+
+    final index = offers.indexWhere(
+      (existingOffer) => existingOffer.id == offer.id,
+    );
+
+    if (index == -1) {
+      throw ArgumentError('Offer ${offer.id} was not found.');
+    }
+
+    final updatedOffers = [...offers];
+    updatedOffers[index] = offer;
+
+    return RideOfferHistory(
+      rideId: rideId,
+      maxAttempts: maxAttempts,
+      offers: updatedOffers,
+    );
   }
 }

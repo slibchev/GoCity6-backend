@@ -1,6 +1,6 @@
 const Object _notProvided = Object();
 
-enum DriverQueueAvailability { available, shortBreak, longBreak }
+enum DriverQueueAvailability { available, shortBreak, longBreak, busy }
 
 enum DriverQueueConflict {
   activeOffer,
@@ -81,6 +81,15 @@ class DriverQueueState {
     return _copyWith(hasPendingOffer: false, queuePrioritySince: now);
   }
 
+  DriverQueueState acceptOffer() {
+    _requirePendingOffer();
+
+    return _copyWith(
+      availability: DriverQueueAvailability.busy,
+      hasPendingOffer: false,
+    );
+  }
+
   DriverQueueState startShortBreak(DateTime now) {
     _requireCanStartBreak();
 
@@ -122,6 +131,7 @@ class DriverQueueState {
         );
 
       case DriverQueueAvailability.available:
+      case DriverQueueAvailability.busy:
         throw const DriverQueueConflictException(
           DriverQueueConflict.notOnBreak,
         );
