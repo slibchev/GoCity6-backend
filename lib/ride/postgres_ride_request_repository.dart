@@ -4,7 +4,8 @@ import 'ride_request.dart';
 import 'ride_request_repository.dart';
 import 'ride_request_status.dart';
 
-class PostgresRideRequestRepository implements RideRequestRepository {
+class PostgresRideRequestRepository
+    implements RideRequestRepository, AtomicRideClaimRepository {
   final Session database;
 
   PostgresRideRequestRepository({required this.database});
@@ -146,6 +147,65 @@ class PostgresRideRequestRepository implements RideRequestRepository {
         'completedAt': request.completedAt?.toUtc(),
       },
     );
+  }
+
+  @override
+  Future<RideRequest?> claimWaitingRide({
+    required String rideId,
+    required String driverId,
+    required String vehicleId,
+    required RideRequestStatus targetStatus,
+  }) async {
+    if (targetStatus != RideRequestStatus.accepted &&
+        targetStatus != RideRequestStatus.reserved) {
+      throw ArgumentError.value(
+        targetStatus,
+        'targetStatus',
+        'Target status must be accepted or reserved.',
+      );
+    }
+
+    final result = await database.execute(
+      Sql.named('''
+      UPDATE rides
+      SET
+        status = @status,
+        assigned_driver_id = @driverId,
+        assigned_vehicle_id = @vehicleId
+      WHERE id = @rideId
+        AND status = 'waitingForVehicle'
+        AND assigned_driver_id IS NULL
+        AND assigned_vehicle_id IS NULL
+      RETURNING
+        id,
+        pickup,
+        destination,
+        passengers,
+        has_luggage,
+        requested_at,
+        status,
+        assigned_driver_id,
+        assigned_vehicle_id,
+        currency,
+        meter_fare_minor,
+        commission_rate_bps,
+        commission_amount_minor,
+        completed_by_driver_id,
+        completed_at
+    '''),
+      parameters: {
+        'rideId': rideId,
+        'driverId': driverId,
+        'vehicleId': vehicleId,
+        'status': targetStatus.name,
+      },
+    );
+
+    if (result.isEmpty) {
+      return null;
+    }
+
+    return _rideFromRow(result.first.toColumnMap());
   }
 
   RideRequest _rideFromRow(Map<String, dynamic> row) {

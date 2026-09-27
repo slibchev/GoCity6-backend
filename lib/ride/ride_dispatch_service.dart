@@ -81,6 +81,37 @@ class RideDispatchService {
         ? RideRequestStatus.reserved
         : RideRequestStatus.accepted;
 
+    if (repository is AtomicRideClaimRepository) {
+      final atomicRepository = repository as AtomicRideClaimRepository;
+
+      final claimedRide = await atomicRepository.claimWaitingRide(
+        rideId: rideId,
+        driverId: driverId,
+        vehicleId: vehicleId,
+        targetStatus: targetStatus,
+      );
+
+      if (claimedRide == null) {
+        final latestRide = await repository.findById(rideId);
+
+        if (latestRide == null) {
+          throw RideNotFoundException(rideId);
+        }
+
+        if (latestRide.status != RideRequestStatus.waitingForVehicle) {
+          throw const RideDispatchConflictException(
+            RideDispatchConflict.rideNotWaitingForVehicle,
+          );
+        }
+
+        throw const RideDispatchConflictException(
+          RideDispatchConflict.rideAlreadyAssigned,
+        );
+      }
+
+      return claimedRide;
+    }
+
     final updatedRide = ride
         .transitionTo(targetStatus)
         .copyWith(assignedDriverId: driverId, assignedVehicleId: vehicleId);

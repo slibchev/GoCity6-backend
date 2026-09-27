@@ -14,7 +14,11 @@ void main() {
     process = await Process.start(
       'dart',
       ['run', 'bin/server.dart'],
-      environment: {'PORT': port, 'GOOGLE_MAPS_API_KEY': 'test-api-key'},
+      environment: {
+        'PORT': port,
+        'GOOGLE_MAPS_API_KEY': 'test-api-key',
+        'CITY6_RIDE_STORAGE': 'memory',
+      },
     );
 
     await process.stdout
