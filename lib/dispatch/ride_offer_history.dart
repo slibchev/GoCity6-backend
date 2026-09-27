@@ -2,30 +2,16 @@ import 'ride_offer.dart';
 
 class RideOfferHistory {
   final String rideId;
-  final int maxAttempts;
   final List<RideOffer> offers;
 
-  RideOfferHistory({
-    required this.rideId,
-    required this.maxAttempts,
-    required Iterable<RideOffer> offers,
-  }) : offers = List<RideOffer>.unmodifiable(offers) {
-    if (maxAttempts <= 0) {
-      throw ArgumentError.value(
-        maxAttempts,
-        'maxAttempts',
-        'Maximum attempts must be positive.',
-      );
-    }
-
+  RideOfferHistory({required this.rideId, required Iterable<RideOffer> offers})
+    : offers = List<RideOffer>.unmodifiable(offers) {
     if (this.offers.any((offer) => offer.rideId != rideId)) {
       throw ArgumentError('All offers must belong to ride $rideId.');
     }
   }
 
   int get attemptsUsed => offers.length;
-
-  bool get maxAttemptsReached => attemptsUsed >= maxAttempts;
 
   bool get hasPendingOffer =>
       offers.any((offer) => offer.status == RideOfferStatus.pending);
@@ -38,7 +24,7 @@ class RideOfferHistory {
   }
 
   bool get canCreateAnotherOffer {
-    return !maxAttemptsReached && !hasPendingOffer && !hasAcceptedOffer;
+    return !hasPendingOffer && !hasAcceptedOffer;
   }
 
   bool canOfferDriver(String driverId) {
@@ -52,15 +38,12 @@ class RideOfferHistory {
 
     if (!canOfferDriver(offer.driverId)) {
       throw StateError(
-        'Cannot create another offer for driver ${offer.driverId}.',
+        'Cannot create another offer for driver '
+        '${offer.driverId}.',
       );
     }
 
-    return RideOfferHistory(
-      rideId: rideId,
-      maxAttempts: maxAttempts,
-      offers: [...offers, offer],
-    );
+    return RideOfferHistory(rideId: rideId, offers: [...offers, offer]);
   }
 
   RideOfferHistory replaceOffer(RideOffer offer) {
@@ -79,10 +62,6 @@ class RideOfferHistory {
     final updatedOffers = [...offers];
     updatedOffers[index] = offer;
 
-    return RideOfferHistory(
-      rideId: rideId,
-      maxAttempts: maxAttempts,
-      offers: updatedOffers,
-    );
+    return RideOfferHistory(rideId: rideId, offers: updatedOffers);
   }
 }

@@ -386,10 +386,7 @@ Future<_AttemptResult> _attemptCreate(
   RideOffer offer,
 ) async {
   try {
-    final created = await repository.createPendingOffer(
-      offer: offer,
-      maxAttempts: 3,
-    );
+    final created = await repository.createPendingOffer(offer: offer);
 
     return _AttemptResult.success(created);
   } catch (error) {

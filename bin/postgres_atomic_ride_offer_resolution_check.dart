@@ -474,7 +474,7 @@ Future<RideOffer> _setupPendingOffer(
     timeout: const Duration(seconds: 15),
   );
 
-  await repository.createPendingOffer(offer: offer, maxAttempts: 3);
+  await repository.createPendingOffer(offer: offer);
 
   return offer;
 }

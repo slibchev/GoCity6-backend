@@ -9,18 +9,7 @@ class PostgresAtomicRideOfferRepository implements AtomicRideOfferRepository {
   PostgresAtomicRideOfferRepository({required this.database});
 
   @override
-  Future<RideOffer> createPendingOffer({
-    required RideOffer offer,
-    required int maxAttempts,
-  }) {
-    if (maxAttempts <= 0) {
-      throw ArgumentError.value(
-        maxAttempts,
-        'maxAttempts',
-        'Maximum attempts must be positive.',
-      );
-    }
-
+  Future<RideOffer> createPendingOffer({required RideOffer offer}) {
     if (offer.status != RideOfferStatus.pending || offer.resolvedAt != null) {
       throw ArgumentError('Only a pending unresolved offer can be created.');
     }
@@ -60,23 +49,8 @@ class PostgresAtomicRideOfferRepository implements AtomicRideOfferRepository {
         );
       }
 
-      final attemptsResult = await transaction.execute(
-        Sql.named('''
-          SELECT COUNT(*)
-          FROM ride_offers
-          WHERE ride_id = @rideId
-        '''),
-        parameters: {'rideId': offer.rideId},
-      );
-
-      final attemptsUsed = attemptsResult.first[0] as int;
-
-      if (attemptsUsed >= maxAttempts) {
-        throw const AtomicRideOfferConflictException(
-          AtomicRideOfferConflict.maxAttemptsReached,
-        );
-      }
-
+      // Същата поръчка никога не се предлага
+      // повторно на същия шофьор.
       final sameDriverResult = await transaction.execute(
         Sql.named('''
           SELECT 1
@@ -94,6 +68,8 @@ class PostgresAtomicRideOfferRepository implements AtomicRideOfferRepository {
         );
       }
 
+      // Само една pending оферта за поръчката
+      // в даден момент.
       final pendingRideResult = await transaction.execute(
         Sql.named('''
           SELECT 1

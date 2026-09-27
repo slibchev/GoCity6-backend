@@ -36,11 +36,7 @@ void main() {
   }
 
   RideOfferHistory emptyHistory() {
-    return RideOfferHistory(
-      rideId: 'ride-001',
-      maxAttempts: 3,
-      offers: const [],
-    );
+    return RideOfferHistory(rideId: 'ride-001', offers: const []);
   }
 
   group('AutomaticDispatchService', () {
@@ -230,45 +226,111 @@ void main() {
       );
 
       expect(second, isNotNull);
+
       expect(second?.offer.driverId, 'driver-002');
     });
 
-    test('three failed attempts stop automatic dispatch', () {
-      final offers = <RideOffer>[];
+    test('continues through all eligible untried drivers '
+        'and stops only when none remain', () {
+      final driverStates = <String, DriverQueueState>{};
+      final candidates = <DispatchCandidate>[];
 
-      for (var i = 1; i <= 3; i++) {
-        final offeredAt = now.add(Duration(minutes: i));
+      for (var i = 1; i <= 8; i++) {
+        final driverId = 'driver-${i.toString().padLeft(3, '0')}';
 
-        final offer = RideOffer.create(
-          id: 'offer-$i',
-          rideId: 'ride-001',
-          driverId: 'driver-$i',
-          vehicleId: 'vehicle-$i',
-          etaSeconds: 300,
-          distanceMeters: 700,
-          offeredAt: offeredAt,
-          timeout: const Duration(seconds: 15),
-        ).reject(offeredAt.add(const Duration(seconds: 5)));
+        final driver = state(driverId: driverId, priorityMinute: i);
 
-        offers.add(offer);
+        driverStates[driverId] = driver;
+
+        candidates.add(
+          candidate(
+            driverId: driverId,
+            etaSeconds: 300,
+            distanceMeters: 700,
+            prioritySince: driver.queuePrioritySince,
+          ),
+        );
       }
 
-      final history = RideOfferHistory(
-        rideId: 'ride-001',
-        maxAttempts: 3,
-        offers: offers,
-      );
+      var history = emptyHistory();
+      var currentTime = now;
 
-      final result = service.createNextOffer(
+      // Първите 7 отказват.
+      for (var i = 1; i <= 7; i++) {
+        final expectedDriverId = 'driver-${i.toString().padLeft(3, '0')}';
+
+        final started = service.createNextOffer(
+          rideId: 'ride-001',
+          offerId: 'offer-$i',
+          now: currentTime,
+          candidates: candidates,
+          driverStates: driverStates,
+          history: history,
+        );
+
+        expect(started, isNotNull);
+
+        expect(started?.offer.driverId, expectedDriverId);
+
+        final rejectedAt = currentTime.add(const Duration(seconds: 5));
+
+        final rejected = service.rejectOffer(
+          offer: started!.offer,
+          now: rejectedAt,
+          driverState: started.driverState,
+          history: started.history,
+        );
+
+        driverStates[expectedDriverId] = rejected.driverState;
+
+        history = rejected.history;
+
+        currentTime = rejectedAt.add(const Duration(seconds: 1));
+      }
+
+      // Осмият все още трябва да получи поръчката.
+      final eighth = service.createNextOffer(
         rideId: 'ride-001',
-        offerId: 'offer-004',
-        now: now.add(const Duration(minutes: 4)),
-        candidates: const [],
-        driverStates: const {},
+        offerId: 'offer-8',
+        now: currentTime,
+        candidates: candidates,
+        driverStates: driverStates,
         history: history,
       );
 
-      expect(result, isNull);
+      expect(eighth, isNotNull);
+
+      expect(eighth?.offer.driverId, 'driver-008');
+
+      expect(eighth?.history.attemptsUsed, 8);
+
+      final eighthRejectedAt = currentTime.add(const Duration(seconds: 5));
+
+      final eighthRejected = service.rejectOffer(
+        offer: eighth!.offer,
+        now: eighthRejectedAt,
+        driverState: eighth.driverState,
+        history: eighth.history,
+      );
+
+      driverStates['driver-008'] = eighthRejected.driverState;
+
+      history = eighthRejected.history;
+
+      // Всичките 8 допустими шофьори вече
+      // са получили тази rideId веднъж.
+      final noCandidateLeft = service.createNextOffer(
+        rideId: 'ride-001',
+        offerId: 'offer-9',
+        now: eighthRejectedAt.add(const Duration(seconds: 1)),
+        candidates: candidates,
+        driverStates: driverStates,
+        history: history,
+      );
+
+      expect(noCandidateLeft, isNull);
+
+      expect(history.attemptsUsed, 8);
     });
 
     test('no car within automatic ETA limit returns null', () {

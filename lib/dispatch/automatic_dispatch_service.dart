@@ -35,13 +35,13 @@ class AutomaticDispatchResult {
 }
 
 class AutomaticDispatchService {
-  final DispatchCandidateSelector selector;
+  final DispatchCandidateSelector? selector;
   final DispatchPolicy policy;
 
   const AutomaticDispatchService({
     this.policy = const DispatchPolicy(),
-    DispatchCandidateSelector? selector,
-  }) : selector = selector ?? const DispatchCandidateSelector();
+    this.selector,
+  });
 
   AutomaticDispatchResult? createNextOffer({
     required String rideId,
@@ -67,15 +67,13 @@ class AutomaticDispatchService {
       );
     }
 
-    if (history.maxAttemptsReached) {
-      return null;
-    }
-
     final remainingCandidates = candidates
         .where((candidate) => history.canOfferDriver(candidate.driverId))
         .toList();
 
-    final selectedCandidate = selector.select(remainingCandidates);
+    final effectiveSelector =
+        selector ?? DispatchCandidateSelector(policy: policy);
+    final selectedCandidate = effectiveSelector.select(remainingCandidates);
 
     if (selectedCandidate == null) {
       return null;

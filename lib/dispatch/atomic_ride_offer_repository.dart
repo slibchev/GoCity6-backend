@@ -18,7 +18,6 @@ enum AtomicRideOfferConflict {
 
   rideAlreadyHasPendingOffer,
   rideAlreadyOfferedToDriver,
-  maxAttemptsReached,
 }
 
 class AtomicRideOfferConflictException implements Exception {
@@ -33,10 +32,7 @@ class AtomicRideOfferConflictException implements Exception {
 }
 
 abstract interface class AtomicRideOfferRepository {
-  Future<RideOffer> createPendingOffer({
-    required RideOffer offer,
-    required int maxAttempts,
-  });
+  Future<RideOffer> createPendingOffer({required RideOffer offer});
 
   Future<RideOffer> acceptPendingOffer({
     required String offerId,
