@@ -4,6 +4,7 @@ enum AtomicRideOfferConflict {
   rideNotFound,
   rideNotPending,
   rideAlreadyAssigned,
+  rideHasPendingOffer,
 
   offerNotFound,
   offerNotPending,
@@ -48,4 +49,6 @@ abstract interface class AtomicRideOfferRepository {
     required String offerId,
     required DateTime now,
   });
+
+  Future<void> movePendingRideToWaitingForVehicle({required String rideId});
 }

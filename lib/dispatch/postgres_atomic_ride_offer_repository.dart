@@ -488,6 +488,86 @@ class PostgresAtomicRideOfferRepository implements AtomicRideOfferRepository {
     });
   }
 
+  @override
+  Future<void> movePendingRideToWaitingForVehicle({required String rideId}) {
+    return database.runTx((transaction) async {
+      // Заключваме ride реда. createPendingOffer() също започва
+      // със заключване на същия ред, така че нова автоматична
+      // оферта не може да бъде създадена едновременно с fallback-а.
+      final rideResult = await transaction.execute(
+        Sql.named('''
+          SELECT
+            status,
+            assigned_driver_id,
+            assigned_vehicle_id
+          FROM rides
+          WHERE id = @rideId
+          FOR UPDATE
+        '''),
+        parameters: {'rideId': rideId},
+      );
+
+      if (rideResult.isEmpty) {
+        throw const AtomicRideOfferConflictException(
+          AtomicRideOfferConflict.rideNotFound,
+        );
+      }
+
+      final rideRow = rideResult.first.toColumnMap();
+
+      if (rideRow['status'] != 'pending') {
+        throw const AtomicRideOfferConflictException(
+          AtomicRideOfferConflict.rideNotPending,
+        );
+      }
+
+      if (rideRow['assigned_driver_id'] != null ||
+          rideRow['assigned_vehicle_id'] != null) {
+        throw const AtomicRideOfferConflictException(
+          AtomicRideOfferConflict.rideAlreadyAssigned,
+        );
+      }
+
+      // Не пращаме поръчката на общия плот, докато някой
+      // шофьор все още има активна 15-секундна оферта.
+      final pendingOfferResult = await transaction.execute(
+        Sql.named('''
+          SELECT 1
+          FROM ride_offers
+          WHERE ride_id = @rideId
+            AND status = 'pending'
+          LIMIT 1
+        '''),
+        parameters: {'rideId': rideId},
+      );
+
+      if (pendingOfferResult.isNotEmpty) {
+        throw const AtomicRideOfferConflictException(
+          AtomicRideOfferConflict.rideHasPendingOffer,
+        );
+      }
+
+      final updateResult = await transaction.execute(
+        Sql.named('''
+          UPDATE rides
+          SET status = 'waitingForVehicle'
+          WHERE id = @rideId
+            AND status = 'pending'
+            AND assigned_driver_id IS NULL
+            AND assigned_vehicle_id IS NULL
+          RETURNING id
+        '''),
+        parameters: {'rideId': rideId},
+      );
+
+      if (updateResult.isEmpty) {
+        throw const AtomicRideOfferConflictException(
+          AtomicRideOfferConflict.rideNotPending,
+        );
+      }
+    });
+  }
+
   Future<RideOffer> _lockPendingOffer(
     Session transaction,
     String offerId,
