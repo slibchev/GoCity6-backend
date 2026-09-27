@@ -53,6 +53,53 @@ class DriverQueueState {
   }) : assert(shortBreaksUsed >= 0),
        assert(shortBreaksUsed <= maxShortBreaksPerShift);
 
+  /// Възстановява състояние, прочетено от постоянна база данни.
+  ///
+  /// За разлика от const конструктора тук проверките се изпълняват
+  /// и в production режим.
+  factory DriverQueueState.restore({
+    required String driverId,
+    required DateTime queuePrioritySince,
+    required DriverQueueAvailability availability,
+    required int shortBreaksUsed,
+    required DateTime? breakStartedAt,
+    required bool hasPendingOffer,
+  }) {
+    if (shortBreaksUsed < 0 || shortBreaksUsed > maxShortBreaksPerShift) {
+      throw ArgumentError.value(
+        shortBreaksUsed,
+        'shortBreaksUsed',
+        'Short breaks used must be between 0 and '
+            '$maxShortBreaksPerShift.',
+      );
+    }
+
+    final isOnBreak =
+        availability == DriverQueueAvailability.shortBreak ||
+        availability == DriverQueueAvailability.longBreak;
+
+    if (isOnBreak && breakStartedAt == null) {
+      throw ArgumentError('Break availability requires breakStartedAt.');
+    }
+
+    if (!isOnBreak && breakStartedAt != null) {
+      throw ArgumentError('Non-break availability cannot have breakStartedAt.');
+    }
+
+    if (hasPendingOffer && availability != DriverQueueAvailability.available) {
+      throw ArgumentError('Only an available driver can have a pending offer.');
+    }
+
+    return DriverQueueState(
+      driverId: driverId,
+      queuePrioritySince: queuePrioritySince,
+      availability: availability,
+      shortBreaksUsed: shortBreaksUsed,
+      breakStartedAt: breakStartedAt,
+      hasPendingOffer: hasPendingOffer,
+    );
+  }
+
   int get shortBreaksRemaining => maxShortBreaksPerShift - shortBreaksUsed;
 
   DriverQueueState beginOffer() {
