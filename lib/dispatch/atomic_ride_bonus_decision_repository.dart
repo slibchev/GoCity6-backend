@@ -4,6 +4,7 @@ enum AtomicRideBonusDecisionConflict {
   rideAlreadyAssigned,
   rideHasPendingOffer,
   rideHasNoRoundOneOfferHistory,
+  rideHasRoundOneOfferHistory,
   rideDispatchStateMismatch,
 }
 
@@ -24,4 +25,10 @@ abstract interface class AtomicRideBonusDecisionRepository {
   Future<void> acceptFiveEuroBonus({required String rideId});
 
   Future<void> declineBonusAndMoveToWaitingForVehicle({required String rideId});
+
+  Future<void> moveRoundOneWithoutOffersToWaitingForVehicle({
+    required String rideId,
+  });
+
+  Future<void> moveRoundTwoBonusToWaitingForVehicle({required String rideId});
 }

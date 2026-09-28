@@ -46,6 +46,15 @@ Future<void> main() async {
 
     await _checkPendingOfferBlocksDecline(connection, repository);
 
+    await _checkRoundOneWithoutOffersMovesToWaiting(connection, repository);
+
+    await _checkRoundOneWithHistoryCannotUseNoOffersPath(
+      connection,
+      repository,
+    );
+
+    await _checkRoundTwoBonusMovesToWaiting(connection, repository);
+
     print('');
     print('PostgreSQL atomic ride bonus decision check OK');
   } finally {
@@ -303,6 +312,103 @@ Future<void> _checkPendingOfferBlocksDecline(
   print('ride remained pending: OK');
 }
 
+Future<void> _checkRoundOneWithoutOffersMovesToWaiting(
+  Session database,
+  PostgresAtomicRideBonusDecisionRepository repository,
+) async {
+  print('');
+  print('SCENARIO 8: round 1 with zero offers -> waitingForVehicle');
+
+  const rideId = 'ride-bonus-decision-check-zero-offers';
+
+  await _createRide(database, rideId: rideId);
+
+  await repository.moveRoundOneWithoutOffersToWaitingForVehicle(rideId: rideId);
+
+  final ride = await _readRide(database, rideId);
+
+  if (ride['status'] != 'waitingForVehicle' ||
+      ride['dispatch_round'] != 1 ||
+      ride['driver_bonus_minor'] != 0 ||
+      ride['bonus_decision'] != 'not_offered') {
+    throw StateError('Round 1 zero-offer fallback state does not match.');
+  }
+
+  print('status -> waitingForVehicle: OK');
+  print('round 1 preserved: OK');
+  print('bonus remains zero: OK');
+  print('bonus prompt was not offered: OK');
+}
+
+Future<void> _checkRoundOneWithHistoryCannotUseNoOffersPath(
+  Session database,
+  PostgresAtomicRideBonusDecisionRepository repository,
+) async {
+  print('');
+  print('SCENARIO 9: round 1 history blocks zero-offer fallback');
+
+  const rideId = 'ride-bonus-decision-check-history-block';
+
+  await _createRide(database, rideId: rideId);
+
+  await _insertRejectedRoundOneOffer(
+    database,
+    rideId: rideId,
+    offerId: 'offer-bonus-decision-check-history-block',
+    driverId: 'driver-bonus-decision-check-1',
+    vehicleId: 'vehicle-bonus-decision-check-1',
+  );
+
+  await _expectConflict(
+    () =>
+        repository.moveRoundOneWithoutOffersToWaitingForVehicle(rideId: rideId),
+    AtomicRideBonusDecisionConflict.rideHasRoundOneOfferHistory,
+  );
+
+  final ride = await _readRide(database, rideId);
+
+  if (ride['status'] != 'pending' || ride['bonus_decision'] != 'not_offered') {
+    throw StateError('Ride changed despite round 1 offer history.');
+  }
+
+  print('zero-offer fallback blocked: OK');
+  print('ride remained pending: OK');
+}
+
+Future<void> _checkRoundTwoBonusMovesToWaiting(
+  Session database,
+  PostgresAtomicRideBonusDecisionRepository repository,
+) async {
+  print('');
+  print('SCENARIO 10: exhausted round 2 -> waitingForVehicle with +5 EUR');
+
+  const rideId = 'ride-bonus-decision-check-round-two-waiting';
+
+  await _createRide(
+    database,
+    rideId: rideId,
+    dispatchRound: 2,
+    driverBonusMinor: 500,
+    bonusDecision: 'accepted',
+  );
+
+  await repository.moveRoundTwoBonusToWaitingForVehicle(rideId: rideId);
+
+  final ride = await _readRide(database, rideId);
+
+  if (ride['status'] != 'waitingForVehicle' ||
+      ride['dispatch_round'] != 2 ||
+      ride['driver_bonus_minor'] != 500 ||
+      ride['bonus_decision'] != 'accepted') {
+    throw StateError('Round 2 bonus fallback state does not match.');
+  }
+
+  print('status -> waitingForVehicle: OK');
+  print('dispatch round 2 preserved: OK');
+  print('driver bonus 500 cents preserved: OK');
+  print('bonus decision accepted preserved: OK');
+}
+
 Future<void> _createDriversAndVehicles(Session database) async {
   final createdAt = DateTime.now().toUtc();
 
@@ -365,6 +471,8 @@ Future<void> _createDriversAndVehicles(Session database) async {
 Future<void> _createRide(
   Session database, {
   required String rideId,
+  int dispatchRound = 1,
+  int driverBonusMinor = 0,
   String bonusDecision = 'not_offered',
 }) async {
   await database.execute(
@@ -390,8 +498,8 @@ Future<void> _createRide(
         FALSE,
         @requestedAt,
         'pending',
-        1,
-        0,
+        @dispatchRound,
+        @driverBonusMinor,
         @bonusDecision,
         'EUR'
       )
@@ -399,6 +507,8 @@ Future<void> _createRide(
     parameters: {
       'id': rideId,
       'requestedAt': DateTime.now().toUtc(),
+      'dispatchRound': dispatchRound,
+      'driverBonusMinor': driverBonusMinor,
       'bonusDecision': bonusDecision,
     },
   );

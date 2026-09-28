@@ -156,6 +156,107 @@ class PostgresAtomicRideBonusDecisionRepository
     });
   }
 
+  @override
+  Future<void> moveRoundOneWithoutOffersToWaitingForVehicle({
+    required String rideId,
+  }) {
+    return database.runTx((transaction) async {
+      final rideRow = await _lockRide(transaction, rideId: rideId);
+
+      _requirePendingUnassignedRide(rideRow);
+
+      if (rideRow['dispatch_round'] != 1 ||
+          rideRow['driver_bonus_minor'] != 0 ||
+          rideRow['bonus_decision'] != 'not_offered') {
+        throw const AtomicRideBonusDecisionConflictException(
+          AtomicRideBonusDecisionConflict.rideDispatchStateMismatch,
+        );
+      }
+
+      await _requireNoPendingOffer(transaction, rideId: rideId);
+
+      final roundOneHistory = await transaction.execute(
+        Sql.named('''
+          SELECT 1
+          FROM ride_offers
+          WHERE ride_id = @rideId
+            AND dispatch_round = 1
+          LIMIT 1
+        '''),
+        parameters: {'rideId': rideId},
+      );
+
+      if (roundOneHistory.isNotEmpty) {
+        throw const AtomicRideBonusDecisionConflictException(
+          AtomicRideBonusDecisionConflict.rideHasRoundOneOfferHistory,
+        );
+      }
+
+      final updateResult = await transaction.execute(
+        Sql.named('''
+          UPDATE rides
+          SET status = 'waitingForVehicle'
+          WHERE id = @rideId
+            AND status = 'pending'
+            AND assigned_driver_id IS NULL
+            AND assigned_vehicle_id IS NULL
+            AND dispatch_round = 1
+            AND driver_bonus_minor = 0
+            AND bonus_decision = 'not_offered'
+          RETURNING id
+        '''),
+        parameters: {'rideId': rideId},
+      );
+
+      if (updateResult.isEmpty) {
+        throw const AtomicRideBonusDecisionConflictException(
+          AtomicRideBonusDecisionConflict.rideDispatchStateMismatch,
+        );
+      }
+    });
+  }
+
+  @override
+  Future<void> moveRoundTwoBonusToWaitingForVehicle({required String rideId}) {
+    return database.runTx((transaction) async {
+      final rideRow = await _lockRide(transaction, rideId: rideId);
+
+      _requirePendingUnassignedRide(rideRow);
+
+      if (rideRow['dispatch_round'] != 2 ||
+          rideRow['driver_bonus_minor'] != 500 ||
+          rideRow['bonus_decision'] != 'accepted') {
+        throw const AtomicRideBonusDecisionConflictException(
+          AtomicRideBonusDecisionConflict.rideDispatchStateMismatch,
+        );
+      }
+
+      await _requireNoPendingOffer(transaction, rideId: rideId);
+
+      final updateResult = await transaction.execute(
+        Sql.named('''
+          UPDATE rides
+          SET status = 'waitingForVehicle'
+          WHERE id = @rideId
+            AND status = 'pending'
+            AND assigned_driver_id IS NULL
+            AND assigned_vehicle_id IS NULL
+            AND dispatch_round = 2
+            AND driver_bonus_minor = 500
+            AND bonus_decision = 'accepted'
+          RETURNING id
+        '''),
+        parameters: {'rideId': rideId},
+      );
+
+      if (updateResult.isEmpty) {
+        throw const AtomicRideBonusDecisionConflictException(
+          AtomicRideBonusDecisionConflict.rideDispatchStateMismatch,
+        );
+      }
+    });
+  }
+
   Future<Map<String, dynamic>> _lockRide(
     Session transaction, {
     required String rideId,
