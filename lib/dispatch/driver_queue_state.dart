@@ -1,6 +1,12 @@
 const Object _notProvided = Object();
 
-enum DriverQueueAvailability { available, shortBreak, longBreak, busy }
+enum DriverQueueAvailability {
+  available,
+  shortBreak,
+  longBreak,
+  busy,
+  externalRide,
+}
 
 enum DriverQueueConflict {
   activeOffer,
@@ -8,6 +14,7 @@ enum DriverQueueConflict {
   noShortBreaksRemaining,
   noActiveOffer,
   notOnBreak,
+  notOnExternalRide,
 }
 
 class DriverQueueConflictException implements Exception {
@@ -137,6 +144,61 @@ class DriverQueueState {
     );
   }
 
+  /// Шофьорът започва външен курс, когато няма активна City6 оферта.
+  ///
+  /// Това НЕ е почивка и няма автоматично връщане към available.
+  DriverQueueState startExternalRide() {
+    if (hasPendingOffer) {
+      throw const DriverQueueConflictException(DriverQueueConflict.activeOffer);
+    }
+
+    if (availability != DriverQueueAvailability.available) {
+      throw const DriverQueueConflictException(
+        DriverQueueConflict.notAvailable,
+      );
+    }
+
+    return _copyWith(availability: DriverQueueAvailability.externalRide);
+  }
+
+  /// Queue-side преходът при натискане на "Зает", докато има
+  /// активна City6 оферта.
+  ///
+  /// Самата оферта трябва да бъде приключена атомарно от persistence
+  /// слоя с отделна причина (becameBusy). Този метод само представя
+  /// съответната промяна на queue state.
+  DriverQueueState startExternalRideFromPendingOffer() {
+    if (availability != DriverQueueAvailability.available) {
+      throw const DriverQueueConflictException(
+        DriverQueueConflict.notAvailable,
+      );
+    }
+
+    _requirePendingOffer();
+
+    return _copyWith(
+      availability: DriverQueueAvailability.externalRide,
+      hasPendingOffer: false,
+    );
+  }
+
+  /// Външният курс приключва само когато шофьорът изрично се върне
+  /// на "Свободен".
+  ///
+  /// При връщане той влиза отзад на опашката.
+  DriverQueueState returnFromExternalRide(DateTime now) {
+    if (availability != DriverQueueAvailability.externalRide) {
+      throw const DriverQueueConflictException(
+        DriverQueueConflict.notOnExternalRide,
+      );
+    }
+
+    return _copyWith(
+      availability: DriverQueueAvailability.available,
+      queuePrioritySince: now,
+    );
+  }
+
   DriverQueueState startShortBreak(DateTime now) {
     _requireCanStartBreak();
 
@@ -179,6 +241,7 @@ class DriverQueueState {
 
       case DriverQueueAvailability.available:
       case DriverQueueAvailability.busy:
+      case DriverQueueAvailability.externalRide:
         throw const DriverQueueConflictException(
           DriverQueueConflict.notOnBreak,
         );
@@ -187,6 +250,8 @@ class DriverQueueState {
 
   /// При изтичане на 10-те минути късата почивка приключва
   /// автоматично. Старият queuePrioritySince се запазва.
+  ///
+  /// externalRide никога не приключва автоматично.
   DriverQueueState effectiveAt(DateTime now) {
     if (availability != DriverQueueAvailability.shortBreak ||
         breakStartedAt == null) {
