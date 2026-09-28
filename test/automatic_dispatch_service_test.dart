@@ -229,6 +229,58 @@ void main() {
 
       expect(second?.offer.driverId, 'driver-002');
     });
+    test('driver rejected in round 1 can receive same ride again '
+        'in round 2 with 500 cent bonus', () {
+      final driver = state(driverId: 'driver-001', priorityMinute: 0);
+
+      final candidates = [
+        candidate(
+          driverId: 'driver-001',
+          etaSeconds: 300,
+          distanceMeters: 700,
+          prioritySince: driver.queuePrioritySince,
+        ),
+      ];
+
+      final roundOneOffer = service.createNextOffer(
+        rideId: 'ride-001',
+        offerId: 'offer-round-1',
+        now: now,
+        candidates: candidates,
+        driverStates: {'driver-001': driver},
+        history: emptyHistory(),
+        dispatchRound: RideOffer.normalDispatchRound,
+        bonusMinor: RideOffer.noBonusMinor,
+      )!;
+
+      expect(roundOneOffer.offer.dispatchRound, RideOffer.normalDispatchRound);
+      expect(roundOneOffer.offer.bonusMinor, RideOffer.noBonusMinor);
+
+      final rejected = service.rejectOffer(
+        offer: roundOneOffer.offer,
+        now: now.add(const Duration(seconds: 5)),
+        driverState: roundOneOffer.driverState,
+        history: roundOneOffer.history,
+      );
+
+      final roundTwoOffer = service.createNextOffer(
+        rideId: 'ride-001',
+        offerId: 'offer-round-2',
+        now: now.add(const Duration(seconds: 6)),
+        candidates: candidates,
+        driverStates: {'driver-001': rejected.driverState},
+        history: rejected.history,
+        dispatchRound: RideOffer.bonusDispatchRound,
+        bonusMinor: RideOffer.shortRideBonusMinor,
+      );
+
+      expect(roundTwoOffer, isNotNull);
+      expect(roundTwoOffer?.offer.driverId, 'driver-001');
+      expect(roundTwoOffer?.offer.dispatchRound, RideOffer.bonusDispatchRound);
+      expect(roundTwoOffer?.offer.bonusMinor, RideOffer.shortRideBonusMinor);
+      expect(roundTwoOffer?.offer.status, RideOfferStatus.pending);
+      expect(roundTwoOffer?.history.attemptsUsed, 2);
+    });
 
     test('continues through all eligible untried drivers '
         'and stops only when none remain', () {

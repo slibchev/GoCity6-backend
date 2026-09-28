@@ -50,6 +50,8 @@ class AutomaticDispatchService {
     required List<DispatchCandidate> candidates,
     required Map<String, DriverQueueState> driverStates,
     required RideOfferHistory history,
+    int dispatchRound = RideOffer.normalDispatchRound,
+    int bonusMinor = RideOffer.noBonusMinor,
   }) {
     if (history.rideId != rideId) {
       throw ArgumentError('Offer history does not belong to ride $rideId.');
@@ -68,11 +70,17 @@ class AutomaticDispatchService {
     }
 
     final remainingCandidates = candidates
-        .where((candidate) => history.canOfferDriver(candidate.driverId))
+        .where(
+          (candidate) => history.canOfferDriver(
+            candidate.driverId,
+            dispatchRound: dispatchRound,
+          ),
+        )
         .toList();
 
     final effectiveSelector =
         selector ?? DispatchCandidateSelector(policy: policy);
+
     final selectedCandidate = effectiveSelector.select(remainingCandidates);
 
     if (selectedCandidate == null) {
@@ -96,6 +104,8 @@ class AutomaticDispatchService {
       vehicleId: selectedCandidate.vehicleId,
       etaSeconds: selectedCandidate.etaSeconds,
       distanceMeters: selectedCandidate.distanceMeters,
+      dispatchRound: dispatchRound,
+      bonusMinor: bonusMinor,
       offeredAt: now,
       timeout: policy.offerTimeout,
     );
