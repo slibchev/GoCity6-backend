@@ -19,16 +19,30 @@ class RideOfferHistory {
   bool get hasAcceptedOffer =>
       offers.any((offer) => offer.status == RideOfferStatus.accepted);
 
-  bool hasBeenOfferedToDriver(String driverId) {
-    return offers.any((offer) => offer.driverId == driverId);
+  bool hasBeenOfferedToDriver(
+    String driverId, {
+    int dispatchRound = RideOffer.normalDispatchRound,
+  }) {
+    _validateDispatchRound(dispatchRound);
+
+    return offers.any(
+      (offer) =>
+          offer.driverId == driverId && offer.dispatchRound == dispatchRound,
+    );
   }
 
   bool get canCreateAnotherOffer {
     return !hasPendingOffer && !hasAcceptedOffer;
   }
 
-  bool canOfferDriver(String driverId) {
-    return canCreateAnotherOffer && !hasBeenOfferedToDriver(driverId);
+  bool canOfferDriver(
+    String driverId, {
+    int dispatchRound = RideOffer.normalDispatchRound,
+  }) {
+    _validateDispatchRound(dispatchRound);
+
+    return canCreateAnotherOffer &&
+        !hasBeenOfferedToDriver(driverId, dispatchRound: dispatchRound);
   }
 
   RideOfferHistory addOffer(RideOffer offer) {
@@ -36,10 +50,11 @@ class RideOfferHistory {
       throw ArgumentError('Offer ${offer.id} does not belong to ride $rideId.');
     }
 
-    if (!canOfferDriver(offer.driverId)) {
+    if (!canOfferDriver(offer.driverId, dispatchRound: offer.dispatchRound)) {
       throw StateError(
         'Cannot create another offer for driver '
-        '${offer.driverId}.',
+        '${offer.driverId} in dispatch round '
+        '${offer.dispatchRound}.',
       );
     }
 
@@ -63,5 +78,16 @@ class RideOfferHistory {
     updatedOffers[index] = offer;
 
     return RideOfferHistory(rideId: rideId, offers: updatedOffers);
+  }
+
+  static void _validateDispatchRound(int dispatchRound) {
+    if (dispatchRound != RideOffer.normalDispatchRound &&
+        dispatchRound != RideOffer.bonusDispatchRound) {
+      throw ArgumentError.value(
+        dispatchRound,
+        'dispatchRound',
+        'Dispatch round must be 1 or 2.',
+      );
+    }
   }
 }

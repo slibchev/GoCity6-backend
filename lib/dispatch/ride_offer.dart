@@ -14,6 +14,12 @@ class RideOfferConflictException implements Exception {
 }
 
 class RideOffer {
+  static const int normalDispatchRound = 1;
+  static const int bonusDispatchRound = 2;
+
+  static const int noBonusMinor = 0;
+  static const int shortRideBonusMinor = 500;
+
   final String id;
 
   final String rideId;
@@ -22,6 +28,9 @@ class RideOffer {
 
   final int etaSeconds;
   final int distanceMeters;
+
+  final int dispatchRound;
+  final int bonusMinor;
 
   final DateTime offeredAt;
   final DateTime expiresAt;
@@ -36,6 +45,8 @@ class RideOffer {
     required this.vehicleId,
     required this.etaSeconds,
     required this.distanceMeters,
+    required this.dispatchRound,
+    required this.bonusMinor,
     required this.offeredAt,
     required this.expiresAt,
     required this.status,
@@ -49,6 +60,8 @@ class RideOffer {
     required String vehicleId,
     required int etaSeconds,
     required int distanceMeters,
+    int dispatchRound = normalDispatchRound,
+    int bonusMinor = noBonusMinor,
     required DateTime offeredAt,
     required Duration timeout,
   }) {
@@ -68,6 +81,11 @@ class RideOffer {
       );
     }
 
+    _validateDispatchRoundAndBonus(
+      dispatchRound: dispatchRound,
+      bonusMinor: bonusMinor,
+    );
+
     if (timeout.inMicroseconds <= 0) {
       throw ArgumentError.value(
         timeout,
@@ -83,6 +101,8 @@ class RideOffer {
       vehicleId: vehicleId,
       etaSeconds: etaSeconds,
       distanceMeters: distanceMeters,
+      dispatchRound: dispatchRound,
+      bonusMinor: bonusMinor,
       offeredAt: offeredAt,
       expiresAt: offeredAt.add(timeout),
       status: RideOfferStatus.pending,
@@ -97,6 +117,8 @@ class RideOffer {
     required String vehicleId,
     required int etaSeconds,
     required int distanceMeters,
+    int dispatchRound = normalDispatchRound,
+    int bonusMinor = noBonusMinor,
     required DateTime offeredAt,
     required DateTime expiresAt,
     required RideOfferStatus status,
@@ -117,6 +139,11 @@ class RideOffer {
         'Distance cannot be negative.',
       );
     }
+
+    _validateDispatchRoundAndBonus(
+      dispatchRound: dispatchRound,
+      bonusMinor: bonusMinor,
+    );
 
     if (!expiresAt.isAfter(offeredAt)) {
       throw ArgumentError('Offer expiration must be after offeredAt.');
@@ -151,6 +178,8 @@ class RideOffer {
       vehicleId: vehicleId,
       etaSeconds: etaSeconds,
       distanceMeters: distanceMeters,
+      dispatchRound: dispatchRound,
+      bonusMinor: bonusMinor,
       offeredAt: offeredAt,
       expiresAt: expiresAt,
       status: status,
@@ -211,10 +240,35 @@ class RideOffer {
       vehicleId: vehicleId,
       etaSeconds: etaSeconds,
       distanceMeters: distanceMeters,
+      dispatchRound: dispatchRound,
+      bonusMinor: bonusMinor,
       offeredAt: offeredAt,
       expiresAt: expiresAt,
       status: status,
       resolvedAt: resolvedAt,
     );
+  }
+
+  static void _validateDispatchRoundAndBonus({
+    required int dispatchRound,
+    required int bonusMinor,
+  }) {
+    if (dispatchRound != normalDispatchRound &&
+        dispatchRound != bonusDispatchRound) {
+      throw ArgumentError.value(
+        dispatchRound,
+        'dispatchRound',
+        'Dispatch round must be 1 or 2.',
+      );
+    }
+
+    if (dispatchRound == normalDispatchRound && bonusMinor != noBonusMinor) {
+      throw ArgumentError('Dispatch round 1 must have no bonus.');
+    }
+
+    if (dispatchRound == bonusDispatchRound &&
+        bonusMinor != shortRideBonusMinor) {
+      throw ArgumentError('Dispatch round 2 must have a 500-cent bonus.');
+    }
   }
 }

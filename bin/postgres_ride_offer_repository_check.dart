@@ -25,10 +25,8 @@ Future<void> main() async {
   );
 
   const rideId = 'ride-offer-repository-check';
-  const driver1Id = 'driver-offer-check-1';
-  const driver2Id = 'driver-offer-check-2';
-  const vehicle1Id = 'vehicle-offer-check-1';
-  const vehicle2Id = 'vehicle-offer-check-2';
+  const driverId = 'driver-offer-check-1';
+  const vehicleId = 'vehicle-offer-check-1';
 
   try {
     await _cleanup(connection);
@@ -59,7 +57,7 @@ Future<void> main() async {
         )
       '''),
       parameters: {
-        'id': driver1Id,
+        'id': driverId,
         'username': 'ride_offer_check_driver_1',
         'passwordHash': 'test-only-hash',
         'firstName': 'Test',
@@ -71,40 +69,6 @@ Future<void> main() async {
 
     await connection.execute(
       Sql.named('''
-        INSERT INTO drivers (
-          id,
-          username,
-          password_hash,
-          first_name,
-          last_name,
-          phone,
-          is_active,
-          created_at
-        )
-        VALUES (
-          @id,
-          @username,
-          @passwordHash,
-          @firstName,
-          @lastName,
-          @phone,
-          TRUE,
-          @createdAt
-        )
-      '''),
-      parameters: {
-        'id': driver2Id,
-        'username': 'ride_offer_check_driver_2',
-        'passwordHash': 'test-only-hash',
-        'firstName': 'Test',
-        'lastName': 'Driver Two',
-        'phone': 'test-phone-2',
-        'createdAt': createdAt,
-      },
-    );
-
-    await connection.execute(
-      Sql.named('''
         INSERT INTO vehicles (
           id,
           plate_number,
@@ -119,30 +83,8 @@ Future<void> main() async {
         )
       '''),
       parameters: {
-        'id': vehicle1Id,
+        'id': vehicleId,
         'plateNumber': 'TEST-OFFER-1',
-        'createdAt': createdAt,
-      },
-    );
-
-    await connection.execute(
-      Sql.named('''
-        INSERT INTO vehicles (
-          id,
-          plate_number,
-          is_active,
-          created_at
-        )
-        VALUES (
-          @id,
-          @plateNumber,
-          TRUE,
-          @createdAt
-        )
-      '''),
-      parameters: {
-        'id': vehicle2Id,
-        'plateNumber': 'TEST-OFFER-2',
         'createdAt': createdAt,
       },
     );
@@ -166,7 +108,7 @@ Future<void> main() async {
           1,
           FALSE,
           @requestedAt,
-          'waitingForVehicle',
+          'pending',
           'EUR'
         )
       '''),
@@ -180,41 +122,47 @@ Future<void> main() async {
 
     final repository = PostgresRideOfferRepository(database: connection);
 
-    final firstOfferedAt = DateTime.now().toUtc();
+    // ============================================================
+    // ROUND 1 — БЕЗ БОНУС
+    // ============================================================
+
+    final firstOfferedAt = DateTime.now().toUtc().subtract(
+      const Duration(minutes: 2),
+    );
 
     final firstOffer = RideOffer.create(
       id: 'offer-repository-check-1',
       rideId: rideId,
-      driverId: driver1Id,
-      vehicleId: vehicle1Id,
+      driverId: driverId,
+      vehicleId: vehicleId,
       etaSeconds: 300,
       distanceMeters: 700,
+      dispatchRound: RideOffer.normalDispatchRound,
+      bonusMinor: RideOffer.noBonusMinor,
       offeredAt: firstOfferedAt,
       timeout: const Duration(seconds: 15),
     );
 
     await repository.create(firstOffer);
 
-    final savedOffer = await repository.findById(firstOffer.id);
+    final savedFirstOffer = await repository.findById(firstOffer.id);
 
-    if (savedOffer == null) {
-      throw StateError('Created offer was not found.');
+    if (savedFirstOffer == null) {
+      throw StateError('Created round 1 offer was not found.');
     }
 
-    if (savedOffer.status != RideOfferStatus.pending ||
-        savedOffer.rideId != rideId ||
-        savedOffer.driverId != driver1Id ||
-        savedOffer.vehicleId != vehicle1Id ||
-        savedOffer.etaSeconds != 300 ||
-        savedOffer.distanceMeters != 700) {
-      throw StateError('Created offer data does not match.');
+    if (savedFirstOffer.status != RideOfferStatus.pending ||
+        savedFirstOffer.rideId != rideId ||
+        savedFirstOffer.driverId != driverId ||
+        savedFirstOffer.vehicleId != vehicleId ||
+        savedFirstOffer.etaSeconds != 300 ||
+        savedFirstOffer.distanceMeters != 700 ||
+        savedFirstOffer.dispatchRound != RideOffer.normalDispatchRound ||
+        savedFirstOffer.bonusMinor != RideOffer.noBonusMinor) {
+      throw StateError('Round 1 offer data does not match.');
     }
 
-    final rideOffers = await repository.findByRideId(rideId);
-
-    if (rideOffers.length != 1 || rideOffers.first.id != firstOffer.id) {
-      throw StateError('Ride offer history does not match.');
-    }
+    print('round 1 persisted with zero bonus: OK');
 
     final rejectedAt = firstOfferedAt.add(const Duration(seconds: 5));
 
@@ -223,7 +171,7 @@ Future<void> main() async {
     final firstResolveSucceeded = await repository.resolve(rejectedOffer);
 
     if (!firstResolveSucceeded) {
-      throw StateError('First resolve should succeed.');
+      throw StateError('Round 1 reject should succeed.');
     }
 
     final secondResolveSucceeded = await repository.resolve(rejectedOffer);
@@ -234,62 +182,120 @@ Future<void> main() async {
 
     final storedRejectedOffer = await repository.findById(firstOffer.id);
 
-    if (storedRejectedOffer?.status != RideOfferStatus.rejected ||
-        storedRejectedOffer?.resolvedAt != rejectedAt) {
-      throw StateError('Rejected offer was not persisted correctly.');
+    if (storedRejectedOffer == null ||
+        storedRejectedOffer.status != RideOfferStatus.rejected ||
+        storedRejectedOffer.resolvedAt != rejectedAt ||
+        storedRejectedOffer.dispatchRound != RideOffer.normalDispatchRound ||
+        storedRejectedOffer.bonusMinor != RideOffer.noBonusMinor) {
+      throw StateError('Rejected round 1 offer was not persisted correctly.');
     }
 
-    final secondOfferedAt = DateTime.now().toUtc().subtract(
-      const Duration(minutes: 1),
+    print('round 1 values preserved after reject: OK');
+    print('double resolve protection: OK');
+
+    // ============================================================
+    // ПРЕМИНАВАНЕ КЪМ ROUND 2 — +5 EUR
+    // ============================================================
+
+    await connection.execute(
+      Sql.named('''
+        UPDATE rides
+        SET
+          dispatch_round = 2,
+          driver_bonus_minor = 500,
+          bonus_decision = 'accepted'
+        WHERE id = @rideId
+      '''),
+      parameters: {'rideId': rideId},
     );
 
+    final secondOfferedAt = firstOfferedAt.add(const Duration(minutes: 1));
+
+    // Нарочно използваме СЪЩИЯ driverId.
+    // Това трябва да е позволено в round 2.
     final secondOffer = RideOffer.create(
       id: 'offer-repository-check-2',
       rideId: rideId,
-      driverId: driver2Id,
-      vehicleId: vehicle2Id,
+      driverId: driverId,
+      vehicleId: vehicleId,
       etaSeconds: 360,
       distanceMeters: 900,
+      dispatchRound: RideOffer.bonusDispatchRound,
+      bonusMinor: RideOffer.shortRideBonusMinor,
       offeredAt: secondOfferedAt,
       timeout: const Duration(seconds: 15),
     );
 
     await repository.create(secondOffer);
 
+    final savedSecondOffer = await repository.findById(secondOffer.id);
+
+    if (savedSecondOffer == null) {
+      throw StateError('Created round 2 offer was not found.');
+    }
+
+    if (savedSecondOffer.driverId != driverId ||
+        savedSecondOffer.dispatchRound != RideOffer.bonusDispatchRound ||
+        savedSecondOffer.bonusMinor != RideOffer.shortRideBonusMinor) {
+      throw StateError('Round 2 bonus offer data does not match.');
+    }
+
+    print('same driver received same ride again in round 2: OK');
+    print('round 2 persisted with 500 cent bonus: OK');
+
+    final rideOffers = await repository.findByRideId(rideId);
+
+    if (rideOffers.length != 2) {
+      throw StateError('Expected two persisted ride offers.');
+    }
+
+    if (rideOffers[0].dispatchRound != RideOffer.normalDispatchRound ||
+        rideOffers[0].bonusMinor != RideOffer.noBonusMinor ||
+        rideOffers[1].dispatchRound != RideOffer.bonusDispatchRound ||
+        rideOffers[1].bonusMinor != RideOffer.shortRideBonusMinor) {
+      throw StateError('Ride offer history round/bonus data does not match.');
+    }
+
+    print('round-aware ride history: OK');
+
     final expiredPendingOffers = await repository.findPendingExpiredAt(
       DateTime.now().toUtc(),
     );
 
     final foundExpiredPendingOffer = expiredPendingOffers.any(
-      (offer) => offer.id == secondOffer.id,
+      (offer) =>
+          offer.id == secondOffer.id &&
+          offer.dispatchRound == RideOffer.bonusDispatchRound &&
+          offer.bonusMinor == RideOffer.shortRideBonusMinor,
     );
 
     if (!foundExpiredPendingOffer) {
-      throw StateError('Expired pending offer was not found.');
+      throw StateError('Expired pending round 2 offer was not found.');
     }
+
+    print('findPendingExpiredAt preserves bonus data: OK');
 
     final expiredOffer = secondOffer.expire(DateTime.now().toUtc());
 
     final expireSucceeded = await repository.resolve(expiredOffer);
 
     if (!expireSucceeded) {
-      throw StateError('Expiring pending offer should succeed.');
+      throw StateError('Expiring round 2 offer should succeed.');
     }
 
-    final finalHistory = await repository.findByRideId(rideId);
+    final storedExpiredOffer = await repository.findById(secondOffer.id);
 
-    if (finalHistory.length != 2) {
-      throw StateError('Expected two persisted offers.');
+    if (storedExpiredOffer == null ||
+        storedExpiredOffer.status != RideOfferStatus.expired ||
+        storedExpiredOffer.dispatchRound != RideOffer.bonusDispatchRound ||
+        storedExpiredOffer.bonusMinor != RideOffer.shortRideBonusMinor) {
+      throw StateError('Round 2 values were not preserved after expire.');
     }
 
+    print('round 2 values preserved after expire: OK');
+
+    print('');
     print('PostgreSQL ride offer repository check OK');
-    print('create: OK');
-    print('findById: OK');
-    print('findByRideId: OK');
-    print('resolve: OK');
-    print('double resolve protection: OK');
-    print('findPendingExpiredAt: OK');
-    print('expire: OK');
   } finally {
     await _cleanup(connection);
     await connection.close();
@@ -308,20 +314,12 @@ Future<void> _cleanup(Session database) async {
   );
 
   await database.execute(
-    Sql.named('DELETE FROM drivers WHERE id = @driver1Id OR id = @driver2Id'),
-    parameters: {
-      'driver1Id': 'driver-offer-check-1',
-      'driver2Id': 'driver-offer-check-2',
-    },
+    Sql.named('DELETE FROM drivers WHERE id = @driverId'),
+    parameters: {'driverId': 'driver-offer-check-1'},
   );
 
   await database.execute(
-    Sql.named(
-      'DELETE FROM vehicles WHERE id = @vehicle1Id OR id = @vehicle2Id',
-    ),
-    parameters: {
-      'vehicle1Id': 'vehicle-offer-check-1',
-      'vehicle2Id': 'vehicle-offer-check-2',
-    },
+    Sql.named('DELETE FROM vehicles WHERE id = @vehicleId'),
+    parameters: {'vehicleId': 'vehicle-offer-check-1'},
   );
 }
