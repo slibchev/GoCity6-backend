@@ -26,14 +26,17 @@ Future<void> main() async {
   );
 
   const rideId = 'postgres-repository-check';
+  const driverId = 'driver-check';
+  const vehicleId = 'vehicle-check';
 
   try {
-    await connection.execute(
-      Sql.named('DELETE FROM rides WHERE id = @id'),
-      parameters: {'id': rideId},
-    );
+    await _cleanup(connection, rideId: rideId);
 
     final repository = PostgresRideRequestRepository(database: connection);
+
+    // ============================================================
+    // ROUND 2 / +5 EUR BONUS
+    // ============================================================
 
     final originalRide = RideRequest(
       id: rideId,
@@ -43,9 +46,18 @@ Future<void> main() async {
       hasLuggage: true,
       requestedAt: DateTime.now().toUtc(),
       status: RideRequestStatus.waitingForVehicle,
+      dispatchRound: RideRequest.bonusDispatchRound,
+      driverBonusMinor: RideRequest.driverBonusFiveEuroMinor,
+      bonusDecision: RideBonusDecision.accepted,
     );
 
     await repository.save(originalRide);
+
+    print('round 2 ride save: OK');
+
+    // ============================================================
+    // READ BACK
+    // ============================================================
 
     final savedRide = await repository.findById(rideId);
 
@@ -63,16 +75,79 @@ Future<void> main() async {
       throw StateError('Saved ride data does not match.');
     }
 
-    final assignedRide = savedRide
-        .transitionTo(RideRequestStatus.accepted)
-        .copyWith(
-          assignedDriverId: 'driver-check',
-          assignedVehicleId: 'vehicle-check',
-        );
+    if (savedRide.dispatchRound != RideRequest.bonusDispatchRound ||
+        savedRide.driverBonusMinor != RideRequest.driverBonusFiveEuroMinor ||
+        savedRide.bonusDecision != RideBonusDecision.accepted) {
+      throw StateError('Round 2 bonus state was not restored correctly.');
+    }
 
-    await repository.save(assignedRide);
+    print('findById: OK');
+    print('round 2 / +500 / accepted restored: OK');
 
-    final driverRides = await repository.findByAssignedDriverId('driver-check');
+    // ============================================================
+    // UPSERT
+    // ============================================================
+
+    final updatedWaitingRide = savedRide.copyWith(
+      pickup: 'Updated test pickup',
+    );
+
+    await repository.save(updatedWaitingRide);
+
+    final updatedRide = await repository.findById(rideId);
+
+    if (updatedRide == null) {
+      throw StateError('Updated ride was not found.');
+    }
+
+    if (updatedRide.pickup != 'Updated test pickup') {
+      throw StateError('Ride upsert did not persist the updated pickup.');
+    }
+
+    if (updatedRide.dispatchRound != RideRequest.bonusDispatchRound ||
+        updatedRide.driverBonusMinor != RideRequest.driverBonusFiveEuroMinor ||
+        updatedRide.bonusDecision != RideBonusDecision.accepted) {
+      throw StateError('Upsert changed round 2 bonus state.');
+    }
+
+    print('update/upsert: OK');
+    print('upsert preserved bonus state: OK');
+
+    // ============================================================
+    // MANUAL CLAIM FROM GENERAL BOARD
+    // ============================================================
+
+    final claimedRide = await repository.claimWaitingRide(
+      rideId: rideId,
+      driverId: driverId,
+      vehicleId: vehicleId,
+      targetStatus: RideRequestStatus.accepted,
+    );
+
+    if (claimedRide == null) {
+      throw StateError('Waiting ride could not be claimed.');
+    }
+
+    if (claimedRide.status != RideRequestStatus.accepted ||
+        claimedRide.assignedDriverId != driverId ||
+        claimedRide.assignedVehicleId != vehicleId) {
+      throw StateError('Claimed ride assignment does not match.');
+    }
+
+    if (claimedRide.dispatchRound != RideRequest.bonusDispatchRound ||
+        claimedRide.driverBonusMinor != RideRequest.driverBonusFiveEuroMinor ||
+        claimedRide.bonusDecision != RideBonusDecision.accepted) {
+      throw StateError('Manual claim lost the round 2 bonus state.');
+    }
+
+    print('manual claim: OK');
+    print('manual claim preserved +5 EUR bonus: OK');
+
+    // ============================================================
+    // FIND BY ASSIGNED DRIVER
+    // ============================================================
+
+    final driverRides = await repository.findByAssignedDriverId(driverId);
 
     RideRequest? matchingRide;
 
@@ -88,22 +163,32 @@ Future<void> main() async {
     }
 
     if (matchingRide.status != RideRequestStatus.accepted ||
-        matchingRide.assignedDriverId != 'driver-check' ||
-        matchingRide.assignedVehicleId != 'vehicle-check') {
-      throw StateError('Updated ride data does not match.');
+        matchingRide.assignedDriverId != driverId ||
+        matchingRide.assignedVehicleId != vehicleId) {
+      throw StateError('Assigned ride data does not match.');
     }
 
-    print('PostgreSQL repository check OK');
-    print('save: OK');
-    print('findById: OK');
-    print('update/upsert: OK');
+    if (matchingRide.dispatchRound != RideRequest.bonusDispatchRound ||
+        matchingRide.driverBonusMinor != RideRequest.driverBonusFiveEuroMinor ||
+        matchingRide.bonusDecision != RideBonusDecision.accepted) {
+      throw StateError('Assigned driver query lost the bonus state.');
+    }
+
     print('findByAssignedDriverId: OK');
+    print('assigned driver query preserved bonus state: OK');
+
+    print('');
+    print('PostgreSQL repository check OK');
   } finally {
-    await connection.execute(
-      Sql.named('DELETE FROM rides WHERE id = @id'),
-      parameters: {'id': rideId},
-    );
+    await _cleanup(connection, rideId: rideId);
 
     await connection.close();
   }
+}
+
+Future<void> _cleanup(Session database, {required String rideId}) async {
+  await database.execute(
+    Sql.named('DELETE FROM rides WHERE id = @id'),
+    parameters: {'id': rideId},
+  );
 }

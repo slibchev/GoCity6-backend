@@ -24,6 +24,9 @@ class PostgresRideRequestRepository
           status,
           assigned_driver_id,
           assigned_vehicle_id,
+          dispatch_round,
+          driver_bonus_minor,
+          bonus_decision,
           currency,
           meter_fare_minor,
           commission_rate_bps,
@@ -58,6 +61,9 @@ class PostgresRideRequestRepository
           status,
           assigned_driver_id,
           assigned_vehicle_id,
+          dispatch_round,
+          driver_bonus_minor,
+          bonus_decision,
           currency,
           meter_fare_minor,
           commission_rate_bps,
@@ -88,6 +94,9 @@ class PostgresRideRequestRepository
           status,
           assigned_driver_id,
           assigned_vehicle_id,
+          dispatch_round,
+          driver_bonus_minor,
+          bonus_decision,
           currency,
           meter_fare_minor,
           commission_rate_bps,
@@ -105,6 +114,9 @@ class PostgresRideRequestRepository
           @status,
           @assignedDriverId,
           @assignedVehicleId,
+          @dispatchRound,
+          @driverBonusMinor,
+          @bonusDecision,
           @currency,
           @meterFareMinor,
           @commissionRateBps,
@@ -122,6 +134,9 @@ class PostgresRideRequestRepository
           status = EXCLUDED.status,
           assigned_driver_id = EXCLUDED.assigned_driver_id,
           assigned_vehicle_id = EXCLUDED.assigned_vehicle_id,
+          dispatch_round = EXCLUDED.dispatch_round,
+          driver_bonus_minor = EXCLUDED.driver_bonus_minor,
+          bonus_decision = EXCLUDED.bonus_decision,
           currency = EXCLUDED.currency,
           meter_fare_minor = EXCLUDED.meter_fare_minor,
           commission_rate_bps = EXCLUDED.commission_rate_bps,
@@ -139,6 +154,9 @@ class PostgresRideRequestRepository
         'status': request.status.name,
         'assignedDriverId': request.assignedDriverId,
         'assignedVehicleId': request.assignedVehicleId,
+        'dispatchRound': request.dispatchRound,
+        'driverBonusMinor': request.driverBonusMinor,
+        'bonusDecision': request.bonusDecision.databaseValue,
         'currency': request.currency,
         'meterFareMinor': request.meterFareMinor,
         'commissionRateBps': request.commissionRateBps,
@@ -167,32 +185,35 @@ class PostgresRideRequestRepository
 
     final result = await database.execute(
       Sql.named('''
-      UPDATE rides
-      SET
-        status = @status,
-        assigned_driver_id = @driverId,
-        assigned_vehicle_id = @vehicleId
-      WHERE id = @rideId
-        AND status = 'waitingForVehicle'
-        AND assigned_driver_id IS NULL
-        AND assigned_vehicle_id IS NULL
-      RETURNING
-        id,
-        pickup,
-        destination,
-        passengers,
-        has_luggage,
-        requested_at,
-        status,
-        assigned_driver_id,
-        assigned_vehicle_id,
-        currency,
-        meter_fare_minor,
-        commission_rate_bps,
-        commission_amount_minor,
-        completed_by_driver_id,
-        completed_at
-    '''),
+        UPDATE rides
+        SET
+          status = @status,
+          assigned_driver_id = @driverId,
+          assigned_vehicle_id = @vehicleId
+        WHERE id = @rideId
+          AND status = 'waitingForVehicle'
+          AND assigned_driver_id IS NULL
+          AND assigned_vehicle_id IS NULL
+        RETURNING
+          id,
+          pickup,
+          destination,
+          passengers,
+          has_luggage,
+          requested_at,
+          status,
+          assigned_driver_id,
+          assigned_vehicle_id,
+          dispatch_round,
+          driver_bonus_minor,
+          bonus_decision,
+          currency,
+          meter_fare_minor,
+          commission_rate_bps,
+          commission_amount_minor,
+          completed_by_driver_id,
+          completed_at
+      '''),
       parameters: {
         'rideId': rideId,
         'driverId': driverId,
@@ -219,6 +240,11 @@ class PostgresRideRequestRepository
       status: RideRequestStatus.values.byName(row['status'] as String),
       assignedDriverId: row['assigned_driver_id'] as String?,
       assignedVehicleId: row['assigned_vehicle_id'] as String?,
+      dispatchRound: row['dispatch_round'] as int,
+      driverBonusMinor: row['driver_bonus_minor'] as int,
+      bonusDecision: RideBonusDecision.fromDatabaseValue(
+        row['bonus_decision'] as String,
+      ),
       currency: (row['currency'] as String).trim(),
       meterFareMinor: row['meter_fare_minor'] as int?,
       commissionRateBps: row['commission_rate_bps'] as int?,

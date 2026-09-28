@@ -4,6 +4,7 @@ enum AtomicRideOfferConflict {
   rideNotFound,
   rideNotPending,
   rideAlreadyAssigned,
+  rideDispatchStateMismatch,
   rideHasPendingOffer,
 
   offerNotFound,
@@ -33,7 +34,9 @@ class AtomicRideOfferConflictException implements Exception {
 }
 
 abstract interface class AtomicRideOfferRepository {
-  Future<RideOffer> createPendingOffer({required RideOffer offer});
+  Future<RideOffer> createPendingOffer({
+    required RideOffer offer,
+  });
 
   Future<RideOffer> acceptPendingOffer({
     required String offerId,
@@ -50,5 +53,7 @@ abstract interface class AtomicRideOfferRepository {
     required DateTime now,
   });
 
-  Future<void> movePendingRideToWaitingForVehicle({required String rideId});
+  Future<void> movePendingRideToWaitingForVehicle({
+    required String rideId,
+  });
 }
