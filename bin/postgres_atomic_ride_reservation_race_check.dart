@@ -1,6 +1,8 @@
 import 'dart:io';
 
+import 'package:gocity6_backend/dispatch/atomic_external_ride_repository.dart';
 import 'package:gocity6_backend/dispatch/atomic_ride_reservation_repository.dart';
+import 'package:gocity6_backend/dispatch/postgres_atomic_external_ride_repository.dart';
 import 'package:gocity6_backend/dispatch/postgres_atomic_ride_reservation_repository.dart';
 import 'package:postgres/postgres.dart';
 
@@ -24,6 +26,10 @@ Future<void> main() async {
     database: connectionB,
   );
 
+  final externalRideRepository = PostgresAtomicExternalRideRepository(
+    database: connectionB,
+  );
+
   try {
     await _cleanup(connectionA);
 
@@ -37,6 +43,18 @@ Future<void> main() async {
       connectionA,
       repositoryA,
       repositoryB,
+    );
+
+    await _checkExternalRideFinishReservationRace(
+      connectionA,
+      repositoryA,
+      externalRideRepository,
+    );
+
+    await _checkReservedRidePromotesWhenExternalRideFinishes(
+      connectionA,
+      repositoryA,
+      externalRideRepository,
     );
 
     print('');
@@ -312,6 +330,264 @@ Future<void> _checkSameDriverRacesTwoRides(
   print('driver has exactly one active reservation: OK');
 }
 
+Future<void> _checkExternalRideFinishReservationRace(
+  Session setupDatabase,
+  PostgresAtomicRideReservationRepository reservationRepository,
+  PostgresAtomicExternalRideRepository externalRideRepository,
+) async {
+  print('');
+  print(
+    'SCENARIO 3: externalRide finish races waiting-ride reservation',
+  );
+
+  const driverId = 'driver-reservation-race-3';
+  const vehicleId = 'vehicle-reservation-race-3';
+  const shiftId = 'shift-reservation-race-3';
+  const sessionId = 'external-reservation-race-3';
+  const rideId = 'ride-reservation-race-3';
+  const reservationId = 'reservation-race-3';
+
+  final now = DateTime.now().toUtc();
+
+  await _createExternalRideDriver(
+    setupDatabase,
+    driverId: driverId,
+    vehicleId: vehicleId,
+    shiftId: shiftId,
+    sessionId: sessionId,
+    startedAt: now.subtract(
+      const Duration(minutes: 30),
+    ),
+  );
+
+  await _createWaitingRide(
+    setupDatabase,
+    rideId: rideId,
+  );
+
+  Future<String> reserve() async {
+    try {
+      await reservationRepository.reserveWaitingRide(
+        reservationId: reservationId,
+        rideId: rideId,
+        driverId: driverId,
+        combinedEtaSeconds: 300,
+        now: now,
+      );
+
+      return 'reservationSuccess';
+    } on AtomicRideReservationConflictException catch (error) {
+      return 'reservationConflict:${error.conflict.name}';
+    }
+  }
+
+  Future<String> finishExternalRide() async {
+    try {
+      await externalRideRepository.finishExternalRide(
+        driverId: driverId,
+        now: now,
+      );
+
+      return 'finishSuccess';
+    } on AtomicExternalRideConflictException catch (error) {
+      return 'finishConflict:${error.conflict.name}';
+    }
+  }
+
+  final outcomes = await Future.wait([
+    reserve(),
+    finishExternalRide(),
+  ]);
+
+  if (!outcomes.contains('finishSuccess')) {
+    throw StateError(
+      'External ride finish must succeed safely. Outcomes: $outcomes',
+    );
+  }
+
+  final reservationSucceeded = outcomes.contains('reservationSuccess');
+
+  final reservationCount = await _countActiveReservationsForDriver(
+    setupDatabase,
+    driverId,
+  );
+
+  if (reservationCount != 0) {
+    throw StateError(
+      'External ride finished but an active reservation remains. '
+      'Outcomes: $outcomes',
+    );
+  }
+
+  final availability = await _readQueueAvailability(
+    setupDatabase,
+    shiftId,
+  );
+
+  final ride = await _readRide(
+    setupDatabase,
+    rideId,
+  );
+
+  if (reservationSucceeded) {
+    if (ride['status'] != 'accepted' ||
+        ride['assigned_driver_id'] != driverId ||
+        ride['assigned_vehicle_id'] != vehicleId) {
+      throw StateError(
+        'Reservation won the race but was not promoted to accepted. '
+        'Outcomes: $outcomes',
+      );
+    }
+
+    if (availability != 'busy') {
+      throw StateError(
+        'Promoted reservation must leave driver busy. '
+        'Outcomes: $outcomes',
+      );
+    }
+
+    print('reservation won -> promoted to accepted: OK');
+    print('driver remains busy on promoted ride: OK');
+  } else {
+    final expectedConflict =
+        'reservationConflict:${AtomicRideReservationConflict.driverNotReservable.name}';
+
+    if (!outcomes.contains(expectedConflict)) {
+      throw StateError(
+        'Finish won but reservation did not fail with driverNotReservable. '
+        'Outcomes: $outcomes',
+      );
+    }
+
+    if (ride['status'] != 'waitingForVehicle') {
+      throw StateError(
+        'Finish won first but waiting ride changed state. '
+        'Outcomes: $outcomes',
+      );
+    }
+
+    if (availability != 'available') {
+      throw StateError(
+        'Finish won first but driver did not become available. '
+        'Outcomes: $outcomes',
+      );
+    }
+
+    print('finish won -> reservation safely rejected: OK');
+    print('driver returns available with ride still waiting: OK');
+  }
+
+  print('no active reservation remains after external ride finish: OK');
+}
+
+Future<void> _checkReservedRidePromotesWhenExternalRideFinishes(
+  Session setupDatabase,
+  PostgresAtomicRideReservationRepository reservationRepository,
+  PostgresAtomicExternalRideRepository externalRideRepository,
+) async {
+  print('');
+  print(
+    'SCENARIO 4: existing reserved ride is promoted when externalRide finishes',
+  );
+
+  const driverId = 'driver-reservation-race-4';
+  const vehicleId = 'vehicle-reservation-race-4';
+  const shiftId = 'shift-reservation-race-4';
+  const sessionId = 'external-reservation-race-4';
+  const rideId = 'ride-reservation-race-4';
+  const reservationId = 'reservation-race-4';
+
+  final now = DateTime.now().toUtc();
+
+  await _createExternalRideDriver(
+    setupDatabase,
+    driverId: driverId,
+    vehicleId: vehicleId,
+    shiftId: shiftId,
+    sessionId: sessionId,
+    startedAt: now.subtract(
+      const Duration(minutes: 30),
+    ),
+  );
+
+  await _createWaitingRide(
+    setupDatabase,
+    rideId: rideId,
+  );
+
+  await reservationRepository.reserveWaitingRide(
+    reservationId: reservationId,
+    rideId: rideId,
+    driverId: driverId,
+    combinedEtaSeconds: 300,
+    now: now.subtract(const Duration(seconds: 1)),
+  );
+
+  final beforeFinish = await _readRide(
+    setupDatabase,
+    rideId,
+  );
+
+  if (beforeFinish['status'] != 'reserved' ||
+      beforeFinish['assigned_driver_id'] != null ||
+      beforeFinish['assigned_vehicle_id'] != null) {
+    throw StateError(
+      'Test setup failed: ride was not reserved correctly before finish.',
+    );
+  }
+
+  final finishResult = await externalRideRepository.finishExternalRide(
+    driverId: driverId,
+    now: now,
+  );
+
+  if (finishResult.session.isActive) {
+    throw StateError(
+      'External ride session remained active after finish.',
+    );
+  }
+
+  final activeReservationCount = await _countActiveReservationsForDriver(
+    setupDatabase,
+    driverId,
+  );
+
+  if (activeReservationCount != 0) {
+    throw StateError(
+      'Finished external ride left an active reservation.',
+    );
+  }
+
+  final ride = await _readRide(
+    setupDatabase,
+    rideId,
+  );
+
+  if (ride['status'] != 'accepted' ||
+      ride['assigned_driver_id'] != driverId ||
+      ride['assigned_vehicle_id'] != vehicleId) {
+    throw StateError(
+      'Reserved next ride was not promoted to accepted.',
+    );
+  }
+
+  final availability = await _readQueueAvailability(
+    setupDatabase,
+    shiftId,
+  );
+
+  if (availability != 'busy') {
+    throw StateError(
+      'Driver must remain busy after reserved ride promotion.',
+    );
+  }
+
+  print('reserved ride -> accepted: OK');
+  print('reservation ended: OK');
+  print('assigned driver/vehicle populated: OK');
+  print('queue remains busy instead of becoming available: OK');
+}
+
 Future<AtomicRideReservationConflict?> _attemptReservation(
   PostgresAtomicRideReservationRepository repository, {
   required String reservationId,
@@ -582,6 +858,30 @@ Future<int> _countActiveReservationsForDriver(
   );
 
   return result.single.toColumnMap()['reservation_count'] as int;
+}
+
+Future<String> _readQueueAvailability(
+  Session database,
+  String shiftId,
+) async {
+  final result = await database.execute(
+    Sql.named('''
+      SELECT availability
+      FROM driver_queue_states
+      WHERE shift_id = @shiftId
+    '''),
+    parameters: {
+      'shiftId': shiftId,
+    },
+  );
+
+  if (result.length != 1) {
+    throw StateError(
+      'Queue state $shiftId was not found.',
+    );
+  }
+
+  return result.single.toColumnMap()['availability'] as String;
 }
 
 Future<void> _cleanup(Session database) async {

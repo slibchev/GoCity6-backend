@@ -251,6 +251,7 @@ class PostgresAtomicExternalRideRepository
         Sql.named('''
           SELECT
             s.id AS shift_id,
+            s.vehicle_id,
             q.availability,
             q.has_pending_offer
           FROM driver_shifts s
@@ -273,6 +274,7 @@ class PostgresAtomicExternalRideRepository
       final shiftRow = shiftResult.single.toColumnMap();
 
       final shiftId = shiftRow['shift_id'] as String;
+      final vehicleId = shiftRow['vehicle_id'] as String;
       final availability = shiftRow['availability'] as String;
       final hasPendingOffer = shiftRow['has_pending_offer'] as bool;
 
@@ -317,6 +319,91 @@ class PostgresAtomicExternalRideRepository
         sessionResult.single.toColumnMap(),
       );
 
+      //
+      // While shift + queue + external session are locked,
+      // check whether this driver already owns a reserved next ride.
+      //
+      // If one exists, finishing the external ride must promote it
+      // directly to the current accepted City6 ride. The driver must
+      // never pass through availability=available.
+      //
+      final reservationResult = await transaction.execute(
+        Sql.named('''
+          SELECT
+            id,
+            ride_id,
+            driver_id,
+            vehicle_id,
+            shift_id,
+            reserved_at,
+            ended_at
+          FROM ride_reservations
+          WHERE driver_id = @driverId
+            AND ended_at IS NULL
+          FOR UPDATE
+        '''),
+        parameters: {'driverId': driverId},
+      );
+
+      if (reservationResult.length > 1) {
+        throw const AtomicExternalRideConflictException(
+          AtomicExternalRideConflict.queueStateMismatch,
+        );
+      }
+
+      final activeReservation = reservationResult.isEmpty
+          ? null
+          : reservationResult.single.toColumnMap();
+
+      String? reservedRideId;
+      String? reservationId;
+
+      if (activeReservation != null) {
+        final reservationDriverId = activeReservation['driver_id'] as String;
+        final reservationVehicleId = activeReservation['vehicle_id'] as String;
+        final reservationShiftId = activeReservation['shift_id'] as String;
+
+        if (reservationDriverId != driverId ||
+            reservationVehicleId != vehicleId ||
+            reservationShiftId != shiftId) {
+          throw const AtomicExternalRideConflictException(
+            AtomicExternalRideConflict.queueStateMismatch,
+          );
+        }
+
+        reservationId = activeReservation['id'] as String;
+        reservedRideId = activeReservation['ride_id'] as String;
+
+        final reservedRideResult = await transaction.execute(
+          Sql.named('''
+            SELECT
+              status,
+              assigned_driver_id,
+              assigned_vehicle_id
+            FROM rides
+            WHERE id = @rideId
+            FOR UPDATE
+          '''),
+          parameters: {'rideId': reservedRideId},
+        );
+
+        if (reservedRideResult.isEmpty) {
+          throw const AtomicExternalRideConflictException(
+            AtomicExternalRideConflict.queueStateMismatch,
+          );
+        }
+
+        final reservedRideRow = reservedRideResult.single.toColumnMap();
+
+        if (reservedRideRow['status'] != 'reserved' ||
+            reservedRideRow['assigned_driver_id'] != null ||
+            reservedRideRow['assigned_vehicle_id'] != null) {
+          throw const AtomicExternalRideConflictException(
+            AtomicExternalRideConflict.queueStateMismatch,
+          );
+        }
+      }
+
       final finishedSession = currentSession.finish(nowUtc);
 
       final finishSessionResult = await transaction.execute(
@@ -343,26 +430,92 @@ class PostgresAtomicExternalRideRepository
         );
       }
 
-      final queueUpdateResult = await transaction.execute(
-        Sql.named('''
-          UPDATE driver_queue_states
-          SET
-            availability = 'available',
-            queue_priority_since = @queuePrioritySince,
-            break_started_at = NULL,
-            has_pending_offer = FALSE
-          WHERE shift_id = @shiftId
-            AND availability = 'externalRide'
-            AND has_pending_offer = FALSE
-          RETURNING shift_id
-        '''),
-        parameters: {'shiftId': shiftId, 'queuePrioritySince': nowUtc},
-      );
-
-      if (queueUpdateResult.isEmpty) {
-        throw const AtomicExternalRideConflictException(
-          AtomicExternalRideConflict.queueStateMismatch,
+      if (activeReservation != null) {
+        final rideUpdateResult = await transaction.execute(
+          Sql.named('''
+            UPDATE rides
+            SET
+              status = 'accepted',
+              assigned_driver_id = @driverId,
+              assigned_vehicle_id = @vehicleId
+            WHERE id = @rideId
+              AND status = 'reserved'
+              AND assigned_driver_id IS NULL
+              AND assigned_vehicle_id IS NULL
+            RETURNING id
+          '''),
+          parameters: {
+            'rideId': reservedRideId,
+            'driverId': driverId,
+            'vehicleId': vehicleId,
+          },
         );
+
+        if (rideUpdateResult.isEmpty) {
+          throw const AtomicExternalRideConflictException(
+            AtomicExternalRideConflict.queueStateMismatch,
+          );
+        }
+
+        final reservationUpdateResult = await transaction.execute(
+          Sql.named('''
+            UPDATE ride_reservations
+            SET ended_at = @endedAt
+            WHERE id = @reservationId
+              AND ended_at IS NULL
+            RETURNING id
+          '''),
+          parameters: {'reservationId': reservationId, 'endedAt': nowUtc},
+        );
+
+        if (reservationUpdateResult.isEmpty) {
+          throw const AtomicExternalRideConflictException(
+            AtomicExternalRideConflict.queueStateMismatch,
+          );
+        }
+
+        final queueUpdateResult = await transaction.execute(
+          Sql.named('''
+            UPDATE driver_queue_states
+            SET
+              availability = 'busy',
+              break_started_at = NULL,
+              has_pending_offer = FALSE
+            WHERE shift_id = @shiftId
+              AND availability = 'externalRide'
+              AND has_pending_offer = FALSE
+            RETURNING shift_id
+          '''),
+          parameters: {'shiftId': shiftId},
+        );
+
+        if (queueUpdateResult.isEmpty) {
+          throw const AtomicExternalRideConflictException(
+            AtomicExternalRideConflict.queueStateMismatch,
+          );
+        }
+      } else {
+        final queueUpdateResult = await transaction.execute(
+          Sql.named('''
+            UPDATE driver_queue_states
+            SET
+              availability = 'available',
+              queue_priority_since = @queuePrioritySince,
+              break_started_at = NULL,
+              has_pending_offer = FALSE
+            WHERE shift_id = @shiftId
+              AND availability = 'externalRide'
+              AND has_pending_offer = FALSE
+            RETURNING shift_id
+          '''),
+          parameters: {'shiftId': shiftId, 'queuePrioritySince': nowUtc},
+        );
+
+        if (queueUpdateResult.isEmpty) {
+          throw const AtomicExternalRideConflictException(
+            AtomicExternalRideConflict.queueStateMismatch,
+          );
+        }
       }
 
       final restoredFinishedSession = _sessionFromRow(
