@@ -5,8 +5,10 @@ enum AtomicExternalRideStartOfferResolution { none, becameBusy, expired }
 enum AtomicExternalRideConflict {
   activeShiftNotFound,
   driverNotAvailable,
+  driverNotOnExternalRide,
   queueStateMismatch,
   activeExternalRideExists,
+  activeExternalRideNotFound,
 }
 
 class AtomicExternalRideConflictException implements Exception {
@@ -23,21 +25,6 @@ class AtomicExternalRideConflictException implements Exception {
 class AtomicExternalRideStartResult {
   final ExternalRideSession session;
 
-  /// Какво се случи с City6 offer-а в момента на натискане на "Зает".
-  ///
-  /// none:
-  ///   Няма активна offer.
-  ///
-  /// becameBusy:
-  ///   Имало е валидна pending offer. Тя е приключена като rejected,
-  ///   а external ride session пази triggerOfferId + triggerRideId.
-  ///   След края на курса правилото за 500 м ще реши дали това
-  ///   се отчита като отказ.
-  ///
-  /// expired:
-  ///   Имало е pending offer, но срокът й вече е бил изтекъл.
-  ///   Тя се приключва като expired и НЕ се използва като trigger
-  ///   за 500-метровото правило.
   final AtomicExternalRideStartOfferResolution offerResolution;
 
   final String? resolvedOfferId;
@@ -51,22 +38,49 @@ class AtomicExternalRideStartResult {
   });
 }
 
+class AtomicExternalRideFinishResult {
+  final ExternalRideSession session;
+
+  /// true само когато:
+  ///
+  /// - "Зает" е натиснат при валидна City6 offer;
+  /// - external ride е приключил под 500 метра.
+  ///
+  /// Самото начисляване на бъдеща санкция НЕ е отговорност
+  /// на този repository.
+  final bool shouldCountTriggeredOfferAsRejection;
+
+  final String? triggerOfferId;
+  final String? triggerRideId;
+
+  const AtomicExternalRideFinishResult({
+    required this.session,
+    required this.shouldCountTriggeredOfferAsRejection,
+    required this.triggerOfferId,
+    required this.triggerRideId,
+  });
+}
+
 abstract interface class AtomicExternalRideRepository {
   /// Атомарно изпълнява бутона "Зает".
-  ///
-  /// В една PostgreSQL транзакция трябва да:
-  /// - заключи текущото queue състояние;
-  /// - предотврати нова automatic offer;
-  /// - приключи текущата pending offer, ако има такава;
-  /// - смени availability на externalRide;
-  /// - изчисти has_pending_offer;
-  /// - създаде ExternalRideSession.
-  ///
-  /// queuePrioritySince НЕ се променя тук.
-  /// При връщане на "Свободен" шофьорът ще получи NOW и ще
-  /// влезе отзад в опашката на текущия район.
   Future<AtomicExternalRideStartResult> startExternalRide({
     required String sessionId,
+    required String driverId,
+    required DateTime now,
+  });
+
+  /// Атомарно изпълнява бутона "Свободен".
+  ///
+  /// В една транзакция:
+  /// - заключва активната смяна и queue state;
+  /// - изисква availability == externalRide;
+  /// - заключва активната ExternalRideSession;
+  /// - приключва session-а;
+  /// - availability -> available;
+  /// - queuePrioritySince -> now;
+  /// - has_pending_offer остава false;
+  /// - връща дали trigger offer трябва по-късно да се брои за отказ.
+  Future<AtomicExternalRideFinishResult> finishExternalRide({
     required String driverId,
     required DateTime now,
   });

@@ -18,19 +18,6 @@ class PostgresAtomicExternalRideRepository
     final nowUtc = now.toUtc();
 
     return database.runTx((transaction) async {
-      //
-      // Заключваме активната смяна и queue state-а.
-      //
-      // Това е същият ред, който automatic offer логиката трябва
-      // да заключи преди да даде нова оферта.
-      //
-      // Ако "Зает" спечели race-а:
-      //   availability става externalRide
-      //   и новата offer ще бъде отказана от backend-а.
-      //
-      // Ако offer спечели race-а:
-      //   тук ще я видим като pending и ще я приключим коректно.
-      //
       final shiftResult = await transaction.execute(
         Sql.named('''
           SELECT
@@ -87,10 +74,6 @@ class PostgresAtomicExternalRideRepository
         );
       }
 
-      //
-      // Проверяваме истинската pending offer в базата, вместо да
-      // разчитаме само на q.has_pending_offer.
-      //
       final pendingOfferResult = await transaction.execute(
         Sql.named('''
           SELECT
@@ -140,13 +123,6 @@ class PostgresAtomicExternalRideRepository
         resolvedRideId = rideId;
 
         if (nowUtc.isBefore(expiresAt)) {
-          //
-          // Офертата още е валидна.
-          //
-          // "Зает" я приключва, но ExternalRideSession пази
-          // връзката към нея. По-късно 500-метровото правило ще
-          // реши дали това трябва да се отчете като отказ.
-          //
           final updateOfferResult = await transaction.execute(
             Sql.named('''
               UPDATE ride_offers
@@ -171,12 +147,6 @@ class PostgresAtomicExternalRideRepository
           triggerOfferId = offerId;
           triggerRideId = rideId;
         } else {
-          //
-          // Офертата вече е изтекла.
-          //
-          // Не позволяваме натискането на "Зает" да превърне
-          // timeout-а в external-ride изключение.
-          //
           final updateOfferResult = await transaction.execute(
             Sql.named('''
               UPDATE ride_offers
@@ -258,15 +228,7 @@ class PostgresAtomicExternalRideRepository
         },
       );
 
-      final session = ExternalRideSession.restore(
-        id: sessionResult.single[0] as String,
-        driverId: sessionResult.single[1] as String,
-        startedAt: (sessionResult.single[2] as DateTime).toUtc(),
-        endedAt: (sessionResult.single[3] as DateTime?)?.toUtc(),
-        distanceMeters: sessionResult.single[4] as int,
-        triggerOfferId: sessionResult.single[5] as String?,
-        triggerRideId: sessionResult.single[6] as String?,
-      );
+      final session = _sessionFromRow(sessionResult.single.toColumnMap());
 
       return AtomicExternalRideStartResult(
         session: session,
@@ -275,5 +237,162 @@ class PostgresAtomicExternalRideRepository
         resolvedRideId: resolvedRideId,
       );
     });
+  }
+
+  @override
+  Future<AtomicExternalRideFinishResult> finishExternalRide({
+    required String driverId,
+    required DateTime now,
+  }) {
+    final nowUtc = now.toUtc();
+
+    return database.runTx((transaction) async {
+      final shiftResult = await transaction.execute(
+        Sql.named('''
+          SELECT
+            s.id AS shift_id,
+            q.availability,
+            q.has_pending_offer
+          FROM driver_shifts s
+          JOIN driver_queue_states q
+            ON q.shift_id = s.id
+          WHERE s.driver_id = @driverId
+            AND s.ended_at IS NULL
+          LIMIT 1
+          FOR UPDATE OF s, q
+        '''),
+        parameters: {'driverId': driverId},
+      );
+
+      if (shiftResult.isEmpty) {
+        throw const AtomicExternalRideConflictException(
+          AtomicExternalRideConflict.activeShiftNotFound,
+        );
+      }
+
+      final shiftRow = shiftResult.single.toColumnMap();
+
+      final shiftId = shiftRow['shift_id'] as String;
+      final availability = shiftRow['availability'] as String;
+      final hasPendingOffer = shiftRow['has_pending_offer'] as bool;
+
+      if (availability != 'externalRide') {
+        throw const AtomicExternalRideConflictException(
+          AtomicExternalRideConflict.driverNotOnExternalRide,
+        );
+      }
+
+      if (hasPendingOffer) {
+        throw const AtomicExternalRideConflictException(
+          AtomicExternalRideConflict.queueStateMismatch,
+        );
+      }
+
+      final sessionResult = await transaction.execute(
+        Sql.named('''
+          SELECT
+            id,
+            driver_id,
+            started_at,
+            ended_at,
+            distance_meters,
+            trigger_offer_id,
+            trigger_ride_id
+          FROM external_ride_sessions
+          WHERE driver_id = @driverId
+            AND ended_at IS NULL
+          LIMIT 1
+          FOR UPDATE
+        '''),
+        parameters: {'driverId': driverId},
+      );
+
+      if (sessionResult.isEmpty) {
+        throw const AtomicExternalRideConflictException(
+          AtomicExternalRideConflict.activeExternalRideNotFound,
+        );
+      }
+
+      final currentSession = _sessionFromRow(
+        sessionResult.single.toColumnMap(),
+      );
+
+      final finishedSession = currentSession.finish(nowUtc);
+
+      final finishSessionResult = await transaction.execute(
+        Sql.named('''
+          UPDATE external_ride_sessions
+          SET ended_at = @endedAt
+          WHERE id = @sessionId
+            AND ended_at IS NULL
+          RETURNING
+            id,
+            driver_id,
+            started_at,
+            ended_at,
+            distance_meters,
+            trigger_offer_id,
+            trigger_ride_id
+        '''),
+        parameters: {'sessionId': finishedSession.id, 'endedAt': nowUtc},
+      );
+
+      if (finishSessionResult.isEmpty) {
+        throw const AtomicExternalRideConflictException(
+          AtomicExternalRideConflict.activeExternalRideNotFound,
+        );
+      }
+
+      final queueUpdateResult = await transaction.execute(
+        Sql.named('''
+          UPDATE driver_queue_states
+          SET
+            availability = 'available',
+            queue_priority_since = @queuePrioritySince,
+            break_started_at = NULL,
+            has_pending_offer = FALSE
+          WHERE shift_id = @shiftId
+            AND availability = 'externalRide'
+            AND has_pending_offer = FALSE
+          RETURNING shift_id
+        '''),
+        parameters: {'shiftId': shiftId, 'queuePrioritySince': nowUtc},
+      );
+
+      if (queueUpdateResult.isEmpty) {
+        throw const AtomicExternalRideConflictException(
+          AtomicExternalRideConflict.queueStateMismatch,
+        );
+      }
+
+      final restoredFinishedSession = _sessionFromRow(
+        finishSessionResult.single.toColumnMap(),
+      );
+
+      final shouldCountTriggeredOfferAsRejection =
+          restoredFinishedSession.wasTriggeredByPendingOffer &&
+          restoredFinishedSession.distanceMeters <
+              ExternalRideSession.qualificationDistanceMeters;
+
+      return AtomicExternalRideFinishResult(
+        session: restoredFinishedSession,
+        shouldCountTriggeredOfferAsRejection:
+            shouldCountTriggeredOfferAsRejection,
+        triggerOfferId: restoredFinishedSession.triggerOfferId,
+        triggerRideId: restoredFinishedSession.triggerRideId,
+      );
+    });
+  }
+
+  ExternalRideSession _sessionFromRow(Map<String, dynamic> row) {
+    return ExternalRideSession.restore(
+      id: row['id'] as String,
+      driverId: row['driver_id'] as String,
+      startedAt: (row['started_at'] as DateTime).toUtc(),
+      endedAt: (row['ended_at'] as DateTime?)?.toUtc(),
+      distanceMeters: row['distance_meters'] as int,
+      triggerOfferId: row['trigger_offer_id'] as String?,
+      triggerRideId: row['trigger_ride_id'] as String?,
+    );
   }
 }
