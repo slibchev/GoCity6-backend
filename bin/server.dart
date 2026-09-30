@@ -15,6 +15,12 @@ import 'package:gocity6_backend/ride/ride_request_repository.dart';
 import 'package:uuid/uuid.dart';
 import 'package:gocity6_backend/dispatch/atomic_waiting_ride_acceptance_repository.dart';
 import 'package:gocity6_backend/dispatch/postgres_atomic_waiting_ride_acceptance_repository.dart';
+import 'package:gocity6_backend/dispatch/atomic_ride_reservation_repository.dart';
+import 'package:gocity6_backend/dispatch/driver_shift_repository.dart';
+import 'package:gocity6_backend/dispatch/postgres_atomic_ride_reservation_repository.dart';
+import 'package:gocity6_backend/dispatch/postgres_driver_shift_repository.dart';
+import 'package:gocity6_backend/routing/google_route_estimator.dart';
+import 'package:gocity6_backend/routing/route_estimator.dart';
 
 Future<Map<String, double>> geocodeAddress(
   String address,
@@ -289,6 +295,9 @@ void main(List<String> args) async {
 
   late final RideRequestRepository rideRepository;
   AtomicWaitingRideAcceptanceRepository? waitingRideAcceptanceRepository;
+  DriverShiftRepository? driverShiftRepository;
+  AtomicRideReservationRepository? rideReservationRepository;
+  RouteEstimator? routeEstimator;
 
   if (rideStorage == 'postgres') {
     final databasePassword = Platform.environment['CITY6_DB_PASSWORD'];
@@ -313,8 +322,19 @@ void main(List<String> args) async {
     await databasePool.execute('SELECT 1');
 
     rideRepository = PostgresRideRequestRepository(database: databasePool);
+
     waitingRideAcceptanceRepository =
         PostgresAtomicWaitingRideAcceptanceRepository(database: databasePool);
+
+    driverShiftRepository = PostgresDriverShiftRepository(
+      database: databasePool,
+    );
+
+    rideReservationRepository = PostgresAtomicRideReservationRepository(
+      database: databasePool,
+    );
+
+    routeEstimator = GoogleRouteEstimator(apiKey: apiKey);
 
     print('Ride storage: PostgreSQL');
   } else if (rideStorage == 'memory') {
@@ -330,6 +350,9 @@ void main(List<String> args) async {
   final rideDispatchService = RideDispatchService(
     repository: rideRepository,
     waitingRideAcceptanceRepository: waitingRideAcceptanceRepository,
+    driverShiftRepository: driverShiftRepository,
+    rideReservationRepository: rideReservationRepository,
+    routeEstimator: routeEstimator,
   );
 
   const uuid = Uuid();
@@ -478,6 +501,8 @@ void main(List<String> args) async {
 
       final driverId = decodedBody['driverId'];
       final vehicleId = decodedBody['vehicleId'];
+      final driverLatitude = decodedBody['driverLatitude'];
+      final driverLongitude = decodedBody['driverLongitude'];
 
       if (driverId is! String || driverId.trim().isEmpty) {
         return Response(
@@ -495,10 +520,41 @@ void main(List<String> args) async {
         );
       }
 
+      if (driverLatitude != null && driverLatitude is! num) {
+        return Response(
+          400,
+          body: jsonEncode({'error': 'driverLatitude must be a number.'}),
+          headers: {'Content-Type': 'application/json'},
+        );
+      }
+
+      if (driverLongitude != null && driverLongitude is! num) {
+        return Response(
+          400,
+          body: jsonEncode({'error': 'driverLongitude must be a number.'}),
+          headers: {'Content-Type': 'application/json'},
+        );
+      }
+
+      if ((driverLatitude == null) != (driverLongitude == null)) {
+        return Response(
+          400,
+          body: jsonEncode({
+            'error':
+                'driverLatitude and driverLongitude must be provided together.',
+          }),
+          headers: {'Content-Type': 'application/json'},
+        );
+      }
+
       final selectedRide = await rideDispatchService.selectWaitingRide(
         rideId: rideId,
         driverId: driverId.trim(),
         vehicleId: vehicleId.trim(),
+        driverLatitude: (driverLatitude as num?)?.toDouble(),
+        driverLongitude: (driverLongitude as num?)?.toDouble(),
+        reservationId: uuid.v4(),
+        now: DateTime.now().toUtc(),
       );
 
       return Response.ok(
@@ -509,6 +565,14 @@ void main(List<String> args) async {
       return Response(
         400,
         body: jsonEncode({'error': 'Invalid JSON body.'}),
+        headers: {'Content-Type': 'application/json'},
+      );
+    } on RideDispatchInputException {
+      return Response(
+        400,
+        body: jsonEncode({
+          'error': 'Current driver location is required for reservation.',
+        }),
         headers: {'Content-Type': 'application/json'},
       );
     } on RideNotFoundException {
