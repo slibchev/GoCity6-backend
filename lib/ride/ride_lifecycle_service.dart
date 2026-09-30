@@ -2,6 +2,7 @@ import 'ride_money.dart';
 import 'ride_request.dart';
 import 'ride_request_repository.dart';
 import 'ride_request_status.dart';
+import 'atomic_ride_completion_repository.dart';
 
 enum RideLifecycleConflict {
   rideAlreadyExists,
@@ -13,9 +14,11 @@ enum RideLifecycleConflict {
   rideAssignedToAnotherDriver,
   rideMustBeAccepted,
   rideMustBeDriverArriving,
-  rideMustBeInProgress,
+   rideMustBeInProgress,
   invalidMeterFare,
+  rideCompletionConflict,
 }
+
 
 class RideLifecycleNotFoundException implements Exception {
   final String rideId;
@@ -206,6 +209,19 @@ class RideLifecycleService {
           completedAt: now().toUtc(),
         )
         .transitionTo(RideRequestStatus.completed);
+
+        if (repository is AtomicRideCompletionRepository) {
+      try {
+        return await (repository as AtomicRideCompletionRepository)
+            .completeRideAndPromoteReservedRide(
+          completedRide: completedRide,
+        );
+      } on AtomicRideCompletionConflictException {
+        throw const RideLifecycleConflictException(
+          RideLifecycleConflict.rideCompletionConflict,
+        );
+      }
+    }
 
     await repository.save(completedRide);
 

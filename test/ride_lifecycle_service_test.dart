@@ -1,3 +1,4 @@
+import 'package:gocity6_backend/ride/atomic_ride_completion_repository.dart';
 import 'package:gocity6_backend/ride/ride_lifecycle_service.dart';
 import 'package:gocity6_backend/ride/ride_request.dart';
 import 'package:gocity6_backend/ride/ride_request_repository.dart';
@@ -28,6 +29,41 @@ class FakeRideRequestRepository implements RideRequestRepository {
   @override
   Future<void> save(RideRequest request) async {
     _rides[request.id] = request;
+  }
+}
+
+class AtomicFakeRideRequestRepository extends FakeRideRequestRepository
+    implements AtomicRideCompletionRepository {
+  bool atomicCompletionCalled = false;
+  RideRequest? atomicCompletedRide;
+  AtomicRideCompletionConflict? conflictToThrow;
+
+  AtomicFakeRideRequestRepository([
+    super.rides = const [],
+    this.conflictToThrow,
+  ]);
+
+  @override
+  Future<void> save(RideRequest request) async {
+    throw StateError(
+      'save() must not be called when atomic completion is available.',
+    );
+  }
+
+  @override
+  Future<RideRequest> completeRideAndPromoteReservedRide({
+    required RideRequest completedRide,
+  }) async {
+    atomicCompletionCalled = true;
+    atomicCompletedRide = completedRide;
+
+    final conflict = conflictToThrow;
+
+    if (conflict != null) {
+      throw AtomicRideCompletionConflictException(conflict);
+    }
+
+    return completedRide;
   }
 }
 
@@ -468,4 +504,75 @@ void main() {
       ),
     );
   });
+  test(
+    'completeRide uses atomic completion repository when available',
+    () async {
+      final inProgressRide = createRide(
+        status: RideRequestStatus.inProgress,
+        assignedDriverId: 'driver-001',
+        assignedVehicleId: 'vehicle-001',
+      );
+
+      final repository = AtomicFakeRideRequestRepository([inProgressRide]);
+
+      final completedAt = DateTime.utc(2026, 9, 26, 16, 45);
+
+      final service = RideLifecycleService(
+        repository: repository,
+        commissionRateBps: 1000,
+        now: () => completedAt,
+      );
+
+      final result = await service.completeRide(
+        rideId: 'ride-001',
+        driverId: 'driver-001',
+        meterFareMinor: 1234,
+      );
+
+      expect(repository.atomicCompletionCalled, isTrue);
+
+      expect(
+        repository.atomicCompletedRide?.status,
+        RideRequestStatus.completed,
+      );
+      expect(repository.atomicCompletedRide?.meterFareMinor, 1234);
+      expect(repository.atomicCompletedRide?.commissionAmountMinor, 123);
+      expect(repository.atomicCompletedRide?.completedByDriverId, 'driver-001');
+      expect(repository.atomicCompletedRide?.completedAt, completedAt);
+
+      expect(result.status, RideRequestStatus.completed);
+    },
+  );
+
+  test(
+    'completeRide maps atomic completion conflict to lifecycle conflict',
+    () async {
+      final inProgressRide = createRide(
+        status: RideRequestStatus.inProgress,
+        assignedDriverId: 'driver-001',
+        assignedVehicleId: 'vehicle-001',
+      );
+
+      final repository = AtomicFakeRideRequestRepository([
+        inProgressRide,
+      ], AtomicRideCompletionConflict.queueStateMismatch);
+
+      final service = RideLifecycleService(repository: repository);
+
+      expect(
+        () => service.completeRide(
+          rideId: 'ride-001',
+          driverId: 'driver-001',
+          meterFareMinor: 1234,
+        ),
+        throwsA(
+          isA<RideLifecycleConflictException>().having(
+            (error) => error.conflict,
+            'conflict',
+            RideLifecycleConflict.rideCompletionConflict,
+          ),
+        ),
+      );
+    },
+  );
 }
