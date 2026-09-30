@@ -1,3 +1,4 @@
+import '../dispatch/atomic_waiting_ride_acceptance_repository.dart';
 import 'ride_request.dart';
 import 'ride_request_repository.dart';
 import 'ride_request_status.dart';
@@ -5,6 +6,7 @@ import 'ride_request_status.dart';
 enum RideDispatchConflict {
   rideNotWaitingForVehicle,
   rideAlreadyAssigned,
+  driverNotAvailable,
   driverAlreadyHasReservedRide,
   driverStillHasActiveRide,
   rideNotReserved,
@@ -35,8 +37,12 @@ class RideDispatchConflictException implements Exception {
 
 class RideDispatchService {
   final RideRequestRepository repository;
+  final AtomicWaitingRideAcceptanceRepository? waitingRideAcceptanceRepository;
 
-  const RideDispatchService({required this.repository});
+  const RideDispatchService({
+    required this.repository,
+    this.waitingRideAcceptanceRepository,
+  });
 
   Future<RideRequest> selectWaitingRide({
     required String rideId,
@@ -76,6 +82,13 @@ class RideDispatchService {
     final hasActiveRide = otherRides.any(
       (existingRide) => _isActiveCurrentRide(existingRide.status),
     );
+
+    if (!hasActiveRide && waitingRideAcceptanceRepository != null) {
+      return _acceptWaitingRideAtomically(
+        rideId: rideId,
+        driverId: driverId,
+      );
+    }
 
     final targetStatus = hasActiveRide
         ? RideRequestStatus.reserved
@@ -158,6 +171,43 @@ class RideDispatchService {
     await repository.save(updatedRide);
 
     return updatedRide;
+  }
+
+  Future<RideRequest> _acceptWaitingRideAtomically({
+    required String rideId,
+    required String driverId,
+  }) async {
+    final atomicRepository = waitingRideAcceptanceRepository!;
+
+    try {
+      return await atomicRepository.acceptWaitingRide(
+        rideId: rideId,
+        driverId: driverId,
+      );
+    } on AtomicWaitingRideAcceptanceConflictException catch (error) {
+      switch (error.conflict) {
+        case AtomicWaitingRideAcceptanceConflict.rideNotFound:
+          throw RideNotFoundException(rideId);
+
+        case AtomicWaitingRideAcceptanceConflict.rideNotWaitingForVehicle:
+          throw const RideDispatchConflictException(
+            RideDispatchConflict.rideNotWaitingForVehicle,
+          );
+
+        case AtomicWaitingRideAcceptanceConflict.rideAlreadyAssigned:
+          throw const RideDispatchConflictException(
+            RideDispatchConflict.rideAlreadyAssigned,
+          );
+
+        case AtomicWaitingRideAcceptanceConflict.activeShiftNotFound:
+        case AtomicWaitingRideAcceptanceConflict.driverNotAvailable:
+        case AtomicWaitingRideAcceptanceConflict.pendingOfferExists:
+        case AtomicWaitingRideAcceptanceConflict.queueStateMismatch:
+          throw const RideDispatchConflictException(
+            RideDispatchConflict.driverNotAvailable,
+          );
+      }
+    }
   }
 
   Future<RideRequest> _requireRide(String rideId) async {
