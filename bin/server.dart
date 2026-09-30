@@ -13,6 +13,8 @@ import 'package:postgres/postgres.dart';
 import 'package:gocity6_backend/ride/postgres_ride_request_repository.dart';
 import 'package:gocity6_backend/ride/ride_request_repository.dart';
 import 'package:uuid/uuid.dart';
+import 'package:gocity6_backend/dispatch/atomic_waiting_ride_acceptance_repository.dart';
+import 'package:gocity6_backend/dispatch/postgres_atomic_waiting_ride_acceptance_repository.dart';
 
 Future<Map<String, double>> geocodeAddress(
   String address,
@@ -286,6 +288,7 @@ void main(List<String> args) async {
   final rideStorage = Platform.environment['CITY6_RIDE_STORAGE'] ?? 'memory';
 
   late final RideRequestRepository rideRepository;
+  AtomicWaitingRideAcceptanceRepository? waitingRideAcceptanceRepository;
 
   if (rideStorage == 'postgres') {
     final databasePassword = Platform.environment['CITY6_DB_PASSWORD'];
@@ -310,6 +313,8 @@ void main(List<String> args) async {
     await databasePool.execute('SELECT 1');
 
     rideRepository = PostgresRideRequestRepository(database: databasePool);
+    waitingRideAcceptanceRepository =
+        PostgresAtomicWaitingRideAcceptanceRepository(database: databasePool);
 
     print('Ride storage: PostgreSQL');
   } else if (rideStorage == 'memory') {
@@ -322,7 +327,10 @@ void main(List<String> args) async {
 
   final rideLifecycleService = RideLifecycleService(repository: rideRepository);
 
-  final rideDispatchService = RideDispatchService(repository: rideRepository);
+  final rideDispatchService = RideDispatchService(
+    repository: rideRepository,
+    waitingRideAcceptanceRepository: waitingRideAcceptanceRepository,
+  );
 
   const uuid = Uuid();
 
