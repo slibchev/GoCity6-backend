@@ -1,33 +1,59 @@
 import 'dart:convert';
+
 import 'dart:io';
 
 import 'package:http/http.dart' as http;
+
 import 'package:shelf/shelf.dart';
+
 import 'package:shelf/shelf_io.dart' as shelf_io;
+
 import 'package:shelf_router/shelf_router.dart';
+
+import 'package:gocity6_backend/ride/assigned_driver_info_service.dart';
+
 import 'package:gocity6_backend/ride/in_memory_ride_request_repository.dart';
+
+import 'package:gocity6_backend/ride/postgres_assigned_driver_info_repository.dart';
+
 import 'package:gocity6_backend/ride/ride_lifecycle_service.dart';
+
 import 'package:gocity6_backend/ride/ride_request.dart';
+
 import 'package:gocity6_backend/ride/ride_dispatch_service.dart';
+
 import 'package:postgres/postgres.dart';
+
 import 'package:gocity6_backend/ride/postgres_ride_request_repository.dart';
+
 import 'package:gocity6_backend/ride/ride_request_repository.dart';
+
 import 'package:uuid/uuid.dart';
+
 import 'package:gocity6_backend/dispatch/atomic_waiting_ride_acceptance_repository.dart';
+
 import 'package:gocity6_backend/dispatch/postgres_atomic_waiting_ride_acceptance_repository.dart';
+
 import 'package:gocity6_backend/dispatch/atomic_ride_reservation_repository.dart';
+
 import 'package:gocity6_backend/dispatch/driver_shift_repository.dart';
+
 import 'package:gocity6_backend/dispatch/postgres_atomic_ride_reservation_repository.dart';
+
 import 'package:gocity6_backend/dispatch/postgres_driver_shift_repository.dart';
+
 import 'package:gocity6_backend/routing/google_route_estimator.dart';
+
 import 'package:gocity6_backend/routing/route_estimator.dart';
 
 Future<Map<String, double>> geocodeAddress(
   String address,
+
   String apiKey,
 ) async {
   final uri = Uri.https('maps.googleapis.com', '/maps/api/geocode/json', {
     'address': address,
+
     'key': apiKey,
   });
 
@@ -48,20 +74,26 @@ Future<Map<String, double>> geocodeAddress(
   }
 
   final results = data['results'] as List<dynamic>;
+
   final location =
       results.first['geometry']['location'] as Map<String, dynamic>;
 
   return {
     'lat': (location['lat'] as num).toDouble(),
+
     'lng': (location['lng'] as num).toDouble(),
   };
 }
 
 Future<Map<String, dynamic>> buildRouteWaypoint({
   required String address,
+
   required String apiKey,
+
   String? placeId,
+
   double? latitude,
+
   double? longitude,
 }) async {
   if (latitude != null && longitude != null) {
@@ -82,6 +114,7 @@ Future<Map<String, dynamic>> buildRouteWaypoint({
     'location': {
       'latLng': {
         'latitude': coordinates['lat'],
+
         'longitude': coordinates['lng'],
       },
     },
@@ -90,24 +123,36 @@ Future<Map<String, dynamic>> buildRouteWaypoint({
 
 Future<Map<String, dynamic>> calculateRoute(
   String pickup,
+
   String destination,
+
   String apiKey, {
+
   String? pickupPlaceId,
+
   String? destinationPlaceId,
+
   double? pickupLatitude,
+
   double? pickupLongitude,
 }) async {
   final origin = await buildRouteWaypoint(
     address: pickup,
+
     apiKey: apiKey,
+
     placeId: pickupPlaceId,
+
     latitude: pickupLatitude,
+
     longitude: pickupLongitude,
   );
 
   final destinationWaypoint = await buildRouteWaypoint(
     address: destination,
+
     apiKey: apiKey,
+
     placeId: destinationPlaceId,
   );
 
@@ -117,9 +162,12 @@ Future<Map<String, dynamic>> calculateRoute(
 
   final response = await http.post(
     uri,
+
     headers: {
       'Content-Type': 'application/json',
+
       'X-Goog-Api-Key': apiKey,
+
       'X-Goog-FieldMask':
           'routes.distanceMeters,'
           'routes.duration,'
@@ -127,11 +175,16 @@ Future<Map<String, dynamic>> calculateRoute(
           'routes.legs.endLocation,'
           'routes.polyline.encodedPolyline',
     },
+
     body: jsonEncode({
       'origin': origin,
+
       'destination': destinationWaypoint,
+
       'travelMode': 'DRIVE',
+
       'routingPreference': 'TRAFFIC_AWARE',
+
       'units': 'METRIC',
     }),
   );
@@ -149,8 +202,11 @@ Future<Map<String, dynamic>> calculateRoute(
   }
 
   final route = routes.first as Map<String, dynamic>;
+
   print('Google route response: ${response.body}');
+
   final polyline = route['polyline'] as Map<String, dynamic>?;
+
   final encodedPolyline = polyline?['encodedPolyline'] as String?;
 
   final distanceMeters = (route['distanceMeters'] as num?)?.toDouble() ?? 0.0;
@@ -166,48 +222,81 @@ Future<Map<String, dynamic>> calculateRoute(
   }
 
   final firstLeg = legs.first as Map<String, dynamic>;
+
   final lastLeg = legs.last as Map<String, dynamic>;
 
   final startLocation = firstLeg['startLocation'] as Map<String, dynamic>;
+
   final startLatLng = startLocation['latLng'] as Map<String, dynamic>;
 
   final endLocation = lastLeg['endLocation'] as Map<String, dynamic>;
+
   final endLatLng = endLocation['latLng'] as Map<String, dynamic>;
 
   return {
     'distanceKm': distanceMeters / 1000,
+
     'durationMinutes': durationSeconds / 60,
+
     'pickupLatitude': (startLatLng['latitude'] as num).toDouble(),
+
     'pickupLongitude': (startLatLng['longitude'] as num).toDouble(),
+
     'destinationLatitude': (endLatLng['latitude'] as num).toDouble(),
+
     'destinationLongitude': (endLatLng['longitude'] as num).toDouble(),
+
     'encodedPolyline': encodedPolyline,
   };
 }
 
-Map<String, dynamic> rideRequestToJson(RideRequest ride) {
+Future<Map<String, dynamic>> rideRequestToJson(
+  RideRequest ride, {
+
+  AssignedDriverInfoService? assignedDriverInfoService,
+}) async {
+  final driverInfo = await assignedDriverInfoService?.findForRide(ride);
+
   return {
     'id': ride.id,
+
     'pickup': ride.pickup,
+
     'destination': ride.destination,
+
     'passengers': ride.passengers,
+
     'hasLuggage': ride.hasLuggage,
+
     'requestedAt': ride.requestedAt.toUtc().toIso8601String(),
+
     'status': ride.status.name,
+
     'assignedDriverId': ride.assignedDriverId,
+
     'assignedVehicleId': ride.assignedVehicleId,
+
+    'driverInfo': driverInfo?.toJson(),
+
     'currency': ride.currency,
+
     'meterFareMinor': ride.meterFareMinor,
+
     'commissionRateBps': ride.commissionRateBps,
+
     'commissionAmountMinor': ride.commissionAmountMinor,
+
     'completedByDriverId': ride.completedByDriverId,
+
     'completedAt': ride.completedAt?.toUtc().toIso8601String(),
   };
 }
 
 const corsResponseHeaders = {
   'Access-Control-Allow-Origin': '*',
+
   'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+
   'Access-Control-Allow-Headers': 'Origin, Content-Type, Accept',
 };
 
@@ -220,6 +309,7 @@ Middleware corsMiddleware() {
 
       return null;
     },
+
     responseHandler: (response) {
       return response.change(headers: corsResponseHeaders);
     },
@@ -228,22 +318,31 @@ Middleware corsMiddleware() {
 
 Future<List<Map<String, String>>> autocompletePlaces(
   String input,
+
   String apiKey, {
+
   String? sessionToken,
 }) async {
   final response = await http.post(
     Uri.parse('https://places.googleapis.com/v1/places:autocomplete'),
+
     headers: {
       'Content-Type': 'application/json; charset=utf-8',
+
       'X-Goog-Api-Key': apiKey,
+
       'X-Goog-FieldMask':
           'suggestions.placePrediction.placeId,'
           'suggestions.placePrediction.text.text',
     },
+
     body: jsonEncode({
       'input': input,
+
       'includedRegionCodes': ['bg'],
+
       'languageCode': 'bg',
+
       if (sessionToken != null && sessionToken.isNotEmpty)
         'sessionToken': sessionToken,
     }),
@@ -257,6 +356,7 @@ Future<List<Map<String, String>>> autocompletePlaces(
   }
 
   final data = jsonDecode(response.body) as Map<String, dynamic>;
+
   final suggestions = data['suggestions'] as List<dynamic>? ?? <dynamic>[];
 
   final results = <Map<String, String>>[];
@@ -271,7 +371,9 @@ Future<List<Map<String, String>>> autocompletePlaces(
     }
 
     final placeId = prediction['placeId'] as String?;
+
     final textData = prediction['text'] as Map<String, dynamic>?;
+
     final text = textData?['text'] as String?;
 
     if (placeId != null && text != null) {
@@ -287,16 +389,24 @@ void main(List<String> args) async {
 
   if (apiKey == null || apiKey.isEmpty) {
     stderr.writeln('GOOGLE_MAPS_API_KEY is not configured.');
+
     exit(1);
   }
 
   final router = Router();
+
   final rideStorage = Platform.environment['CITY6_RIDE_STORAGE'] ?? 'memory';
 
   late final RideRequestRepository rideRepository;
+
+  AssignedDriverInfoService? assignedDriverInfoService;
+
   AtomicWaitingRideAcceptanceRepository? waitingRideAcceptanceRepository;
+
   DriverShiftRepository? driverShiftRepository;
+
   AtomicRideReservationRepository? rideReservationRepository;
+
   RouteEstimator? routeEstimator;
 
   if (rideStorage == 'postgres') {
@@ -312,9 +422,13 @@ void main(List<String> args) async {
     final databasePool = Pool.withEndpoints([
       Endpoint(
         host: 'localhost',
+
         port: 5432,
+
         database: 'city6',
+
         username: 'city6_app',
+
         password: databasePassword,
       ),
     ], settings: PoolSettings(sslMode: SslMode.disable, maxConnectionCount: 5));
@@ -322,6 +436,10 @@ void main(List<String> args) async {
     await databasePool.execute('SELECT 1');
 
     rideRepository = PostgresRideRequestRepository(database: databasePool);
+
+    assignedDriverInfoService = AssignedDriverInfoService(
+      repository: PostgresAssignedDriverInfoRepository(database: databasePool),
+    );
 
     waitingRideAcceptanceRepository =
         PostgresAtomicWaitingRideAcceptanceRepository(database: databasePool);
@@ -349,9 +467,13 @@ void main(List<String> args) async {
 
   final rideDispatchService = RideDispatchService(
     repository: rideRepository,
+
     waitingRideAcceptanceRepository: waitingRideAcceptanceRepository,
+
     driverShiftRepository: driverShiftRepository,
+
     rideReservationRepository: rideReservationRepository,
+
     routeEstimator: routeEstimator,
   );
 
@@ -360,6 +482,7 @@ void main(List<String> args) async {
   router.get('/', (Request request) {
     return Response.ok('GoCity6 backend is running');
   });
+
   router.post('/rides', (Request request) async {
     try {
       final decodedBody = jsonDecode(await request.readAsString());
@@ -367,14 +490,19 @@ void main(List<String> args) async {
       if (decodedBody is! Map<String, dynamic>) {
         return Response(
           400,
+
           body: jsonEncode({'error': 'Request body must be a JSON object.'}),
+
           headers: {'Content-Type': 'application/json'},
         );
       }
 
       final pickup = decodedBody['pickup'];
+
       final destination = decodedBody['destination'];
+
       final passengers = decodedBody['passengers'];
+
       final hasLuggage = decodedBody['hasLuggage'];
 
       if (pickup is! String ||
@@ -383,7 +511,9 @@ void main(List<String> args) async {
           destination.trim().isEmpty) {
         return Response(
           400,
+
           body: jsonEncode({'error': 'Pickup and destination are required.'}),
+
           headers: {'Content-Type': 'application/json'},
         );
       }
@@ -391,7 +521,9 @@ void main(List<String> args) async {
       if (passengers is! int || passengers < 1) {
         return Response(
           400,
+
           body: jsonEncode({'error': 'Passengers must be a positive integer.'}),
+
           headers: {'Content-Type': 'application/json'},
         );
       }
@@ -399,17 +531,24 @@ void main(List<String> args) async {
       if (hasLuggage != null && hasLuggage is! bool) {
         return Response(
           400,
+
           body: jsonEncode({'error': 'hasLuggage must be a boolean.'}),
+
           headers: {'Content-Type': 'application/json'},
         );
       }
 
       final ride = RideRequest(
         id: uuid.v4(),
+
         pickup: pickup.trim(),
+
         destination: destination.trim(),
+
         passengers: passengers,
+
         hasLuggage: hasLuggage as bool? ?? false,
+
         requestedAt: DateTime.now().toUtc(),
       );
 
@@ -417,13 +556,22 @@ void main(List<String> args) async {
 
       return Response(
         201,
-        body: jsonEncode(rideRequestToJson(submittedRide)),
+
+        body: jsonEncode(
+          await rideRequestToJson(
+            submittedRide,
+            assignedDriverInfoService: assignedDriverInfoService,
+          ),
+        ),
+
         headers: {'Content-Type': 'application/json'},
       );
     } on FormatException {
       return Response(
         400,
+
         body: jsonEncode({'error': 'Invalid JSON body.'}),
+
         headers: {'Content-Type': 'application/json'},
       );
     } catch (error) {
@@ -431,22 +579,32 @@ void main(List<String> args) async {
 
       return Response.internalServerError(
         body: jsonEncode({'error': 'Ride creation failed.'}),
+
         headers: {'Content-Type': 'application/json'},
       );
     }
   });
+
   router.get('/rides/<rideId>', (Request request, String rideId) async {
     try {
       final ride = await rideLifecycleService.getRide(rideId);
 
       return Response.ok(
-        jsonEncode(rideRequestToJson(ride)),
+        jsonEncode(
+          await rideRequestToJson(
+            ride,
+            assignedDriverInfoService: assignedDriverInfoService,
+          ),
+        ),
+
         headers: {'Content-Type': 'application/json'},
       );
     } on RideLifecycleNotFoundException {
       return Response(
         404,
+
         body: jsonEncode({'error': 'Ride not found.'}),
+
         headers: {'Content-Type': 'application/json'},
       );
     } catch (error) {
@@ -454,28 +612,40 @@ void main(List<String> args) async {
 
       return Response.internalServerError(
         body: jsonEncode({'error': 'Failed to load ride.'}),
+
         headers: {'Content-Type': 'application/json'},
       );
     }
   });
+
   router.post('/rides/<rideId>/cancel', (Request request, String rideId) async {
     try {
       final cancelledRide = await rideLifecycleService.cancelRide(rideId);
 
       return Response.ok(
-        jsonEncode(rideRequestToJson(cancelledRide)),
+        jsonEncode(
+          await rideRequestToJson(
+            cancelledRide,
+            assignedDriverInfoService: assignedDriverInfoService,
+          ),
+        ),
+
         headers: {'Content-Type': 'application/json'},
       );
     } on RideLifecycleNotFoundException {
       return Response(
         404,
+
         body: jsonEncode({'error': 'Ride not found.'}),
+
         headers: {'Content-Type': 'application/json'},
       );
     } on RideLifecycleConflictException {
       return Response(
         409,
+
         body: jsonEncode({'error': 'Ride cannot be cancelled.'}),
+
         headers: {'Content-Type': 'application/json'},
       );
     } catch (error) {
@@ -483,10 +653,12 @@ void main(List<String> args) async {
 
       return Response.internalServerError(
         body: jsonEncode({'error': 'Ride cancellation failed.'}),
+
         headers: {'Content-Type': 'application/json'},
       );
     }
   });
+
   router.post('/rides/<rideId>/select', (Request request, String rideId) async {
     try {
       final decodedBody = jsonDecode(await request.readAsString());
@@ -494,20 +666,27 @@ void main(List<String> args) async {
       if (decodedBody is! Map<String, dynamic>) {
         return Response(
           400,
+
           body: jsonEncode({'error': 'Request body must be a JSON object.'}),
+
           headers: {'Content-Type': 'application/json'},
         );
       }
 
       final driverId = decodedBody['driverId'];
+
       final vehicleId = decodedBody['vehicleId'];
+
       final driverLatitude = decodedBody['driverLatitude'];
+
       final driverLongitude = decodedBody['driverLongitude'];
 
       if (driverId is! String || driverId.trim().isEmpty) {
         return Response(
           400,
+
           body: jsonEncode({'error': 'driverId is required.'}),
+
           headers: {'Content-Type': 'application/json'},
         );
       }
@@ -515,7 +694,9 @@ void main(List<String> args) async {
       if (vehicleId is! String || vehicleId.trim().isEmpty) {
         return Response(
           400,
+
           body: jsonEncode({'error': 'vehicleId is required.'}),
+
           headers: {'Content-Type': 'application/json'},
         );
       }
@@ -523,7 +704,9 @@ void main(List<String> args) async {
       if (driverLatitude != null && driverLatitude is! num) {
         return Response(
           400,
+
           body: jsonEncode({'error': 'driverLatitude must be a number.'}),
+
           headers: {'Content-Type': 'application/json'},
         );
       }
@@ -531,7 +714,9 @@ void main(List<String> args) async {
       if (driverLongitude != null && driverLongitude is! num) {
         return Response(
           400,
+
           body: jsonEncode({'error': 'driverLongitude must be a number.'}),
+
           headers: {'Content-Type': 'application/json'},
         );
       }
@@ -539,52 +724,74 @@ void main(List<String> args) async {
       if ((driverLatitude == null) != (driverLongitude == null)) {
         return Response(
           400,
+
           body: jsonEncode({
             'error':
                 'driverLatitude and driverLongitude must be provided together.',
           }),
+
           headers: {'Content-Type': 'application/json'},
         );
       }
 
       final selectedRide = await rideDispatchService.selectWaitingRide(
         rideId: rideId,
+
         driverId: driverId.trim(),
+
         vehicleId: vehicleId.trim(),
+
         driverLatitude: (driverLatitude as num?)?.toDouble(),
+
         driverLongitude: (driverLongitude as num?)?.toDouble(),
+
         reservationId: uuid.v4(),
+
         now: DateTime.now().toUtc(),
       );
 
       return Response.ok(
-        jsonEncode(rideRequestToJson(selectedRide)),
+        jsonEncode(
+          await rideRequestToJson(
+            selectedRide,
+            assignedDriverInfoService: assignedDriverInfoService,
+          ),
+        ),
+
         headers: {'Content-Type': 'application/json'},
       );
     } on FormatException {
       return Response(
         400,
+
         body: jsonEncode({'error': 'Invalid JSON body.'}),
+
         headers: {'Content-Type': 'application/json'},
       );
     } on RideDispatchInputException {
       return Response(
         400,
+
         body: jsonEncode({
           'error': 'Current driver location is required for reservation.',
         }),
+
         headers: {'Content-Type': 'application/json'},
       );
     } on RideNotFoundException {
       return Response(
         404,
+
         body: jsonEncode({'error': 'Ride not found.'}),
+
         headers: {'Content-Type': 'application/json'},
       );
     } on RideDispatchConflictException {
       return Response(
         409,
+
         body: jsonEncode({'error': 'Ride cannot be selected.'}),
+
         headers: {'Content-Type': 'application/json'},
       );
     } catch (error) {
@@ -592,12 +799,15 @@ void main(List<String> args) async {
 
       return Response.internalServerError(
         body: jsonEncode({'error': 'Ride selection failed.'}),
+
         headers: {'Content-Type': 'application/json'},
       );
     }
   });
+
   router.post('/rides/<rideId>/promote', (
     Request request,
+
     String rideId,
   ) async {
     try {
@@ -606,7 +816,9 @@ void main(List<String> args) async {
       if (decodedBody is! Map<String, dynamic>) {
         return Response(
           400,
+
           body: jsonEncode({'error': 'Request body must be a JSON object.'}),
+
           headers: {'Content-Type': 'application/json'},
         );
       }
@@ -616,36 +828,51 @@ void main(List<String> args) async {
       if (driverId is! String || driverId.trim().isEmpty) {
         return Response(
           400,
+
           body: jsonEncode({'error': 'driverId is required.'}),
+
           headers: {'Content-Type': 'application/json'},
         );
       }
 
       final promotedRide = await rideDispatchService.promoteReservedRide(
         rideId: rideId,
+
         driverId: driverId.trim(),
       );
 
       return Response.ok(
-        jsonEncode(rideRequestToJson(promotedRide)),
+        jsonEncode(
+          await rideRequestToJson(
+            promotedRide,
+            assignedDriverInfoService: assignedDriverInfoService,
+          ),
+        ),
+
         headers: {'Content-Type': 'application/json'},
       );
     } on FormatException {
       return Response(
         400,
+
         body: jsonEncode({'error': 'Invalid JSON body.'}),
+
         headers: {'Content-Type': 'application/json'},
       );
     } on RideNotFoundException {
       return Response(
         404,
+
         body: jsonEncode({'error': 'Ride not found.'}),
+
         headers: {'Content-Type': 'application/json'},
       );
     } on RideDispatchConflictException {
       return Response(
         409,
+
         body: jsonEncode({'error': 'Reserved ride cannot be promoted.'}),
+
         headers: {'Content-Type': 'application/json'},
       );
     } catch (error) {
@@ -653,12 +880,15 @@ void main(List<String> args) async {
 
       return Response.internalServerError(
         body: jsonEncode({'error': 'Ride promotion failed.'}),
+
         headers: {'Content-Type': 'application/json'},
       );
     }
   });
+
   router.post('/rides/<rideId>/driver-arriving', (
     Request request,
+
     String rideId,
   ) async {
     try {
@@ -667,7 +897,9 @@ void main(List<String> args) async {
       if (decodedBody is! Map<String, dynamic>) {
         return Response(
           400,
+
           body: jsonEncode({'error': 'Request body must be a JSON object.'}),
+
           headers: {'Content-Type': 'application/json'},
         );
       }
@@ -677,36 +909,51 @@ void main(List<String> args) async {
       if (driverId is! String || driverId.trim().isEmpty) {
         return Response(
           400,
+
           body: jsonEncode({'error': 'driverId is required.'}),
+
           headers: {'Content-Type': 'application/json'},
         );
       }
 
       final updatedRide = await rideLifecycleService.markDriverArriving(
         rideId: rideId,
+
         driverId: driverId.trim(),
       );
 
       return Response.ok(
-        jsonEncode(rideRequestToJson(updatedRide)),
+        jsonEncode(
+          await rideRequestToJson(
+            updatedRide,
+            assignedDriverInfoService: assignedDriverInfoService,
+          ),
+        ),
+
         headers: {'Content-Type': 'application/json'},
       );
     } on FormatException {
       return Response(
         400,
+
         body: jsonEncode({'error': 'Invalid JSON body.'}),
+
         headers: {'Content-Type': 'application/json'},
       );
     } on RideLifecycleNotFoundException {
       return Response(
         404,
+
         body: jsonEncode({'error': 'Ride not found.'}),
+
         headers: {'Content-Type': 'application/json'},
       );
     } on RideLifecycleConflictException {
       return Response(
         409,
+
         body: jsonEncode({'error': 'Ride cannot move to driverArriving.'}),
+
         headers: {'Content-Type': 'application/json'},
       );
     } catch (error) {
@@ -714,6 +961,7 @@ void main(List<String> args) async {
 
       return Response.internalServerError(
         body: jsonEncode({'error': 'Failed to update ride.'}),
+
         headers: {'Content-Type': 'application/json'},
       );
     }
@@ -726,7 +974,9 @@ void main(List<String> args) async {
       if (decodedBody is! Map<String, dynamic>) {
         return Response(
           400,
+
           body: jsonEncode({'error': 'Request body must be a JSON object.'}),
+
           headers: {'Content-Type': 'application/json'},
         );
       }
@@ -736,36 +986,51 @@ void main(List<String> args) async {
       if (driverId is! String || driverId.trim().isEmpty) {
         return Response(
           400,
+
           body: jsonEncode({'error': 'driverId is required.'}),
+
           headers: {'Content-Type': 'application/json'},
         );
       }
 
       final updatedRide = await rideLifecycleService.startRide(
         rideId: rideId,
+
         driverId: driverId.trim(),
       );
 
       return Response.ok(
-        jsonEncode(rideRequestToJson(updatedRide)),
+        jsonEncode(
+          await rideRequestToJson(
+            updatedRide,
+            assignedDriverInfoService: assignedDriverInfoService,
+          ),
+        ),
+
         headers: {'Content-Type': 'application/json'},
       );
     } on FormatException {
       return Response(
         400,
+
         body: jsonEncode({'error': 'Invalid JSON body.'}),
+
         headers: {'Content-Type': 'application/json'},
       );
     } on RideLifecycleNotFoundException {
       return Response(
         404,
+
         body: jsonEncode({'error': 'Ride not found.'}),
+
         headers: {'Content-Type': 'application/json'},
       );
     } on RideLifecycleConflictException {
       return Response(
         409,
+
         body: jsonEncode({'error': 'Ride cannot be started.'}),
+
         headers: {'Content-Type': 'application/json'},
       );
     } catch (error) {
@@ -773,6 +1038,7 @@ void main(List<String> args) async {
 
       return Response.internalServerError(
         body: jsonEncode({'error': 'Failed to start ride.'}),
+
         headers: {'Content-Type': 'application/json'},
       );
     }
@@ -780,6 +1046,7 @@ void main(List<String> args) async {
 
   router.post('/rides/<rideId>/complete', (
     Request request,
+
     String rideId,
   ) async {
     try {
@@ -788,18 +1055,23 @@ void main(List<String> args) async {
       if (decodedBody is! Map<String, dynamic>) {
         return Response(
           400,
+
           body: jsonEncode({'error': 'Request body must be a JSON object.'}),
+
           headers: {'Content-Type': 'application/json'},
         );
       }
 
       final driverId = decodedBody['driverId'];
+
       final meterFareMinor = decodedBody['meterFareMinor'];
 
       if (driverId is! String || driverId.trim().isEmpty) {
         return Response(
           400,
+
           body: jsonEncode({'error': 'driverId is required.'}),
+
           headers: {'Content-Type': 'application/json'},
         );
       }
@@ -807,39 +1079,55 @@ void main(List<String> args) async {
       if (meterFareMinor is! int || meterFareMinor <= 0) {
         return Response(
           400,
+
           body: jsonEncode({
             'error': 'meterFareMinor must be a positive integer.',
           }),
+
           headers: {'Content-Type': 'application/json'},
         );
       }
 
       final completedRide = await rideLifecycleService.completeRide(
         rideId: rideId,
+
         driverId: driverId.trim(),
+
         meterFareMinor: meterFareMinor,
       );
 
       return Response.ok(
-        jsonEncode(rideRequestToJson(completedRide)),
+        jsonEncode(
+          await rideRequestToJson(
+            completedRide,
+            assignedDriverInfoService: assignedDriverInfoService,
+          ),
+        ),
+
         headers: {'Content-Type': 'application/json'},
       );
     } on FormatException {
       return Response(
         400,
+
         body: jsonEncode({'error': 'Invalid JSON body.'}),
+
         headers: {'Content-Type': 'application/json'},
       );
     } on RideLifecycleNotFoundException {
       return Response(
         404,
+
         body: jsonEncode({'error': 'Ride not found.'}),
+
         headers: {'Content-Type': 'application/json'},
       );
     } on RideLifecycleConflictException {
       return Response(
         409,
+
         body: jsonEncode({'error': 'Ride cannot be completed.'}),
+
         headers: {'Content-Type': 'application/json'},
       );
     } catch (error) {
@@ -847,6 +1135,7 @@ void main(List<String> args) async {
 
       return Response.internalServerError(
         body: jsonEncode({'error': 'Ride completion failed.'}),
+
         headers: {'Content-Type': 'application/json'},
       );
     }
@@ -858,10 +1147,15 @@ void main(List<String> args) async {
           jsonDecode(await request.readAsString()) as Map<String, dynamic>;
 
       final pickup = body['pickup'] as String?;
+
       final destination = body['destination'] as String?;
+
       final pickupPlaceId = body['pickupPlaceId'] as String?;
+
       final destinationPlaceId = body['destinationPlaceId'] as String?;
+
       final pickupLatitude = (body['pickupLatitude'] as num?)?.toDouble();
+
       final pickupLongitude = (body['pickupLongitude'] as num?)?.toDouble();
 
       if (pickup == null ||
@@ -870,23 +1164,32 @@ void main(List<String> args) async {
           destination.trim().isEmpty) {
         return Response(
           400,
+
           body: jsonEncode({'error': 'Pickup and destination are required.'}),
+
           headers: {'Content-Type': 'application/json'},
         );
       }
 
       final result = await calculateRoute(
         pickup,
+
         destination,
+
         apiKey,
+
         pickupPlaceId: pickupPlaceId,
+
         destinationPlaceId: destinationPlaceId,
+
         pickupLatitude: pickupLatitude,
+
         pickupLongitude: pickupLongitude,
       );
 
       return Response.ok(
         jsonEncode(result),
+
         headers: {'Content-Type': 'application/json'},
       );
     } catch (error) {
@@ -894,6 +1197,7 @@ void main(List<String> args) async {
 
       return Response.internalServerError(
         body: jsonEncode({'error': 'Route calculation failed.'}),
+
         headers: {'Content-Type': 'application/json'},
       );
     }
@@ -905,24 +1209,30 @@ void main(List<String> args) async {
           jsonDecode(await request.readAsString()) as Map<String, dynamic>;
 
       final input = body['input'] as String?;
+
       final sessionToken = body['sessionToken'] as String?;
 
       if (input == null || input.trim().isEmpty) {
         return Response(
           400,
+
           body: jsonEncode({'error': 'Input is required.'}),
+
           headers: {'Content-Type': 'application/json'},
         );
       }
 
       final suggestions = await autocompletePlaces(
         input.trim(),
+
         apiKey,
+
         sessionToken: sessionToken,
       );
 
       return Response.ok(
         jsonEncode({'suggestions': suggestions}),
+
         headers: {'Content-Type': 'application/json'},
       );
     } catch (error) {
@@ -930,6 +1240,7 @@ void main(List<String> args) async {
 
       return Response.internalServerError(
         body: jsonEncode({'error': 'Places autocomplete failed.'}),
+
         headers: {'Content-Type': 'application/json'},
       );
     }
