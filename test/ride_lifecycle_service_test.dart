@@ -5,6 +5,7 @@ import 'package:gocity6_backend/ride/ride_request_repository.dart';
 import 'package:gocity6_backend/ride/ride_request_status.dart';
 import 'package:test/test.dart';
 import 'package:gocity6_backend/ride/atomic_ride_cancellation_repository.dart';
+import 'package:gocity6_backend/ride/atomic_reserved_ride_cancellation_repository.dart';
 
 class FakeRideRequestRepository implements RideRequestRepository {
   final Map<String, RideRequest> _rides = {};
@@ -104,6 +105,51 @@ class AtomicCancellationFakeRideRequestRepository
     }
 
     return cancelledRide;
+  }
+}
+
+class AtomicReservedCancellationFakeRideRequestRepository
+    extends FakeRideRequestRepository
+    implements AtomicReservedRideCancellationRepository {
+  bool atomicReservedCancellationCalled = false;
+  String? cancelledRideId;
+  DateTime? atomicCancelledAt;
+  AtomicReservedRideCancellationConflict? conflictToThrow;
+
+  AtomicReservedCancellationFakeRideRequestRepository([
+    super.rides = const [],
+    this.conflictToThrow,
+  ]);
+
+  @override
+  Future<void> save(RideRequest request) async {
+    throw StateError(
+      'save() must not be called when atomic reserved cancellation is available.',
+    );
+  }
+
+  @override
+  Future<RideRequest> cancelReservedRide({
+    required String rideId,
+    required DateTime cancelledAt,
+  }) async {
+    atomicReservedCancellationCalled = true;
+    cancelledRideId = rideId;
+    atomicCancelledAt = cancelledAt;
+
+    final conflict = conflictToThrow;
+
+    if (conflict != null) {
+      throw AtomicReservedRideCancellationConflictException(conflict);
+    }
+
+    final ride = await findById(rideId);
+
+    if (ride == null) {
+      throw StateError('Test ride not found.');
+    }
+
+    return ride.transitionTo(RideRequestStatus.cancelled);
   }
 }
 
@@ -289,6 +335,54 @@ void main() {
       ),
     );
   });
+  test(
+    'cancelRide uses atomic reserved cancellation for reserved ride',
+    () async {
+      final reservedRide = createRide(status: RideRequestStatus.reserved);
+
+      final repository = AtomicReservedCancellationFakeRideRequestRepository([
+        reservedRide,
+      ]);
+
+      final cancelledAt = DateTime.utc(2026, 10, 3, 14, 0);
+
+      final service = RideLifecycleService(
+        repository: repository,
+        now: () => cancelledAt,
+      );
+
+      final result = await service.cancelRide('ride-001');
+
+      expect(repository.atomicReservedCancellationCalled, isTrue);
+      expect(repository.cancelledRideId, 'ride-001');
+      expect(repository.atomicCancelledAt, cancelledAt);
+      expect(result.status, RideRequestStatus.cancelled);
+    },
+  );
+
+  test(
+    'cancelRide maps reserved cancellation conflict to lifecycle conflict',
+    () async {
+      final reservedRide = createRide(status: RideRequestStatus.reserved);
+
+      final repository = AtomicReservedCancellationFakeRideRequestRepository([
+        reservedRide,
+      ], AtomicReservedRideCancellationConflict.reservationStateMismatch);
+
+      final service = RideLifecycleService(repository: repository);
+
+      expect(
+        () => service.cancelRide('ride-001'),
+        throwsA(
+          isA<RideLifecycleConflictException>().having(
+            (error) => error.conflict,
+            'conflict',
+            RideLifecycleConflict.rideCancellationConflict,
+          ),
+        ),
+      );
+    },
+  );
 
   test(
     'releaseReservedRide returns ride to waiting and clears assignment',

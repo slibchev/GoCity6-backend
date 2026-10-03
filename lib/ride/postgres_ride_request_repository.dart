@@ -8,12 +8,14 @@ import 'ride_request_repository.dart';
 
 import 'ride_request_status.dart';
 import 'atomic_ride_cancellation_repository.dart';
+import 'atomic_reserved_ride_cancellation_repository.dart';
 
 class PostgresRideRequestRepository
     implements
         RideRequestRepository,
         AtomicRideClaimRepository,
         AtomicRideCancellationRepository,
+        AtomicReservedRideCancellationRepository,
         AtomicRideCompletionRepository {
   final Session database;
 
@@ -732,6 +734,292 @@ class PostgresRideRequestRepository
         }
       }
 
+      return _rideFromRow(cancelledRideResult.single.toColumnMap());
+    });
+  }
+
+  @override
+  Future<RideRequest> cancelReservedRide({
+    required String rideId,
+    required DateTime cancelledAt,
+  }) {
+    final effectiveCancelledAt = cancelledAt.toUtc();
+    final transactionDatabase = database as SessionExecutor;
+
+    return transactionDatabase.runTx((transaction) async {
+      // Identify the active reservation first, without taking a lock.
+      // The authoritative reservation state is revalidated later
+      // after shift/current-state locks are held.
+      final reservationLookupResult = await transaction.execute(
+        Sql.named('''
+        SELECT
+          id,
+          ride_id,
+          driver_id,
+          vehicle_id,
+          shift_id
+        FROM ride_reservations
+        WHERE ride_id = @rideId
+          AND ended_at IS NULL
+        ORDER BY reserved_at DESC
+        LIMIT 2
+      '''),
+        parameters: {'rideId': rideId},
+      );
+
+      if (reservationLookupResult.isEmpty) {
+        throw const AtomicReservedRideCancellationConflictException(
+          AtomicReservedRideCancellationConflict.activeReservationNotFound,
+        );
+      }
+
+      if (reservationLookupResult.length > 1) {
+        throw const AtomicReservedRideCancellationConflictException(
+          AtomicReservedRideCancellationConflict.reservationStateMismatch,
+        );
+      }
+
+      final reservationLookupRow = reservationLookupResult.single.toColumnMap();
+
+      final reservationId = reservationLookupRow['id'] as String;
+      final driverId = reservationLookupRow['driver_id'] as String;
+      final vehicleId = reservationLookupRow['vehicle_id'] as String;
+      final shiftId = reservationLookupRow['shift_id'] as String;
+
+      // Lock order:
+      //   1. active shift + queue
+      final shiftResult = await transaction.execute(
+        Sql.named('''
+        SELECT
+          s.id AS shift_id,
+          s.driver_id,
+          s.vehicle_id,
+          q.availability,
+          q.has_pending_offer
+        FROM driver_shifts s
+        JOIN driver_queue_states q
+          ON q.shift_id = s.id
+        WHERE s.id = @shiftId
+          AND s.driver_id = @driverId
+          AND s.ended_at IS NULL
+        LIMIT 1
+        FOR UPDATE OF s, q
+      '''),
+        parameters: {'shiftId': shiftId, 'driverId': driverId},
+      );
+
+      if (shiftResult.isEmpty) {
+        throw const AtomicReservedRideCancellationConflictException(
+          AtomicReservedRideCancellationConflict.activeShiftNotFound,
+        );
+      }
+
+      final shiftRow = shiftResult.single.toColumnMap();
+
+      if (shiftRow['vehicle_id'] != vehicleId) {
+        throw const AtomicReservedRideCancellationConflictException(
+          AtomicReservedRideCancellationConflict.reservationStateMismatch,
+        );
+      }
+
+      final availability = shiftRow['availability'] as String;
+      final hasPendingOffer = shiftRow['has_pending_offer'] as bool;
+
+      if ((availability != 'busy' && availability != 'externalRide') ||
+          hasPendingOffer) {
+        throw const AtomicReservedRideCancellationConflictException(
+          AtomicReservedRideCancellationConflict.queueStateMismatch,
+        );
+      }
+
+      // 2. Lock and validate the driver's current ride/session.
+      if (availability == 'busy') {
+        final currentRideResult = await transaction.execute(
+          Sql.named('''
+          SELECT
+            id,
+            status,
+            assigned_driver_id,
+            assigned_vehicle_id
+          FROM rides
+          WHERE assigned_driver_id = @driverId
+            AND assigned_vehicle_id = @vehicleId
+            AND status IN (
+              'accepted',
+              'driverArriving',
+              'inProgress'
+            )
+            AND id <> @reservedRideId
+          ORDER BY requested_at ASC
+          FOR UPDATE
+        '''),
+          parameters: {
+            'driverId': driverId,
+            'vehicleId': vehicleId,
+            'reservedRideId': rideId,
+          },
+        );
+
+        if (currentRideResult.isEmpty) {
+          throw const AtomicReservedRideCancellationConflictException(
+            AtomicReservedRideCancellationConflict.currentCity6RideNotFound,
+          );
+        }
+
+        if (currentRideResult.length > 1) {
+          throw const AtomicReservedRideCancellationConflictException(
+            AtomicReservedRideCancellationConflict.queueStateMismatch,
+          );
+        }
+      } else {
+        final externalRideResult = await transaction.execute(
+          Sql.named('''
+          SELECT id
+          FROM external_ride_sessions
+          WHERE driver_id = @driverId
+            AND ended_at IS NULL
+          LIMIT 1
+          FOR UPDATE
+        '''),
+          parameters: {'driverId': driverId},
+        );
+
+        if (externalRideResult.isEmpty) {
+          throw const AtomicReservedRideCancellationConflictException(
+            AtomicReservedRideCancellationConflict.activeExternalRideNotFound,
+          );
+        }
+      }
+
+      // 3. Lock and revalidate the active reservation.
+      final reservationResult = await transaction.execute(
+        Sql.named('''
+        SELECT
+          id,
+          ride_id,
+          driver_id,
+          vehicle_id,
+          shift_id,
+          ended_at
+        FROM ride_reservations
+        WHERE id = @reservationId
+        FOR UPDATE
+      '''),
+        parameters: {'reservationId': reservationId},
+      );
+
+      if (reservationResult.isEmpty) {
+        throw const AtomicReservedRideCancellationConflictException(
+          AtomicReservedRideCancellationConflict.activeReservationNotFound,
+        );
+      }
+
+      final reservationRow = reservationResult.single.toColumnMap();
+
+      if (reservationRow['ended_at'] != null ||
+          reservationRow['ride_id'] != rideId ||
+          reservationRow['driver_id'] != driverId ||
+          reservationRow['vehicle_id'] != vehicleId ||
+          reservationRow['shift_id'] != shiftId) {
+        throw const AtomicReservedRideCancellationConflictException(
+          AtomicReservedRideCancellationConflict.reservationStateMismatch,
+        );
+      }
+
+      // 4. Lock and revalidate the reserved ride.
+      final reservedRideResult = await transaction.execute(
+        Sql.named('''
+        SELECT
+          status,
+          assigned_driver_id,
+          assigned_vehicle_id
+        FROM rides
+        WHERE id = @rideId
+        FOR UPDATE
+      '''),
+        parameters: {'rideId': rideId},
+      );
+
+      if (reservedRideResult.isEmpty) {
+        throw const AtomicReservedRideCancellationConflictException(
+          AtomicReservedRideCancellationConflict.reservedRideNotFound,
+        );
+      }
+
+      final reservedRideRow = reservedRideResult.single.toColumnMap();
+
+      if (reservedRideRow['status'] != 'reserved') {
+        throw const AtomicReservedRideCancellationConflictException(
+          AtomicReservedRideCancellationConflict.reservedRideNotReserved,
+        );
+      }
+
+      if (reservedRideRow['assigned_driver_id'] != null ||
+          reservedRideRow['assigned_vehicle_id'] != null) {
+        throw const AtomicReservedRideCancellationConflictException(
+          AtomicReservedRideCancellationConflict.reservationStateMismatch,
+        );
+      }
+
+      final cancelledRideResult = await transaction.execute(
+        Sql.named('''
+        UPDATE rides
+        SET status = 'cancelled'
+        WHERE id = @rideId
+          AND status = 'reserved'
+          AND assigned_driver_id IS NULL
+          AND assigned_vehicle_id IS NULL
+        RETURNING
+          id,
+          pickup,
+          destination,
+          passengers,
+          has_luggage,
+          requested_at,
+          status,
+          assigned_driver_id,
+          assigned_vehicle_id,
+          dispatch_round,
+          driver_bonus_minor,
+          bonus_decision,
+          currency,
+          meter_fare_minor,
+          commission_rate_bps,
+          commission_amount_minor,
+          completed_by_driver_id,
+          completed_at
+      '''),
+        parameters: {'rideId': rideId},
+      );
+
+      if (cancelledRideResult.isEmpty) {
+        throw const AtomicReservedRideCancellationConflictException(
+          AtomicReservedRideCancellationConflict.reservedRideNotReserved,
+        );
+      }
+
+      final reservationUpdateResult = await transaction.execute(
+        Sql.named('''
+        UPDATE ride_reservations
+        SET ended_at = @endedAt
+        WHERE id = @reservationId
+          AND ended_at IS NULL
+        RETURNING id
+      '''),
+        parameters: {
+          'reservationId': reservationId,
+          'endedAt': effectiveCancelledAt,
+        },
+      );
+
+      if (reservationUpdateResult.isEmpty) {
+        throw const AtomicReservedRideCancellationConflictException(
+          AtomicReservedRideCancellationConflict.reservationStateMismatch,
+        );
+      }
+
+      // Queue availability intentionally remains unchanged:
+      // the driver's current City6/external ride is still active.
       return _rideFromRow(cancelledRideResult.single.toColumnMap());
     });
   }

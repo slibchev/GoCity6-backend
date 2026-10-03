@@ -4,6 +4,7 @@ import 'ride_request_repository.dart';
 import 'ride_request_status.dart';
 import 'atomic_ride_completion_repository.dart';
 import 'atomic_ride_cancellation_repository.dart';
+import 'atomic_reserved_ride_cancellation_repository.dart';
 
 enum RideLifecycleConflict {
   rideAlreadyExists,
@@ -104,6 +105,17 @@ class RideLifecycleService {
     }
 
     final cancelledRide = ride.transitionTo(RideRequestStatus.cancelled);
+    if (ride.status == RideRequestStatus.reserved &&
+        repository is AtomicReservedRideCancellationRepository) {
+      try {
+        return await (repository as AtomicReservedRideCancellationRepository)
+            .cancelReservedRide(rideId: ride.id, cancelledAt: now().toUtc());
+      } on AtomicReservedRideCancellationConflictException {
+        throw const RideLifecycleConflictException(
+          RideLifecycleConflict.rideCancellationConflict,
+        );
+      }
+    }
 
     final requiresAssignedRideCleanup =
         ride.status == RideRequestStatus.accepted ||
