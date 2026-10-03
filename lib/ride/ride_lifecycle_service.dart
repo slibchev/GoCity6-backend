@@ -3,6 +3,7 @@ import 'ride_request.dart';
 import 'ride_request_repository.dart';
 import 'ride_request_status.dart';
 import 'atomic_ride_completion_repository.dart';
+import 'atomic_ride_cancellation_repository.dart';
 
 enum RideLifecycleConflict {
   rideAlreadyExists,
@@ -14,11 +15,11 @@ enum RideLifecycleConflict {
   rideAssignedToAnotherDriver,
   rideMustBeAccepted,
   rideMustBeDriverArriving,
-   rideMustBeInProgress,
+  rideMustBeInProgress,
   invalidMeterFare,
   rideCompletionConflict,
+  rideCancellationConflict,
 }
-
 
 class RideLifecycleNotFoundException implements Exception {
   final String rideId;
@@ -103,6 +104,25 @@ class RideLifecycleService {
     }
 
     final cancelledRide = ride.transitionTo(RideRequestStatus.cancelled);
+
+    final requiresAssignedRideCleanup =
+        ride.status == RideRequestStatus.accepted ||
+        ride.status == RideRequestStatus.driverArriving;
+
+    if (requiresAssignedRideCleanup &&
+        repository is AtomicRideCancellationRepository) {
+      try {
+        return await (repository as AtomicRideCancellationRepository)
+            .cancelAssignedRideAndPromoteReservedRide(
+              cancelledRide: cancelledRide,
+              cancelledAt: now().toUtc(),
+            );
+      } on AtomicRideCancellationConflictException {
+        throw const RideLifecycleConflictException(
+          RideLifecycleConflict.rideCancellationConflict,
+        );
+      }
+    }
 
     await repository.save(cancelledRide);
 
@@ -210,12 +230,10 @@ class RideLifecycleService {
         )
         .transitionTo(RideRequestStatus.completed);
 
-        if (repository is AtomicRideCompletionRepository) {
+    if (repository is AtomicRideCompletionRepository) {
       try {
         return await (repository as AtomicRideCompletionRepository)
-            .completeRideAndPromoteReservedRide(
-          completedRide: completedRide,
-        );
+            .completeRideAndPromoteReservedRide(completedRide: completedRide);
       } on AtomicRideCompletionConflictException {
         throw const RideLifecycleConflictException(
           RideLifecycleConflict.rideCompletionConflict,
