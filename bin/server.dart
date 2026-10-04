@@ -41,6 +41,9 @@ import 'package:gocity6_backend/dispatch/driver_shift_repository.dart';
 import 'package:gocity6_backend/dispatch/postgres_atomic_ride_reservation_repository.dart';
 
 import 'package:gocity6_backend/dispatch/postgres_driver_shift_repository.dart';
+import 'package:gocity6_backend/dispatch/driver_assigned_vehicle_repository.dart';
+import 'package:gocity6_backend/dispatch/driver_shift_start_service.dart';
+import 'package:gocity6_backend/dispatch/postgres_driver_assigned_vehicle_repository.dart';
 
 import 'package:gocity6_backend/routing/google_route_estimator.dart';
 
@@ -403,6 +406,8 @@ void main(List<String> args) async {
   late final RideRequestRepository rideRepository;
   DriverAuthenticationService? driverAuthenticationService;
   DriverTokenService? driverTokenService;
+  DriverAssignedVehicleRepository? driverAssignedVehicleRepository;
+  DriverShiftStartService? driverShiftStartService;
 
   AssignedDriverInfoService? assignedDriverInfoService;
 
@@ -452,6 +457,9 @@ void main(List<String> args) async {
     driverShiftRepository = PostgresDriverShiftRepository(
       database: databasePool,
     );
+    driverAssignedVehicleRepository = PostgresDriverAssignedVehicleRepository(
+      database: databasePool,
+    );
 
     rideReservationRepository = PostgresAtomicRideReservationRepository(
       database: databasePool,
@@ -497,6 +505,17 @@ void main(List<String> args) async {
   );
 
   const uuid = Uuid();
+  final shiftRepository = driverShiftRepository;
+  final assignedVehicleRepository = driverAssignedVehicleRepository;
+
+  if (shiftRepository != null && assignedVehicleRepository != null) {
+    driverShiftStartService = DriverShiftStartService(
+      shiftRepository: shiftRepository,
+      assignedVehicleRepository: assignedVehicleRepository,
+      shiftIdFactory: () => uuid.v4(),
+      now: () => DateTime.now().toUtc(),
+    );
+  }
 
   router.get('/', (Request request) {
     return Response.ok('GoCity6 backend is running');
@@ -580,6 +599,87 @@ void main(List<String> args) async {
 
       return Response.internalServerError(
         body: jsonEncode({'error': 'Driver login failed.'}),
+        headers: {'Content-Type': 'application/json'},
+      );
+    }
+  });
+  router.post('/driver/shift/start', (Request request) async {
+    final tokenService = driverTokenService;
+    final shiftStartService = driverShiftStartService;
+
+    if (tokenService == null || shiftStartService == null) {
+      return Response(
+        503,
+        body: jsonEncode({'error': 'Driver shift service is unavailable.'}),
+        headers: {'Content-Type': 'application/json'},
+      );
+    }
+
+    final authorization = request.headers['authorization'];
+
+    if (authorization == null || !authorization.startsWith('Bearer ')) {
+      return Response(
+        401,
+        body: jsonEncode({'error': 'Authentication required.'}),
+        headers: {'Content-Type': 'application/json'},
+      );
+    }
+
+    final token = authorization.substring(7).trim();
+    final tokenPayload = tokenService.verifyToken(token);
+
+    if (tokenPayload == null) {
+      return Response(
+        401,
+        body: jsonEncode({'error': 'Invalid or expired token.'}),
+        headers: {'Content-Type': 'application/json'},
+      );
+    }
+
+    try {
+      final shift = await shiftStartService.start(
+        driverId: tokenPayload.driverId,
+      );
+
+      return Response.ok(
+        jsonEncode({
+          'shift': {
+            'id': shift.id,
+            'driverId': shift.driverId,
+            'vehicleId': shift.vehicleId,
+            'startedAt': shift.startedAt.toUtc().toIso8601String(),
+            'availability': shift.queueState.availability.name,
+          },
+        }),
+        headers: {'Content-Type': 'application/json'},
+      );
+    } on DriverShiftStartException catch (error) {
+      switch (error.failure) {
+        case DriverShiftStartFailure.noAssignedVehicle:
+          return Response(
+            409,
+            body: jsonEncode({
+              'code': 'noAssignedVehicle',
+              'error': 'Driver has no assigned vehicle.',
+            }),
+            headers: {'Content-Type': 'application/json'},
+          );
+
+        case DriverShiftStartFailure.assignedVehicleInactive:
+          return Response(
+            409,
+            body: jsonEncode({
+              'code': 'assignedVehicleInactive',
+              'error': 'Assigned vehicle is inactive.',
+            }),
+            headers: {'Content-Type': 'application/json'},
+          );
+      }
+    } catch (error) {
+      print('Driver shift start error: $error');
+
+      return Response.internalServerError(
+        body: jsonEncode({'error': 'Driver shift could not be started.'}),
         headers: {'Content-Type': 'application/json'},
       );
     }
