@@ -45,6 +45,9 @@ import 'package:gocity6_backend/dispatch/postgres_driver_shift_repository.dart';
 import 'package:gocity6_backend/routing/google_route_estimator.dart';
 
 import 'package:gocity6_backend/routing/route_estimator.dart';
+import 'package:gocity6_backend/auth/driver_authentication_service.dart';
+import 'package:gocity6_backend/auth/driver_token_service.dart';
+import 'package:gocity6_backend/auth/postgres_driver_auth_repository.dart';
 
 Future<Map<String, double>> geocodeAddress(
   String address,
@@ -398,6 +401,8 @@ void main(List<String> args) async {
   final rideStorage = Platform.environment['CITY6_RIDE_STORAGE'] ?? 'memory';
 
   late final RideRequestRepository rideRepository;
+  DriverAuthenticationService? driverAuthenticationService;
+  DriverTokenService? driverTokenService;
 
   AssignedDriverInfoService? assignedDriverInfoService;
 
@@ -453,6 +458,20 @@ void main(List<String> args) async {
     );
 
     routeEstimator = GoogleRouteEstimator(apiKey: apiKey);
+    final driverJwtSecret = Platform.environment['CITY6_DRIVER_JWT_SECRET'];
+
+    if (driverJwtSecret == null || driverJwtSecret.isEmpty) {
+      throw StateError(
+        'CITY6_DRIVER_JWT_SECRET is required when '
+        'CITY6_RIDE_STORAGE=postgres.',
+      );
+    }
+
+    driverAuthenticationService = DriverAuthenticationService(
+      repository: PostgresDriverAuthRepository(database: databasePool),
+    );
+
+    driverTokenService = DriverTokenService(secret: driverJwtSecret);
 
     print('Ride storage: PostgreSQL');
   } else if (rideStorage == 'memory') {
@@ -481,6 +500,89 @@ void main(List<String> args) async {
 
   router.get('/', (Request request) {
     return Response.ok('GoCity6 backend is running');
+  });
+  router.post('/driver/login', (Request request) async {
+    try {
+      final authService = driverAuthenticationService;
+      final tokenService = driverTokenService;
+
+      if (authService == null || tokenService == null) {
+        return Response(
+          503,
+          body: jsonEncode({'error': 'Driver authentication is unavailable.'}),
+          headers: {'Content-Type': 'application/json'},
+        );
+      }
+
+      final decodedBody = jsonDecode(await request.readAsString());
+
+      if (decodedBody is! Map<String, dynamic>) {
+        return Response(
+          400,
+          body: jsonEncode({'error': 'Request body must be a JSON object.'}),
+          headers: {'Content-Type': 'application/json'},
+        );
+      }
+
+      final username = decodedBody['username'];
+      final password = decodedBody['password'];
+
+      if (username is! String ||
+          username.trim().isEmpty ||
+          password is! String ||
+          password.isEmpty) {
+        return Response(
+          400,
+          body: jsonEncode({'error': 'Username and password are required.'}),
+          headers: {'Content-Type': 'application/json'},
+        );
+      }
+
+      final driver = await authService.authenticate(
+        username: username,
+        password: password,
+      );
+
+      if (driver == null) {
+        return Response(
+          401,
+          body: jsonEncode({'error': 'Invalid username or password.'}),
+          headers: {'Content-Type': 'application/json'},
+        );
+      }
+
+      final token = tokenService.createToken(
+        driverId: driver.id,
+        username: driver.username,
+      );
+
+      return Response.ok(
+        jsonEncode({
+          'token': token,
+          'driver': {
+            'id': driver.id,
+            'username': driver.username,
+            'firstName': driver.firstName,
+            'lastName': driver.lastName,
+            'phone': driver.phone,
+          },
+        }),
+        headers: {'Content-Type': 'application/json'},
+      );
+    } on FormatException {
+      return Response(
+        400,
+        body: jsonEncode({'error': 'Invalid JSON body.'}),
+        headers: {'Content-Type': 'application/json'},
+      );
+    } catch (error) {
+      print('Driver login error: $error');
+
+      return Response.internalServerError(
+        body: jsonEncode({'error': 'Driver login failed.'}),
+        headers: {'Content-Type': 'application/json'},
+      );
+    }
   });
 
   router.post('/rides', (Request request) async {
