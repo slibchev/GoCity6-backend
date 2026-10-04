@@ -69,13 +69,13 @@ class GoogleRouteEstimator implements RouteEstimator {
     final route = routes.first as Map<String, dynamic>;
 
     final distanceMeters =
-        (route['distanceMeters'] as num?)?.toDouble();
+        (route['distanceMeters'] as num?)?.toDouble() ?? 0.0;
 
     final durationText = route['duration'] as String?;
 
-    if (distanceMeters == null || durationText == null) {
+    if (durationText == null) {
       throw StateError(
-        'Google Routes response is missing distance or duration.',
+        'Google Routes response is missing duration.',
       );
     }
 

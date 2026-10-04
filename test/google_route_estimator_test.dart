@@ -223,6 +223,66 @@ void main() {
   );
 
   test(
+    'GoogleRouteEstimator treats missing distanceMeters as zero for zero-distance route',
+    () async {
+      final client = MockClient((request) async {
+        return http.Response(
+          jsonEncode({
+            'routes': [
+              {
+                'legs': [
+                  {
+                    'startLocation': {
+                      'latLng': {
+                        'latitude': 42.696391,
+                        'longitude': 23.3325317,
+                      },
+                    },
+                    'endLocation': {
+                      'latLng': {
+                        'latitude': 42.696391,
+                        'longitude': 23.3325317,
+                      },
+                    },
+                  },
+                ],
+                'duration': '0s',
+                'polyline': {
+                  'encodedPolyline': 'mcrcGiclmC',
+                },
+              },
+            ],
+          }),
+          200,
+        );
+      });
+
+      final estimator = GoogleRouteEstimator(
+        apiKey: 'test-api-key',
+        client: client,
+      );
+
+      final estimate = await estimator.estimate(
+        origin: RouteWaypoint(
+          latitude: 42.696100,
+          longitude: 23.332200,
+        ),
+        destination: RouteWaypoint(
+          latitude: 42.696391,
+          longitude: 23.3325317,
+        ),
+      );
+
+      expect(estimate.distanceMeters, 0);
+      expect(estimate.durationSeconds, 0);
+      expect(estimate.originLatitude, 42.696391);
+      expect(estimate.originLongitude, 23.3325317);
+      expect(estimate.destinationLatitude, 42.696391);
+      expect(estimate.destinationLongitude, 23.3325317);
+      expect(estimate.encodedPolyline, 'mcrcGiclmC');
+    },
+  );
+  test(
     'GoogleRouteEstimator rejects empty route results',
     () async {
       final client = MockClient((request) async {
