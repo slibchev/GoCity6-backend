@@ -1,7 +1,7 @@
 import 'package:gocity6_backend/dispatch/active_driver_shift.dart';
 import 'package:gocity6_backend/dispatch/driver_queue_state.dart';
-import 'package:gocity6_backend/dispatch/driver_shift_repository.dart';
 import 'package:gocity6_backend/dispatch/driver_state_service.dart';
+import 'package:gocity6_backend/dispatch/driver_work_state_repository.dart';
 import 'package:test/test.dart';
 
 void main() {
@@ -16,8 +16,13 @@ void main() {
     );
 
     final service = DriverStateService(
-      shiftRepository: _FakeDriverShiftRepository(
-        activeShift: activeShift,
+      repository: _FakeDriverWorkStateRepository(
+        snapshot: DriverWorkStateSnapshot(
+          activeShift: activeShift,
+          pendingOffer: null,
+          currentRide: null,
+          reservedRide: null,
+        ),
       ),
     );
 
@@ -37,7 +42,14 @@ void main() {
 
   test('returns no active shift when driver is not working', () async {
     final service = DriverStateService(
-      shiftRepository: _FakeDriverShiftRepository(),
+      repository: _FakeDriverWorkStateRepository(
+        snapshot: const DriverWorkStateSnapshot(
+          activeShift: null,
+          pendingOffer: null,
+          currentRide: null,
+          reservedRide: null,
+        ),
+      ),
     );
 
     final state = await service.load(
@@ -46,6 +58,9 @@ void main() {
 
     expect(state.isWorking, isFalse);
     expect(state.activeShift, isNull);
+    expect(state.pendingOffer, isNull);
+    expect(state.currentRide, isNull);
+    expect(state.reservedRide, isNull);
   });
 }
 
@@ -73,50 +88,18 @@ ActiveDriverShift _buildShift({
   );
 }
 
-class _FakeDriverShiftRepository implements DriverShiftRepository {
-  _FakeDriverShiftRepository({
-    this.activeShift,
+class _FakeDriverWorkStateRepository
+    implements DriverWorkStateRepository {
+  const _FakeDriverWorkStateRepository({
+    required this.snapshot,
   });
 
-  final ActiveDriverShift? activeShift;
+  final DriverWorkStateSnapshot snapshot;
 
   @override
-  Future<ActiveDriverShift?> findActiveByDriverId(
+  Future<DriverWorkStateSnapshot> loadByDriverId(
     String driverId,
   ) async {
-    return activeShift;
-  }
-
-  @override
-  Future<List<ActiveDriverShift>> findAllActive() async {
-    return [
-      if (activeShift != null) activeShift!,
-    ];
-  }
-
-  @override
-  Future<ActiveDriverShift> startShift({
-    required String shiftId,
-    required String driverId,
-    required String vehicleId,
-    required DateTime startedAt,
-  }) {
-    throw UnsupportedError('Not needed by this test.');
-  }
-
-  @override
-  Future<ActiveDriverShift> saveQueueState({
-    required String shiftId,
-    required DriverQueueState queueState,
-  }) {
-    throw UnsupportedError('Not needed by this test.');
-  }
-
-  @override
-  Future<void> endShift({
-    required String shiftId,
-    required DateTime endedAt,
-  }) {
-    throw UnsupportedError('Not needed by this test.');
+    return snapshot;
   }
 }

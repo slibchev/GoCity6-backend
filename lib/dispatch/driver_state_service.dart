@@ -1,31 +1,30 @@
 import 'active_driver_shift.dart';
-import 'driver_shift_repository.dart';
+import 'driver_work_state_repository.dart';
+import '../ride/ride_request.dart';
 
 class DriverState {
-  final ActiveDriverShift? activeShift;
+  final DriverWorkStateSnapshot snapshot;
 
-  const DriverState({
-    required this.activeShift,
-  });
+  const DriverState({required this.snapshot});
 
+  ActiveDriverShift? get activeShift => snapshot.activeShift;
+
+  DriverPendingOfferState? get pendingOffer => snapshot.pendingOffer;
+
+  RideRequest? get currentRide => snapshot.currentRide;
+
+  RideRequest? get reservedRide => snapshot.reservedRide;
   bool get isWorking => activeShift != null;
 }
 
 class DriverStateService {
-  final DriverShiftRepository shiftRepository;
+  final DriverWorkStateRepository repository;
 
-  const DriverStateService({
-    required this.shiftRepository,
-  });
+  const DriverStateService({required this.repository});
 
-  Future<DriverState> load({
-    required String driverId,
-  }) async {
-    final activeShift =
-        await shiftRepository.findActiveByDriverId(driverId);
+  Future<DriverState> load({required String driverId}) async {
+    final snapshot = await repository.loadByDriverId(driverId);
 
-    return DriverState(
-      activeShift: activeShift,
-    );
+    return DriverState(snapshot: snapshot);
   }
 }

@@ -52,6 +52,8 @@ import 'package:gocity6_backend/auth/driver_authentication_service.dart';
 import 'package:gocity6_backend/auth/driver_token_service.dart';
 import 'package:gocity6_backend/auth/postgres_driver_auth_repository.dart';
 import 'package:gocity6_backend/dispatch/driver_state_service.dart';
+import 'package:gocity6_backend/dispatch/driver_work_state_repository.dart';
+import 'package:gocity6_backend/dispatch/postgres_driver_work_state_repository.dart';
 
 Future<Map<String, double>> geocodeAddress(
   String address,
@@ -410,6 +412,7 @@ void main(List<String> args) async {
   DriverAssignedVehicleRepository? driverAssignedVehicleRepository;
   DriverShiftStartService? driverShiftStartService;
   DriverStateService? driverStateService;
+  DriverWorkStateRepository? driverWorkStateRepository;
 
   AssignedDriverInfoService? assignedDriverInfoService;
 
@@ -457,6 +460,9 @@ void main(List<String> args) async {
         PostgresAtomicWaitingRideAcceptanceRepository(database: databasePool);
 
     driverShiftRepository = PostgresDriverShiftRepository(
+      database: databasePool,
+    );
+    driverWorkStateRepository = PostgresDriverWorkStateRepository(
       database: databasePool,
     );
     driverAssignedVehicleRepository = PostgresDriverAssignedVehicleRepository(
@@ -518,8 +524,10 @@ void main(List<String> args) async {
       now: () => DateTime.now().toUtc(),
     );
   }
-  if (shiftRepository != null) {
-    driverStateService = DriverStateService(shiftRepository: shiftRepository);
+  final workStateRepository = driverWorkStateRepository;
+
+  if (workStateRepository != null) {
+    driverStateService = DriverStateService(repository: workStateRepository);
   }
 
   router.get('/', (Request request) {
