@@ -836,6 +836,9 @@ void main(List<String> args) async {
       final state = await stateService.load(driverId: tokenPayload.driverId);
 
       final shift = state.activeShift;
+      final pendingOffer = state.pendingOffer;
+      final currentRide = state.currentRide;
+      final reservedRide = state.reservedRide;
 
       return Response.ok(
         jsonEncode({
@@ -859,6 +862,41 @@ void main(List<String> args) async {
                     'hasPendingOffer': shift.queueState.hasPendingOffer,
                   },
                 },
+          'pendingOffer': pendingOffer == null
+              ? null
+              : {
+                  'id': pendingOffer.offer.id,
+                  'rideId': pendingOffer.offer.rideId,
+                  'driverId': pendingOffer.offer.driverId,
+                  'vehicleId': pendingOffer.offer.vehicleId,
+                  'etaSeconds': pendingOffer.offer.etaSeconds,
+                  'distanceMeters': pendingOffer.offer.distanceMeters,
+                  'dispatchRound': pendingOffer.offer.dispatchRound,
+                  'bonusMinor': pendingOffer.offer.bonusMinor,
+                  'offeredAt': pendingOffer.offer.offeredAt
+                      .toUtc()
+                      .toIso8601String(),
+                  'expiresAt': pendingOffer.offer.expiresAt
+                      .toUtc()
+                      .toIso8601String(),
+                  'status': pendingOffer.offer.status.name,
+                  'ride': await rideRequestToJson(
+                    pendingOffer.ride,
+                    assignedDriverInfoService: assignedDriverInfoService,
+                  ),
+                },
+          'currentRide': currentRide == null
+              ? null
+              : await rideRequestToJson(
+                  currentRide,
+                  assignedDriverInfoService: assignedDriverInfoService,
+                ),
+          'reservedRide': reservedRide == null
+              ? null
+              : await rideRequestToJson(
+                  reservedRide,
+                  assignedDriverInfoService: assignedDriverInfoService,
+                ),
         }),
         headers: {'Content-Type': 'application/json'},
       );
