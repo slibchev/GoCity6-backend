@@ -51,6 +51,7 @@ import 'package:gocity6_backend/routing/route_estimator.dart';
 import 'package:gocity6_backend/auth/driver_authentication_service.dart';
 import 'package:gocity6_backend/auth/driver_token_service.dart';
 import 'package:gocity6_backend/auth/postgres_driver_auth_repository.dart';
+import 'package:gocity6_backend/dispatch/driver_state_service.dart';
 
 Future<Map<String, double>> geocodeAddress(
   String address,
@@ -408,6 +409,7 @@ void main(List<String> args) async {
   DriverTokenService? driverTokenService;
   DriverAssignedVehicleRepository? driverAssignedVehicleRepository;
   DriverShiftStartService? driverShiftStartService;
+  DriverStateService? driverStateService;
 
   AssignedDriverInfoService? assignedDriverInfoService;
 
@@ -515,6 +517,9 @@ void main(List<String> args) async {
       shiftIdFactory: () => uuid.v4(),
       now: () => DateTime.now().toUtc(),
     );
+  }
+  if (shiftRepository != null) {
+    driverStateService = DriverStateService(shiftRepository: shiftRepository);
   }
 
   router.get('/', (Request request) {
@@ -782,6 +787,78 @@ void main(List<String> args) async {
       return Response.internalServerError(
         body: jsonEncode({'error': 'Ride creation failed.'}),
 
+        headers: {'Content-Type': 'application/json'},
+      );
+    }
+  });
+  router.get('/driver/state', (Request request) async {
+    final tokenService = driverTokenService;
+    final stateService = driverStateService;
+
+    if (tokenService == null || stateService == null) {
+      return Response(
+        503,
+        body: jsonEncode({'error': 'Driver state service is unavailable.'}),
+        headers: {'Content-Type': 'application/json'},
+      );
+    }
+
+    final authorization = request.headers['authorization'];
+
+    if (authorization == null || !authorization.startsWith('Bearer ')) {
+      return Response(
+        401,
+        body: jsonEncode({'error': 'Authentication required.'}),
+        headers: {'Content-Type': 'application/json'},
+      );
+    }
+
+    final token = authorization.substring(7).trim();
+    final tokenPayload = tokenService.verifyToken(token);
+
+    if (tokenPayload == null) {
+      return Response(
+        401,
+        body: jsonEncode({'error': 'Invalid or expired token.'}),
+        headers: {'Content-Type': 'application/json'},
+      );
+    }
+
+    try {
+      final state = await stateService.load(driverId: tokenPayload.driverId);
+
+      final shift = state.activeShift;
+
+      return Response.ok(
+        jsonEncode({
+          'isWorking': state.isWorking,
+          'shift': shift == null
+              ? null
+              : {
+                  'id': shift.id,
+                  'driverId': shift.driverId,
+                  'vehicleId': shift.vehicleId,
+                  'startedAt': shift.startedAt.toUtc().toIso8601String(),
+                  'queue': {
+                    'availability': shift.queueState.availability.name,
+                    'queuePrioritySince': shift.queueState.queuePrioritySince
+                        .toUtc()
+                        .toIso8601String(),
+                    'shortBreaksUsed': shift.queueState.shortBreaksUsed,
+                    'breakStartedAt': shift.queueState.breakStartedAt
+                        ?.toUtc()
+                        .toIso8601String(),
+                    'hasPendingOffer': shift.queueState.hasPendingOffer,
+                  },
+                },
+        }),
+        headers: {'Content-Type': 'application/json'},
+      );
+    } catch (error) {
+      print('Driver state error: $error');
+
+      return Response.internalServerError(
+        body: jsonEncode({'error': 'Driver state could not be loaded.'}),
         headers: {'Content-Type': 'application/json'},
       );
     }
