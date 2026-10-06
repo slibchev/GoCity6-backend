@@ -5,6 +5,16 @@ import 'driver_live_location_repository.dart';
 import 'driver_queue_state.dart';
 import 'driver_shift_repository.dart';
 
+class DispatchCandidateBatch {
+  final List<DispatchCandidate> candidates;
+  final Map<String, DriverQueueState> driverStates;
+
+  const DispatchCandidateBatch({
+    required this.candidates,
+    required this.driverStates,
+  });
+}
+
 class DispatchCandidateService {
   static const Duration defaultMaxLocationAge = Duration(seconds: 30);
 
@@ -24,10 +34,20 @@ class DispatchCandidateService {
     required RideRequest ride,
     required DateTime now,
   }) async {
+    final batch = await buildBatchForRide(ride: ride, now: now);
+
+    return batch.candidates;
+  }
+
+  Future<DispatchCandidateBatch> buildBatchForRide({
+    required RideRequest ride,
+    required DateTime now,
+  }) async {
     final nowUtc = now.toUtc();
     final shifts = await shiftRepository.findAllActive();
 
     final candidates = <DispatchCandidate>[];
+    final driverStates = <String, DriverQueueState>{};
 
     for (final shift in shifts) {
       final queueState = shift.queueState.effectiveAt(nowUtc);
@@ -45,12 +65,9 @@ class DispatchCandidateService {
         continue;
       }
 
-      final locationAge = nowUtc.difference(
-        location.updatedAt.toUtc(),
-      );
+      final locationAge = nowUtc.difference(location.updatedAt.toUtc());
 
-      if (locationAge.isNegative ||
-          locationAge.compareTo(maxLocationAge) > 0) {
+      if (locationAge.isNegative || locationAge.compareTo(maxLocationAge) > 0) {
         continue;
       }
 
@@ -59,9 +76,7 @@ class DispatchCandidateService {
           latitude: location.latitude,
           longitude: location.longitude,
         ),
-        destination: RouteWaypoint(
-          address: ride.pickup,
-        ),
+        destination: RouteWaypoint(address: ride.pickup),
       );
 
       final candidate = DispatchCandidate.fromQueueState(
@@ -74,9 +89,13 @@ class DispatchCandidateService {
 
       if (candidate != null) {
         candidates.add(candidate);
+        driverStates[candidate.driverId] = queueState;
       }
     }
 
-    return List.unmodifiable(candidates);
+    return DispatchCandidateBatch(
+      candidates: List.unmodifiable(candidates),
+      driverStates: Map.unmodifiable(driverStates),
+    );
   }
 }

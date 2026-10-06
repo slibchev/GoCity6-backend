@@ -83,7 +83,32 @@ void main() {
     expect(routeEstimator.lastOrigin?.longitude, 23.3219);
     expect(routeEstimator.lastDestination?.address, 'Sofia Center');
   });
+  test('builds candidate batch with matching driver state', () async {
+    final shift = buildShift();
 
+    final service = DispatchCandidateService(
+      shiftRepository: _FakeDriverShiftRepository(shifts: [shift]),
+      liveLocationRepository: _FakeDriverLiveLocationRepository(
+        locations: {
+          'driver-001': DriverLiveLocation(
+            driverId: 'driver-001',
+            latitude: 42.6977,
+            longitude: 23.3219,
+            updatedAt: now.subtract(const Duration(seconds: 5)),
+          ),
+        },
+      ),
+      routeEstimator: _FakeRouteEstimator(
+        result: RouteEstimate(distanceMeters: 800, durationSeconds: 180),
+      ),
+    );
+
+    final batch = await service.buildBatchForRide(ride: buildRide(), now: now);
+
+    expect(batch.candidates, hasLength(1));
+    expect(batch.driverStates.keys, contains('driver-001'));
+    expect(batch.driverStates['driver-001']?.driverId, 'driver-001');
+  });
   test('skips driver without live location', () async {
     final routeEstimator = _FakeRouteEstimator(
       result: RouteEstimate(distanceMeters: 1000, durationSeconds: 200),
