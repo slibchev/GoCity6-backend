@@ -54,6 +54,11 @@ import 'package:gocity6_backend/auth/postgres_driver_auth_repository.dart';
 import 'package:gocity6_backend/dispatch/driver_state_service.dart';
 import 'package:gocity6_backend/dispatch/driver_work_state_repository.dart';
 import 'package:gocity6_backend/dispatch/postgres_driver_work_state_repository.dart';
+import 'package:gocity6_backend/dispatch/atomic_ride_offer_repository.dart';
+import 'package:gocity6_backend/dispatch/driver_ride_offer_action_service.dart';
+import 'package:gocity6_backend/dispatch/postgres_atomic_ride_offer_repository.dart';
+import 'package:gocity6_backend/dispatch/postgres_ride_offer_repository.dart';
+import 'package:gocity6_backend/dispatch/ride_offer_repository.dart';
 
 Future<Map<String, double>> geocodeAddress(
   String address,
@@ -413,6 +418,9 @@ void main(List<String> args) async {
   DriverShiftStartService? driverShiftStartService;
   DriverStateService? driverStateService;
   DriverWorkStateRepository? driverWorkStateRepository;
+  RideOfferRepository? rideOfferRepository;
+  AtomicRideOfferRepository? atomicRideOfferRepository;
+  DriverRideOfferActionService? driverRideOfferActionService;
 
   AssignedDriverInfoService? assignedDriverInfoService;
 
@@ -463,6 +471,11 @@ void main(List<String> args) async {
       database: databasePool,
     );
     driverWorkStateRepository = PostgresDriverWorkStateRepository(
+      database: databasePool,
+    );
+    rideOfferRepository = PostgresRideOfferRepository(database: databasePool);
+
+    atomicRideOfferRepository = PostgresAtomicRideOfferRepository(
       database: databasePool,
     );
     driverAssignedVehicleRepository = PostgresDriverAssignedVehicleRepository(
@@ -528,6 +541,15 @@ void main(List<String> args) async {
 
   if (workStateRepository != null) {
     driverStateService = DriverStateService(repository: workStateRepository);
+  }
+  final offerRepository = rideOfferRepository;
+  final atomicOfferRepository = atomicRideOfferRepository;
+
+  if (offerRepository != null && atomicOfferRepository != null) {
+    driverRideOfferActionService = DriverRideOfferActionService(
+      offerRepository: offerRepository,
+      atomicOfferRepository: atomicOfferRepository,
+    );
   }
 
   router.get('/', (Request request) {
@@ -905,6 +927,81 @@ void main(List<String> args) async {
 
       return Response.internalServerError(
         body: jsonEncode({'error': 'Driver state could not be loaded.'}),
+        headers: {'Content-Type': 'application/json'},
+      );
+    }
+  });
+  router.post('/driver/offers/<offerId>/accept', (
+    Request request,
+    String offerId,
+  ) async {
+    final tokenService = driverTokenService;
+    final actionService = driverRideOfferActionService;
+
+    if (tokenService == null || actionService == null) {
+      return Response(
+        503,
+        body: jsonEncode({
+          'error': 'Driver offer action service is unavailable.',
+        }),
+        headers: {'Content-Type': 'application/json'},
+      );
+    }
+
+    final authorization = request.headers['authorization'];
+
+    if (authorization == null || !authorization.startsWith('Bearer ')) {
+      return Response(
+        401,
+        body: jsonEncode({'error': 'Authentication required.'}),
+        headers: {'Content-Type': 'application/json'},
+      );
+    }
+
+    final token = authorization.substring(7).trim();
+    final tokenPayload = tokenService.verifyToken(token);
+
+    if (tokenPayload == null) {
+      return Response(
+        401,
+        body: jsonEncode({'error': 'Invalid or expired token.'}),
+        headers: {'Content-Type': 'application/json'},
+      );
+    }
+
+    try {
+      final offer = await actionService.accept(
+        driverId: tokenPayload.driverId,
+        offerId: offerId,
+        now: DateTime.now().toUtc(),
+      );
+
+      return Response.ok(
+        jsonEncode({
+          'id': offer.id,
+          'rideId': offer.rideId,
+          'status': offer.status.name,
+          'resolvedAt': offer.resolvedAt?.toUtc().toIso8601String(),
+        }),
+        headers: {'Content-Type': 'application/json'},
+      );
+    } on DriverRideOfferActionException {
+      return Response(
+        404,
+        body: jsonEncode({'error': 'Offer not found.'}),
+        headers: {'Content-Type': 'application/json'},
+      );
+    } on AtomicRideOfferConflictException {
+      return Response(
+        409,
+        body: jsonEncode({'error': 'Offer cannot be accepted.'}),
+        headers: {'Content-Type': 'application/json'},
+      );
+    } catch (error) {
+      print('Driver offer accept error: $error');
+
+      return Response.internalServerError(
+        body: jsonEncode({'error': 'Offer acceptance failed.'}),
         headers: {'Content-Type': 'application/json'},
       );
     }
