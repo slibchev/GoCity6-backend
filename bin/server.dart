@@ -59,6 +59,9 @@ import 'package:gocity6_backend/dispatch/driver_ride_offer_action_service.dart';
 import 'package:gocity6_backend/dispatch/postgres_atomic_ride_offer_repository.dart';
 import 'package:gocity6_backend/dispatch/postgres_ride_offer_repository.dart';
 import 'package:gocity6_backend/dispatch/ride_offer_repository.dart';
+import 'package:gocity6_backend/dispatch/driver_live_location_repository.dart';
+import 'package:gocity6_backend/dispatch/driver_live_location_service.dart';
+import 'package:gocity6_backend/dispatch/postgres_driver_live_location_repository.dart';
 
 Future<Map<String, double>> geocodeAddress(
   String address,
@@ -421,6 +424,8 @@ void main(List<String> args) async {
   RideOfferRepository? rideOfferRepository;
   AtomicRideOfferRepository? atomicRideOfferRepository;
   DriverRideOfferActionService? driverRideOfferActionService;
+  DriverLiveLocationRepository? driverLiveLocationRepository;
+  DriverLiveLocationService? driverLiveLocationService;
 
   AssignedDriverInfoService? assignedDriverInfoService;
 
@@ -471,6 +476,9 @@ void main(List<String> args) async {
       database: databasePool,
     );
     driverWorkStateRepository = PostgresDriverWorkStateRepository(
+      database: databasePool,
+    );
+    driverLiveLocationRepository = PostgresDriverLiveLocationRepository(
       database: databasePool,
     );
     rideOfferRepository = PostgresRideOfferRepository(database: databasePool);
@@ -821,9 +829,115 @@ void main(List<String> args) async {
       );
     }
   });
+  router.post('/driver/location', (Request request) async {
+    final tokenService = driverTokenService;
+    final locationService = driverLiveLocationService;
+
+    if (tokenService == null || locationService == null) {
+      return Response(
+        503,
+        body: jsonEncode({'error': 'Driver location service is unavailable.'}),
+        headers: {'Content-Type': 'application/json'},
+      );
+    }
+
+    final authorization = request.headers['authorization'];
+
+    if (authorization == null || !authorization.startsWith('Bearer ')) {
+      return Response(
+        401,
+        body: jsonEncode({'error': 'Authentication required.'}),
+        headers: {'Content-Type': 'application/json'},
+      );
+    }
+
+    final token = authorization.substring(7).trim();
+    final tokenPayload = tokenService.verifyToken(token);
+
+    if (tokenPayload == null) {
+      return Response(
+        401,
+        body: jsonEncode({'error': 'Invalid or expired token.'}),
+        headers: {'Content-Type': 'application/json'},
+      );
+    }
+
+    try {
+      final decodedBody = jsonDecode(await request.readAsString());
+
+      if (decodedBody is! Map<String, dynamic>) {
+        return Response(
+          400,
+          body: jsonEncode({'error': 'Request body must be a JSON object.'}),
+          headers: {'Content-Type': 'application/json'},
+        );
+      }
+
+      final latitude = decodedBody['latitude'];
+      final longitude = decodedBody['longitude'];
+
+      if (latitude is! num || longitude is! num) {
+        return Response(
+          400,
+          body: jsonEncode({
+            'error': 'Latitude and longitude must be numbers.',
+          }),
+          headers: {'Content-Type': 'application/json'},
+        );
+      }
+
+      final location = await locationService.update(
+        driverId: tokenPayload.driverId,
+        latitude: latitude.toDouble(),
+        longitude: longitude.toDouble(),
+        now: DateTime.now().toUtc(),
+      );
+
+      return Response.ok(
+        jsonEncode({
+          'latitude': location.latitude,
+          'longitude': location.longitude,
+          'updatedAt': location.updatedAt.toUtc().toIso8601String(),
+        }),
+        headers: {'Content-Type': 'application/json'},
+      );
+    } on FormatException {
+      return Response(
+        400,
+        body: jsonEncode({'error': 'Invalid JSON body.'}),
+        headers: {'Content-Type': 'application/json'},
+      );
+    } on ArgumentError {
+      return Response(
+        400,
+        body: jsonEncode({'error': 'Invalid driver location.'}),
+        headers: {'Content-Type': 'application/json'},
+      );
+    } on StateError {
+      return Response(
+        409,
+        body: jsonEncode({'error': 'Driver must have an active shift.'}),
+        headers: {'Content-Type': 'application/json'},
+      );
+    } catch (error) {
+      print('Driver location update error: $error');
+
+      return Response.internalServerError(
+        body: jsonEncode({'error': 'Driver location update failed.'}),
+        headers: {'Content-Type': 'application/json'},
+      );
+    }
+  });
   router.get('/driver/state', (Request request) async {
     final tokenService = driverTokenService;
     final stateService = driverStateService;
+    final liveLocationRepository = driverLiveLocationRepository;
+
+    if (liveLocationRepository != null) {
+      driverLiveLocationService = DriverLiveLocationService(
+        repository: liveLocationRepository,
+      );
+    }
 
     if (tokenService == null || stateService == null) {
       return Response(
