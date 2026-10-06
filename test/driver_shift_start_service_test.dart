@@ -26,17 +26,12 @@ void main() {
       now: () => now,
     );
 
-    final shift = await service.start(
-      driverId: 'driver-001',
-    );
+    final shift = await service.start(driverId: 'driver-001');
 
     expect(shift.id, 'shift-new');
     expect(shift.driverId, 'driver-001');
     expect(shift.vehicleId, 'vehicle-001');
-    expect(
-      shift.queueState.availability,
-      DriverQueueAvailability.available,
-    );
+    expect(shift.queueState.availability, DriverQueueAvailability.available);
     expect(shiftRepository.startCalls, 1);
   });
 
@@ -115,9 +110,7 @@ void main() {
       now: () => now,
     );
 
-    final result = await service.start(
-      driverId: 'driver-001',
-    );
+    final result = await service.start(driverId: 'driver-001');
 
     expect(result.id, 'shift-existing');
     expect(shiftRepository.startCalls, 0);
@@ -151,44 +144,34 @@ ActiveDriverShift _buildShift({
 
 class _FakeAssignedVehicleRepository
     implements DriverAssignedVehicleRepository {
-  _FakeAssignedVehicleRepository({
-    this.vehicle,
-  });
+  _FakeAssignedVehicleRepository({this.vehicle});
 
   final DriverAssignedVehicle? vehicle;
 
   int findCalls = 0;
 
   @override
-  Future<DriverAssignedVehicle?> findByDriverId(
-    String driverId,
-  ) async {
+  Future<DriverAssignedVehicle?> findByDriverId(String driverId) async {
     findCalls += 1;
     return vehicle;
   }
 }
 
 class _FakeDriverShiftRepository implements DriverShiftRepository {
-  _FakeDriverShiftRepository({
-    this.activeShift,
-  });
+  _FakeDriverShiftRepository({this.activeShift});
 
   ActiveDriverShift? activeShift;
 
   int startCalls = 0;
 
   @override
-  Future<ActiveDriverShift?> findActiveByDriverId(
-    String driverId,
-  ) async {
+  Future<ActiveDriverShift?> findActiveByDriverId(String driverId) async {
     return activeShift;
   }
 
   @override
   Future<List<ActiveDriverShift>> findAllActive() async {
-    return [
-      if (activeShift != null) activeShift!,
-    ];
+    return [?activeShift];
   }
 
   @override
@@ -220,10 +203,7 @@ class _FakeDriverShiftRepository implements DriverShiftRepository {
   }
 
   @override
-  Future<void> endShift({
-    required String shiftId,
-    required DateTime endedAt,
-  }) {
+  Future<void> endShift({required String shiftId, required DateTime endedAt}) {
     throw UnsupportedError('Not needed by this test.');
   }
 }
