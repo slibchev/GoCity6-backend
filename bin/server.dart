@@ -1006,6 +1006,81 @@ void main(List<String> args) async {
       );
     }
   });
+  router.post('/driver/offers/<offerId>/reject', (
+    Request request,
+    String offerId,
+  ) async {
+    final tokenService = driverTokenService;
+    final actionService = driverRideOfferActionService;
+
+    if (tokenService == null || actionService == null) {
+      return Response(
+        503,
+        body: jsonEncode({
+          'error': 'Driver offer action service is unavailable.',
+        }),
+        headers: {'Content-Type': 'application/json'},
+      );
+    }
+
+    final authorization = request.headers['authorization'];
+
+    if (authorization == null || !authorization.startsWith('Bearer ')) {
+      return Response(
+        401,
+        body: jsonEncode({'error': 'Authentication required.'}),
+        headers: {'Content-Type': 'application/json'},
+      );
+    }
+
+    final token = authorization.substring(7).trim();
+    final tokenPayload = tokenService.verifyToken(token);
+
+    if (tokenPayload == null) {
+      return Response(
+        401,
+        body: jsonEncode({'error': 'Invalid or expired token.'}),
+        headers: {'Content-Type': 'application/json'},
+      );
+    }
+
+    try {
+      final offer = await actionService.reject(
+        driverId: tokenPayload.driverId,
+        offerId: offerId,
+        now: DateTime.now().toUtc(),
+      );
+
+      return Response.ok(
+        jsonEncode({
+          'id': offer.id,
+          'rideId': offer.rideId,
+          'status': offer.status.name,
+          'resolvedAt': offer.resolvedAt?.toUtc().toIso8601String(),
+        }),
+        headers: {'Content-Type': 'application/json'},
+      );
+    } on DriverRideOfferActionException {
+      return Response(
+        404,
+        body: jsonEncode({'error': 'Offer not found.'}),
+        headers: {'Content-Type': 'application/json'},
+      );
+    } on AtomicRideOfferConflictException {
+      return Response(
+        409,
+        body: jsonEncode({'error': 'Offer cannot be rejected.'}),
+        headers: {'Content-Type': 'application/json'},
+      );
+    } catch (error) {
+      print('Driver offer reject error: $error');
+
+      return Response.internalServerError(
+        body: jsonEncode({'error': 'Offer rejection failed.'}),
+        headers: {'Content-Type': 'application/json'},
+      );
+    }
+  });
 
   router.get('/rides/<rideId>', (Request request, String rideId) async {
     try {
