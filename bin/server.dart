@@ -550,6 +550,13 @@ void main(List<String> args) async {
   if (workStateRepository != null) {
     driverStateService = DriverStateService(repository: workStateRepository);
   }
+  final liveLocationRepository = driverLiveLocationRepository;
+
+  if (liveLocationRepository != null) {
+    driverLiveLocationService = DriverLiveLocationService(
+      repository: liveLocationRepository,
+    );
+  }
   final offerRepository = rideOfferRepository;
   final atomicOfferRepository = atomicRideOfferRepository;
 
