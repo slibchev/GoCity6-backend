@@ -189,6 +189,19 @@ void main() {
 
     expect(storedRide?.status, RideRequestStatus.waitingForVehicle);
   });
+  test('submitPendingRide keeps new ride pending', () async {
+    final repository = FakeRideRequestRepository();
+
+    final service = RideLifecycleService(repository: repository);
+
+    final result = await service.submitPendingRide(createRide());
+
+    expect(result.status, RideRequestStatus.pending);
+
+    final storedRide = await repository.findById('ride-001');
+
+    expect(storedRide?.status, RideRequestStatus.pending);
+  });
 
   test('submitRide rejects duplicate ride id', () async {
     final existingRide = createRide(

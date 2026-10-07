@@ -56,31 +56,7 @@ class RideLifecycleService {
   }) : now = now ?? DateTime.now;
 
   Future<RideRequest> submitRide(RideRequest request) async {
-    final existingRide = await repository.findById(request.id);
-
-    if (existingRide != null) {
-      throw const RideLifecycleConflictException(
-        RideLifecycleConflict.rideAlreadyExists,
-      );
-    }
-
-    if (request.status != RideRequestStatus.pending) {
-      throw const RideLifecycleConflictException(
-        RideLifecycleConflict.rideMustBePending,
-      );
-    }
-
-    if (request.assignedDriverId != null || request.assignedVehicleId != null) {
-      throw const RideLifecycleConflictException(
-        RideLifecycleConflict.rideHasAssignment,
-      );
-    }
-
-    if (request.completedByDriverId != null || request.completedAt != null) {
-      throw const RideLifecycleConflictException(
-        RideLifecycleConflict.rideHasCompletionData,
-      );
-    }
+    await _validateNewRide(request);
 
     final submittedRide = request.transitionTo(
       RideRequestStatus.waitingForVehicle,
@@ -89,6 +65,14 @@ class RideLifecycleService {
     await repository.save(submittedRide);
 
     return submittedRide;
+  }
+
+  Future<RideRequest> submitPendingRide(RideRequest request) async {
+    await _validateNewRide(request);
+
+    await repository.save(request);
+
+    return request;
   }
 
   Future<RideRequest> getRide(String rideId) {
@@ -256,6 +240,34 @@ class RideLifecycleService {
     await repository.save(completedRide);
 
     return completedRide;
+  }
+
+  Future<void> _validateNewRide(RideRequest request) async {
+    final existingRide = await repository.findById(request.id);
+
+    if (existingRide != null) {
+      throw const RideLifecycleConflictException(
+        RideLifecycleConflict.rideAlreadyExists,
+      );
+    }
+
+    if (request.status != RideRequestStatus.pending) {
+      throw const RideLifecycleConflictException(
+        RideLifecycleConflict.rideMustBePending,
+      );
+    }
+
+    if (request.assignedDriverId != null || request.assignedVehicleId != null) {
+      throw const RideLifecycleConflictException(
+        RideLifecycleConflict.rideHasAssignment,
+      );
+    }
+
+    if (request.completedByDriverId != null || request.completedAt != null) {
+      throw const RideLifecycleConflictException(
+        RideLifecycleConflict.rideHasCompletionData,
+      );
+    }
   }
 
   Future<RideRequest> _requireRide(String rideId) async {
