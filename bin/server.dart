@@ -62,6 +62,12 @@ import 'package:gocity6_backend/dispatch/ride_offer_repository.dart';
 import 'package:gocity6_backend/dispatch/driver_live_location_repository.dart';
 import 'package:gocity6_backend/dispatch/driver_live_location_service.dart';
 import 'package:gocity6_backend/dispatch/postgres_driver_live_location_repository.dart';
+import 'package:gocity6_backend/dispatch/atomic_ride_bonus_decision_repository.dart';
+import 'package:gocity6_backend/dispatch/postgres_atomic_ride_bonus_decision_repository.dart';
+import 'package:gocity6_backend/dispatch/automatic_dispatch_exhaustion_service.dart';
+import 'package:gocity6_backend/dispatch/automatic_dispatch_orchestrator.dart';
+import 'package:gocity6_backend/dispatch/automatic_ride_submission_service.dart';
+import 'package:gocity6_backend/dispatch/dispatch_candidate_service.dart';
 
 Future<Map<String, double>> geocodeAddress(
   String address,
@@ -423,6 +429,8 @@ void main(List<String> args) async {
   DriverWorkStateRepository? driverWorkStateRepository;
   RideOfferRepository? rideOfferRepository;
   AtomicRideOfferRepository? atomicRideOfferRepository;
+  AtomicRideBonusDecisionRepository? rideBonusDecisionRepository;
+  AutomaticRideSubmissionService? automaticRideSubmissionService;
   DriverRideOfferActionService? driverRideOfferActionService;
   DriverLiveLocationRepository? driverLiveLocationRepository;
   DriverLiveLocationService? driverLiveLocationService;
@@ -484,6 +492,9 @@ void main(List<String> args) async {
     rideOfferRepository = PostgresRideOfferRepository(database: databasePool);
 
     atomicRideOfferRepository = PostgresAtomicRideOfferRepository(
+      database: databasePool,
+    );
+    rideBonusDecisionRepository = PostgresAtomicRideBonusDecisionRepository(
       database: databasePool,
     );
     driverAssignedVehicleRepository = PostgresDriverAssignedVehicleRepository(
@@ -559,12 +570,49 @@ void main(List<String> args) async {
   }
   final offerRepository = rideOfferRepository;
   final atomicOfferRepository = atomicRideOfferRepository;
+  final bonusDecisionRepository = rideBonusDecisionRepository;
+  final estimator = routeEstimator;
+
+  if (shiftRepository != null &&
+      liveLocationRepository != null &&
+      estimator != null &&
+      offerRepository != null &&
+      atomicOfferRepository != null &&
+      bonusDecisionRepository != null) {
+    final candidateService = DispatchCandidateService(
+      shiftRepository: shiftRepository,
+      liveLocationRepository: liveLocationRepository,
+      routeEstimator: estimator,
+    );
+
+    final dispatchOrchestrator = AutomaticDispatchOrchestrator(
+      candidateService: candidateService,
+      offerRepository: offerRepository,
+      atomicOfferRepository: atomicOfferRepository,
+    );
+
+    final exhaustionService = AutomaticDispatchExhaustionService(
+      bonusDecisionRepository: bonusDecisionRepository,
+    );
+
+    automaticRideSubmissionService = AutomaticRideSubmissionService(
+      lifecycleService: rideLifecycleService,
+      rideRepository: rideRepository,
+      dispatchOrchestrator: dispatchOrchestrator,
+      exhaustionService: exhaustionService,
+      offerIdFactory: () => uuid.v4(),
+      now: () => DateTime.now().toUtc(),
+    );
+  }
 
   if (offerRepository != null && atomicOfferRepository != null) {
     driverRideOfferActionService = DriverRideOfferActionService(
       offerRepository: offerRepository,
       atomicOfferRepository: atomicOfferRepository,
     );
+  }
+  if (automaticRideSubmissionService != null) {
+    print('Automatic ride submission: enabled');
   }
 
   router.get('/', (Request request) {
