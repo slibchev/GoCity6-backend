@@ -68,6 +68,9 @@ import 'package:gocity6_backend/dispatch/automatic_dispatch_exhaustion_service.d
 import 'package:gocity6_backend/dispatch/automatic_dispatch_orchestrator.dart';
 import 'package:gocity6_backend/dispatch/automatic_ride_submission_service.dart';
 import 'package:gocity6_backend/dispatch/dispatch_candidate_service.dart';
+import 'package:gocity6_backend/dispatch/automatic_dispatch_continuation_service.dart';
+import 'package:gocity6_backend/dispatch/ride_offer_expiration_service.dart';
+import 'package:gocity6_backend/dispatch/ride_offer_timeout_processor.dart';
 
 Future<Map<String, double>> geocodeAddress(
   String address,
@@ -431,6 +434,7 @@ void main(List<String> args) async {
   AtomicRideOfferRepository? atomicRideOfferRepository;
   AtomicRideBonusDecisionRepository? rideBonusDecisionRepository;
   AutomaticRideSubmissionService? automaticRideSubmissionService;
+  RideOfferTimeoutProcessor? rideOfferTimeoutProcessor;
   DriverRideOfferActionService? driverRideOfferActionService;
   DriverLiveLocationRepository? driverLiveLocationRepository;
   DriverLiveLocationService? driverLiveLocationService;
@@ -594,6 +598,24 @@ void main(List<String> args) async {
     final exhaustionService = AutomaticDispatchExhaustionService(
       bonusDecisionRepository: bonusDecisionRepository,
     );
+    final continuationService = AutomaticDispatchContinuationService(
+      rideRepository: rideRepository,
+      offerRepository: offerRepository,
+      dispatchOrchestrator: dispatchOrchestrator,
+      exhaustionService: exhaustionService,
+      offerIdFactory: () => uuid.v4(),
+      now: () => DateTime.now().toUtc(),
+    );
+
+    final expirationService = RideOfferExpirationService(
+      offerRepository: offerRepository,
+      atomicOfferRepository: atomicOfferRepository,
+    );
+
+    rideOfferTimeoutProcessor = RideOfferTimeoutProcessor(
+      expireDueOffers: expirationService.expireDueOffers,
+      continueRide: continuationService.continueRide,
+    );
 
     automaticRideSubmissionService = AutomaticRideSubmissionService(
       lifecycleService: rideLifecycleService,
@@ -613,6 +635,9 @@ void main(List<String> args) async {
   }
   if (automaticRideSubmissionService != null) {
     print('Automatic ride submission: enabled');
+  }
+  if (rideOfferTimeoutProcessor != null) {
+    print('Ride offer timeout processor: enabled');
   }
 
   router.get('/', (Request request) {
