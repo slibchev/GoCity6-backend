@@ -852,7 +852,11 @@ void main(List<String> args) async {
         requestedAt: DateTime.now().toUtc(),
       );
 
-      final submittedRide = await rideLifecycleService.submitRide(ride);
+      final automaticSubmissionService = automaticRideSubmissionService;
+
+      final submittedRide = automaticSubmissionService == null
+          ? await rideLifecycleService.submitRide(ride)
+          : (await automaticSubmissionService.submit(ride)).ride;
 
       return Response(
         201,
