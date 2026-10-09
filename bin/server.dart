@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'dart:io';
@@ -1951,4 +1952,34 @@ void main(List<String> args) async {
   final server = await shelf_io.serve(handler, InternetAddress.anyIPv4, port);
 
   print('Server listening on port ${server.port}');
+  final timeoutProcessor = rideOfferTimeoutProcessor;
+
+  if (timeoutProcessor != null) {
+    var scanRunning = false;
+
+    Timer.periodic(const Duration(seconds: 1), (_) async {
+      if (scanRunning) {
+        return;
+      }
+
+      scanRunning = true;
+
+      try {
+        final expiredOffers = await timeoutProcessor.process(
+          now: DateTime.now().toUtc(),
+        );
+
+        if (expiredOffers.isNotEmpty) {
+          print('Expired ride offers processed: ${expiredOffers.length}');
+        }
+      } catch (error, stackTrace) {
+        print('Ride offer timeout scan failed: $error');
+        print(stackTrace);
+      } finally {
+        scanRunning = false;
+      }
+    });
+
+    print('Ride offer timeout scanner: started');
+  }
 }
