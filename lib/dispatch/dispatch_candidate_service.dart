@@ -71,13 +71,19 @@ class DispatchCandidateService {
         continue;
       }
 
-      final estimate = await routeEstimator.estimate(
-        origin: RouteWaypoint(
-          latitude: location.latitude,
-          longitude: location.longitude,
-        ),
-        destination: RouteWaypoint(address: ride.pickup),
-      );
+      RouteEstimate estimate;
+
+      try {
+        estimate = await routeEstimator.estimate(
+          origin: RouteWaypoint(
+            latitude: location.latitude,
+            longitude: location.longitude,
+          ),
+          destination: RouteWaypoint(address: ride.pickup),
+        );
+      } on Exception {
+        continue;
+      }
 
       final candidate = DispatchCandidate.fromQueueState(
         queueState: queueState,

@@ -182,6 +182,29 @@ void main() {
     expect(locationRepository.findCalls, 0);
     expect(routeEstimator.calls, 0);
   });
+  test('skips driver when route estimation fails', () async {
+    final routeEstimator = _FailingRouteEstimator();
+
+    final service = DispatchCandidateService(
+      shiftRepository: _FakeDriverShiftRepository(shifts: [buildShift()]),
+      liveLocationRepository: _FakeDriverLiveLocationRepository(
+        locations: {
+          'driver-001': DriverLiveLocation(
+            driverId: 'driver-001',
+            latitude: 42.6977,
+            longitude: 23.3219,
+            updatedAt: now.subtract(const Duration(seconds: 5)),
+          ),
+        },
+      ),
+      routeEstimator: routeEstimator,
+    );
+
+    final result = await service.buildForRide(ride: buildRide(), now: now);
+
+    expect(result, isEmpty);
+    expect(routeEstimator.calls, 1);
+  });
 }
 
 class _FakeDriverShiftRepository implements DriverShiftRepository {
@@ -267,5 +290,18 @@ class _FakeRouteEstimator implements RouteEstimator {
     lastDestination = destination;
 
     return result;
+  }
+}
+
+class _FailingRouteEstimator implements RouteEstimator {
+  int calls = 0;
+
+  @override
+  Future<RouteEstimate> estimate({
+    required RouteWaypoint origin,
+    required RouteWaypoint destination,
+  }) async {
+    calls += 1;
+    throw Exception('Route service unavailable.');
   }
 }
