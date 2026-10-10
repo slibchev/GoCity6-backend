@@ -7,9 +7,7 @@ import 'package:test/test.dart';
 void main() {
   final now = DateTime.utc(2026, 10, 6, 20);
 
-  RideOffer buildOffer({
-    String driverId = 'driver-001',
-  }) {
+  RideOffer buildOffer({String driverId = 'driver-001'}) {
     return RideOffer.create(
       id: 'offer-001',
       rideId: 'ride-001',
@@ -25,15 +23,12 @@ void main() {
   test('accepts offer owned by authenticated driver', () async {
     final offer = buildOffer();
 
-    final atomicRepository = _FakeAtomicRideOfferRepository(
-      offer: offer,
-    );
+    final atomicRepository = _FakeAtomicRideOfferRepository(offer: offer);
 
     final service = DriverRideOfferActionService(
-      offerRepository: _FakeRideOfferRepository(
-        offer: offer,
-      ),
+      offerRepository: _FakeRideOfferRepository(offer: offer),
       atomicOfferRepository: atomicRepository,
+      continueRide: ({required String rideId}) async => null,
     );
 
     final result = await service.accept(
@@ -47,18 +42,20 @@ void main() {
     expect(atomicRepository.lastOfferId, 'offer-001');
   });
 
-  test('rejects offer owned by authenticated driver', () async {
+  test('rejects offer and continues automatic dispatch', () async {
     final offer = buildOffer();
 
-    final atomicRepository = _FakeAtomicRideOfferRepository(
-      offer: offer,
-    );
+    final atomicRepository = _FakeAtomicRideOfferRepository(offer: offer);
+
+    String? continuedRideId;
 
     final service = DriverRideOfferActionService(
-      offerRepository: _FakeRideOfferRepository(
-        offer: offer,
-      ),
+      offerRepository: _FakeRideOfferRepository(offer: offer),
       atomicOfferRepository: atomicRepository,
+      continueRide: ({required String rideId}) async {
+        continuedRideId = rideId;
+        return null;
+      },
     );
 
     final result = await service.reject(
@@ -70,30 +67,22 @@ void main() {
     expect(result.status, RideOfferStatus.rejected);
     expect(atomicRepository.rejectCalls, 1);
     expect(atomicRepository.lastOfferId, 'offer-001');
+    expect(continuedRideId, 'ride-001');
   });
 
   test('rejects action on offer owned by another driver', () async {
-    final offer = buildOffer(
-      driverId: 'driver-other',
-    );
+    final offer = buildOffer(driverId: 'driver-other');
 
-    final atomicRepository = _FakeAtomicRideOfferRepository(
-      offer: offer,
-    );
+    final atomicRepository = _FakeAtomicRideOfferRepository(offer: offer);
 
     final service = DriverRideOfferActionService(
-      offerRepository: _FakeRideOfferRepository(
-        offer: offer,
-      ),
+      offerRepository: _FakeRideOfferRepository(offer: offer),
       atomicOfferRepository: atomicRepository,
+      continueRide: ({required String rideId}) async => null,
     );
 
     expect(
-      service.accept(
-        driverId: 'driver-001',
-        offerId: 'offer-001',
-        now: now,
-      ),
+      service.accept(driverId: 'driver-001', offerId: 'offer-001', now: now),
       throwsA(
         isA<DriverRideOfferActionException>().having(
           (error) => error.conflict,
@@ -112,6 +101,7 @@ void main() {
     final service = DriverRideOfferActionService(
       offerRepository: _FakeRideOfferRepository(),
       atomicOfferRepository: atomicRepository,
+      continueRide: ({required String rideId}) async => null,
     );
 
     expect(
@@ -134,9 +124,7 @@ void main() {
 }
 
 class _FakeRideOfferRepository implements RideOfferRepository {
-  _FakeRideOfferRepository({
-    this.offer,
-  });
+  _FakeRideOfferRepository({this.offer});
 
   final RideOffer? offer;
 
@@ -170,11 +158,8 @@ class _FakeRideOfferRepository implements RideOfferRepository {
   }
 }
 
-class _FakeAtomicRideOfferRepository
-    implements AtomicRideOfferRepository {
-  _FakeAtomicRideOfferRepository({
-    this.offer,
-  });
+class _FakeAtomicRideOfferRepository implements AtomicRideOfferRepository {
+  _FakeAtomicRideOfferRepository({this.offer});
 
   final RideOffer? offer;
 
@@ -205,9 +190,7 @@ class _FakeAtomicRideOfferRepository
   }
 
   @override
-  Future<RideOffer> createPendingOffer({
-    required RideOffer offer,
-  }) {
+  Future<RideOffer> createPendingOffer({required RideOffer offer}) {
     throw UnsupportedError('Not needed by this test.');
   }
 
@@ -220,9 +203,7 @@ class _FakeAtomicRideOfferRepository
   }
 
   @override
-  Future<void> movePendingRideToWaitingForVehicle({
-    required String rideId,
-  }) {
+  Future<void> movePendingRideToWaitingForVehicle({required String rideId}) {
     throw UnsupportedError('Not needed by this test.');
   }
 }

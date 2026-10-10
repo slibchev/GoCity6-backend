@@ -2,6 +2,10 @@ import 'atomic_ride_offer_repository.dart';
 import 'ride_offer.dart';
 import 'ride_offer_repository.dart';
 
+typedef ContinueAutomaticDispatch = Future<RideOffer?> Function({
+  required String rideId,
+});
+
 enum DriverRideOfferActionConflict {
   offerNotFound,
   offerDoesNotBelongToDriver,
@@ -21,10 +25,12 @@ class DriverRideOfferActionException implements Exception {
 class DriverRideOfferActionService {
   final RideOfferRepository offerRepository;
   final AtomicRideOfferRepository atomicOfferRepository;
+  final ContinueAutomaticDispatch continueRide;
 
   const DriverRideOfferActionService({
     required this.offerRepository,
     required this.atomicOfferRepository,
+    required this.continueRide,
   });
 
   Future<RideOffer> accept({
@@ -53,10 +59,16 @@ class DriverRideOfferActionService {
       offerId: offerId,
     );
 
-    return atomicOfferRepository.rejectPendingOffer(
+    final rejectedOffer = await atomicOfferRepository.rejectPendingOffer(
       offerId: offerId,
       now: now,
     );
+
+    await continueRide(
+      rideId: rejectedOffer.rideId,
+    );
+
+    return rejectedOffer;
   }
 
   Future<void> _requireOwnedOffer({

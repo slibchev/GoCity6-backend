@@ -614,6 +614,11 @@ void main(List<String> args) async {
       offerIdFactory: () => uuid.v4(),
       now: () => DateTime.now().toUtc(),
     );
+    driverRideOfferActionService = DriverRideOfferActionService(
+      offerRepository: offerRepository,
+      atomicOfferRepository: atomicOfferRepository,
+      continueRide: continuationService.continueRide,
+    );
     customerBonusDecisionService = CustomerBonusDecisionService(
       bonusDecisionRepository: bonusDecisionRepository,
       continueRide: continuationService.continueRide,
@@ -639,12 +644,6 @@ void main(List<String> args) async {
     );
   }
 
-  if (offerRepository != null && atomicOfferRepository != null) {
-    driverRideOfferActionService = DriverRideOfferActionService(
-      offerRepository: offerRepository,
-      atomicOfferRepository: atomicOfferRepository,
-    );
-  }
   if (automaticRideSubmissionService != null) {
     print('Automatic ride submission: enabled');
   }
