@@ -94,6 +94,9 @@ void main() {
     expect(body['passengers'], 2);
     expect(body['hasLuggage'], isTrue);
     expect(body['status'], 'waitingForVehicle');
+    expect(body['dispatchRound'], 1);
+    expect(body['driverBonusMinor'], 0);
+    expect(body['bonusDecision'], 'not_offered');
     expect(body['assignedDriverId'], isNull);
     expect(body['assignedVehicleId'], isNull);
     expect(body['requestedAt'], isNotNull);
@@ -140,6 +143,35 @@ void main() {
 
     expect(body['error'], 'Ride not found.');
   });
+  test(
+    'POST ride bonus accept returns 503 when service is unavailable',
+    () async {
+      final response = await post(
+        Uri.parse('$host/rides/ride-001/bonus/accept'),
+      );
+
+      expect(response.statusCode, 503);
+
+      final body = jsonDecode(response.body) as Map<String, dynamic>;
+
+      expect(body['error'], 'Customer bonus decision service is unavailable.');
+    },
+  );
+
+  test(
+    'POST ride bonus decline returns 503 when service is unavailable',
+    () async {
+      final response = await post(
+        Uri.parse('$host/rides/ride-001/bonus/decline'),
+      );
+
+      expect(response.statusCode, 503);
+
+      final body = jsonDecode(response.body) as Map<String, dynamic>;
+
+      expect(body['error'], 'Customer bonus decision service is unavailable.');
+    },
+  );
   test('POST ride cancel cancels waiting ride', () async {
     final createResponse = await post(
       Uri.parse('$host/rides'),

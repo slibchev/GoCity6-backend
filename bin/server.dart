@@ -72,6 +72,7 @@ import 'package:gocity6_backend/dispatch/dispatch_candidate_service.dart';
 import 'package:gocity6_backend/dispatch/automatic_dispatch_continuation_service.dart';
 import 'package:gocity6_backend/dispatch/ride_offer_expiration_service.dart';
 import 'package:gocity6_backend/dispatch/ride_offer_timeout_processor.dart';
+import 'package:gocity6_backend/dispatch/customer_bonus_decision_service.dart';
 
 Future<Map<String, double>> geocodeAddress(
   String address,
@@ -298,6 +299,11 @@ Future<Map<String, dynamic>> rideRequestToJson(
     'requestedAt': ride.requestedAt.toUtc().toIso8601String(),
 
     'status': ride.status.name,
+    'dispatchRound': ride.dispatchRound,
+
+    'driverBonusMinor': ride.driverBonusMinor,
+
+    'bonusDecision': ride.bonusDecision.databaseValue,
 
     'assignedDriverId': ride.assignedDriverId,
 
@@ -435,6 +441,7 @@ void main(List<String> args) async {
   AtomicRideOfferRepository? atomicRideOfferRepository;
   AtomicRideBonusDecisionRepository? rideBonusDecisionRepository;
   AutomaticRideSubmissionService? automaticRideSubmissionService;
+  CustomerBonusDecisionService? customerBonusDecisionService;
   RideOfferTimeoutProcessor? rideOfferTimeoutProcessor;
   DriverRideOfferActionService? driverRideOfferActionService;
   DriverLiveLocationRepository? driverLiveLocationRepository;
@@ -607,6 +614,10 @@ void main(List<String> args) async {
       offerIdFactory: () => uuid.v4(),
       now: () => DateTime.now().toUtc(),
     );
+    customerBonusDecisionService = CustomerBonusDecisionService(
+      bonusDecisionRepository: bonusDecisionRepository,
+      continueRide: continuationService.continueRide,
+    );
 
     final expirationService = RideOfferExpirationService(
       offerRepository: offerRepository,
@@ -640,6 +651,127 @@ void main(List<String> args) async {
   if (rideOfferTimeoutProcessor != null) {
     print('Ride offer timeout processor: enabled');
   }
+  if (customerBonusDecisionService != null) {
+    print('Customer bonus decision service: enabled');
+  }
+  router.post('/rides/<rideId>/bonus/accept', (
+    Request request,
+    String rideId,
+  ) async {
+    final bonusService = customerBonusDecisionService;
+
+    if (bonusService == null) {
+      return Response(
+        503,
+        body: jsonEncode({
+          'error': 'Customer bonus decision service is unavailable.',
+        }),
+        headers: {'Content-Type': 'application/json'},
+      );
+    }
+
+    try {
+      await bonusService.accept(rideId: rideId);
+
+      final ride = await rideLifecycleService.getRide(rideId);
+
+      return Response.ok(
+        jsonEncode(
+          await rideRequestToJson(
+            ride,
+            assignedDriverInfoService: assignedDriverInfoService,
+          ),
+        ),
+        headers: {'Content-Type': 'application/json'},
+      );
+    } on AtomicRideBonusDecisionConflictException catch (error) {
+      if (error.conflict == AtomicRideBonusDecisionConflict.rideNotFound) {
+        return Response(
+          404,
+          body: jsonEncode({'error': 'Ride not found.'}),
+          headers: {'Content-Type': 'application/json'},
+        );
+      }
+
+      return Response(
+        409,
+        body: jsonEncode({'error': 'Ride bonus cannot be accepted.'}),
+        headers: {'Content-Type': 'application/json'},
+      );
+    } on RideLifecycleNotFoundException {
+      return Response(
+        404,
+        body: jsonEncode({'error': 'Ride not found.'}),
+        headers: {'Content-Type': 'application/json'},
+      );
+    } catch (error) {
+      print('Ride bonus accept error: $error');
+
+      return Response.internalServerError(
+        body: jsonEncode({'error': 'Ride bonus acceptance failed.'}),
+        headers: {'Content-Type': 'application/json'},
+      );
+    }
+  });
+  router.post('/rides/<rideId>/bonus/decline', (
+    Request request,
+    String rideId,
+  ) async {
+    final bonusService = customerBonusDecisionService;
+
+    if (bonusService == null) {
+      return Response(
+        503,
+        body: jsonEncode({
+          'error': 'Customer bonus decision service is unavailable.',
+        }),
+        headers: {'Content-Type': 'application/json'},
+      );
+    }
+
+    try {
+      await bonusService.decline(rideId: rideId);
+
+      final ride = await rideLifecycleService.getRide(rideId);
+
+      return Response.ok(
+        jsonEncode(
+          await rideRequestToJson(
+            ride,
+            assignedDriverInfoService: assignedDriverInfoService,
+          ),
+        ),
+        headers: {'Content-Type': 'application/json'},
+      );
+    } on AtomicRideBonusDecisionConflictException catch (error) {
+      if (error.conflict == AtomicRideBonusDecisionConflict.rideNotFound) {
+        return Response(
+          404,
+          body: jsonEncode({'error': 'Ride not found.'}),
+          headers: {'Content-Type': 'application/json'},
+        );
+      }
+
+      return Response(
+        409,
+        body: jsonEncode({'error': 'Ride bonus cannot be declined.'}),
+        headers: {'Content-Type': 'application/json'},
+      );
+    } on RideLifecycleNotFoundException {
+      return Response(
+        404,
+        body: jsonEncode({'error': 'Ride not found.'}),
+        headers: {'Content-Type': 'application/json'},
+      );
+    } catch (error) {
+      print('Ride bonus decline error: $error');
+
+      return Response.internalServerError(
+        body: jsonEncode({'error': 'Ride bonus decline failed.'}),
+        headers: {'Content-Type': 'application/json'},
+      );
+    }
+  });
 
   router.get('/', (Request request) {
     return Response.ok('GoCity6 backend is running');
