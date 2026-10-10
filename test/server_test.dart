@@ -920,4 +920,39 @@ void main() {
 
     expect(body['error'], 'Ride not found.');
   });
+  test('POST secure driver arriving returns 503 without driver auth', () async {
+    final response = await post(
+      Uri.parse('$host/driver/rides/ride-001/arriving'),
+    );
+
+    expect(response.statusCode, 503);
+
+    final body = jsonDecode(response.body) as Map<String, dynamic>;
+
+    expect(body['error'], 'Driver authentication is unavailable.');
+  });
+
+  test('POST secure driver start returns 503 without driver auth', () async {
+    final response = await post(Uri.parse('$host/driver/rides/ride-001/start'));
+
+    expect(response.statusCode, 503);
+
+    final body = jsonDecode(response.body) as Map<String, dynamic>;
+
+    expect(body['error'], 'Driver authentication is unavailable.');
+  });
+
+  test('POST secure driver complete returns 503 without driver auth', () async {
+    final response = await post(
+      Uri.parse('$host/driver/rides/ride-001/complete'),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode({'meterFareMinor': 1234}),
+    );
+
+    expect(response.statusCode, 503);
+
+    final body = jsonDecode(response.body) as Map<String, dynamic>;
+
+    expect(body['error'], 'Driver authentication is unavailable.');
+  });
 }

@@ -1712,6 +1712,77 @@ void main(List<String> args) async {
       );
     }
   });
+  router.post('/driver/rides/<rideId>/arriving', (
+    Request request,
+    String rideId,
+  ) async {
+    final tokenService = driverTokenService;
+
+    if (tokenService == null) {
+      return Response(
+        503,
+        body: jsonEncode({'error': 'Driver authentication is unavailable.'}),
+        headers: {'Content-Type': 'application/json'},
+      );
+    }
+
+    final authorization = request.headers['authorization'];
+
+    if (authorization == null || !authorization.startsWith('Bearer ')) {
+      return Response(
+        401,
+        body: jsonEncode({'error': 'Authentication required.'}),
+        headers: {'Content-Type': 'application/json'},
+      );
+    }
+
+    final token = authorization.substring(7).trim();
+    final tokenPayload = tokenService.verifyToken(token);
+
+    if (tokenPayload == null) {
+      return Response(
+        401,
+        body: jsonEncode({'error': 'Invalid or expired token.'}),
+        headers: {'Content-Type': 'application/json'},
+      );
+    }
+
+    try {
+      final updatedRide = await rideLifecycleService.markDriverArriving(
+        rideId: rideId,
+        driverId: tokenPayload.driverId,
+      );
+
+      return Response.ok(
+        jsonEncode(
+          await rideRequestToJson(
+            updatedRide,
+            assignedDriverInfoService: assignedDriverInfoService,
+          ),
+        ),
+        headers: {'Content-Type': 'application/json'},
+      );
+    } on RideLifecycleNotFoundException {
+      return Response(
+        404,
+        body: jsonEncode({'error': 'Ride not found.'}),
+        headers: {'Content-Type': 'application/json'},
+      );
+    } on RideLifecycleConflictException {
+      return Response(
+        409,
+        body: jsonEncode({'error': 'Ride cannot move to driverArriving.'}),
+        headers: {'Content-Type': 'application/json'},
+      );
+    } catch (error) {
+      print('Driver arriving error: $error');
+
+      return Response.internalServerError(
+        body: jsonEncode({'error': 'Failed to update ride.'}),
+        headers: {'Content-Type': 'application/json'},
+      );
+    }
+  });
 
   router.post('/rides/<rideId>/driver-arriving', (
     Request request,
@@ -1793,6 +1864,77 @@ void main(List<String> args) async {
       );
     }
   });
+  router.post('/driver/rides/<rideId>/start', (
+    Request request,
+    String rideId,
+  ) async {
+    final tokenService = driverTokenService;
+
+    if (tokenService == null) {
+      return Response(
+        503,
+        body: jsonEncode({'error': 'Driver authentication is unavailable.'}),
+        headers: {'Content-Type': 'application/json'},
+      );
+    }
+
+    final authorization = request.headers['authorization'];
+
+    if (authorization == null || !authorization.startsWith('Bearer ')) {
+      return Response(
+        401,
+        body: jsonEncode({'error': 'Authentication required.'}),
+        headers: {'Content-Type': 'application/json'},
+      );
+    }
+
+    final token = authorization.substring(7).trim();
+    final tokenPayload = tokenService.verifyToken(token);
+
+    if (tokenPayload == null) {
+      return Response(
+        401,
+        body: jsonEncode({'error': 'Invalid or expired token.'}),
+        headers: {'Content-Type': 'application/json'},
+      );
+    }
+
+    try {
+      final updatedRide = await rideLifecycleService.startRide(
+        rideId: rideId,
+        driverId: tokenPayload.driverId,
+      );
+
+      return Response.ok(
+        jsonEncode(
+          await rideRequestToJson(
+            updatedRide,
+            assignedDriverInfoService: assignedDriverInfoService,
+          ),
+        ),
+        headers: {'Content-Type': 'application/json'},
+      );
+    } on RideLifecycleNotFoundException {
+      return Response(
+        404,
+        body: jsonEncode({'error': 'Ride not found.'}),
+        headers: {'Content-Type': 'application/json'},
+      );
+    } on RideLifecycleConflictException {
+      return Response(
+        409,
+        body: jsonEncode({'error': 'Ride cannot be started.'}),
+        headers: {'Content-Type': 'application/json'},
+      );
+    } catch (error) {
+      print('Start ride error: $error');
+
+      return Response.internalServerError(
+        body: jsonEncode({'error': 'Failed to start ride.'}),
+        headers: {'Content-Type': 'application/json'},
+      );
+    }
+  });
 
   router.post('/rides/<rideId>/start', (Request request, String rideId) async {
     try {
@@ -1866,6 +2008,106 @@ void main(List<String> args) async {
       return Response.internalServerError(
         body: jsonEncode({'error': 'Failed to start ride.'}),
 
+        headers: {'Content-Type': 'application/json'},
+      );
+    }
+  });
+  router.post('/driver/rides/<rideId>/complete', (
+    Request request,
+    String rideId,
+  ) async {
+    final tokenService = driverTokenService;
+
+    if (tokenService == null) {
+      return Response(
+        503,
+        body: jsonEncode({'error': 'Driver authentication is unavailable.'}),
+        headers: {'Content-Type': 'application/json'},
+      );
+    }
+
+    final authorization = request.headers['authorization'];
+
+    if (authorization == null || !authorization.startsWith('Bearer ')) {
+      return Response(
+        401,
+        body: jsonEncode({'error': 'Authentication required.'}),
+        headers: {'Content-Type': 'application/json'},
+      );
+    }
+
+    final token = authorization.substring(7).trim();
+    final tokenPayload = tokenService.verifyToken(token);
+
+    if (tokenPayload == null) {
+      return Response(
+        401,
+        body: jsonEncode({'error': 'Invalid or expired token.'}),
+        headers: {'Content-Type': 'application/json'},
+      );
+    }
+
+    try {
+      final decodedBody = jsonDecode(await request.readAsString());
+
+      if (decodedBody is! Map<String, dynamic>) {
+        return Response(
+          400,
+          body: jsonEncode({'error': 'Request body must be a JSON object.'}),
+          headers: {'Content-Type': 'application/json'},
+        );
+      }
+
+      final meterFareMinor = decodedBody['meterFareMinor'];
+
+      if (meterFareMinor is! int || meterFareMinor <= 0) {
+        return Response(
+          400,
+          body: jsonEncode({
+            'error': 'meterFareMinor must be a positive integer.',
+          }),
+          headers: {'Content-Type': 'application/json'},
+        );
+      }
+
+      final completedRide = await rideLifecycleService.completeRide(
+        rideId: rideId,
+        driverId: tokenPayload.driverId,
+        meterFareMinor: meterFareMinor,
+      );
+
+      return Response.ok(
+        jsonEncode(
+          await rideRequestToJson(
+            completedRide,
+            assignedDriverInfoService: assignedDriverInfoService,
+          ),
+        ),
+        headers: {'Content-Type': 'application/json'},
+      );
+    } on FormatException {
+      return Response(
+        400,
+        body: jsonEncode({'error': 'Invalid JSON body.'}),
+        headers: {'Content-Type': 'application/json'},
+      );
+    } on RideLifecycleNotFoundException {
+      return Response(
+        404,
+        body: jsonEncode({'error': 'Ride not found.'}),
+        headers: {'Content-Type': 'application/json'},
+      );
+    } on RideLifecycleConflictException {
+      return Response(
+        409,
+        body: jsonEncode({'error': 'Ride cannot be completed.'}),
+        headers: {'Content-Type': 'application/json'},
+      );
+    } catch (error) {
+      print('Complete ride error: $error');
+
+      return Response.internalServerError(
+        body: jsonEncode({'error': 'Ride completion failed.'}),
         headers: {'Content-Type': 'application/json'},
       );
     }
