@@ -7,6 +7,8 @@ import 'package:gocity6_backend/dispatch/driver_shift_repository.dart';
 import 'package:gocity6_backend/ride/ride_request.dart';
 import 'package:gocity6_backend/routing/route_estimator.dart';
 import 'package:test/test.dart';
+import 'package:gocity6_backend/dispatch/driver_dispatch_state.dart';
+import 'package:gocity6_backend/dispatch/driver_dispatch_state_repository.dart';
 
 void main() {
   final now = DateTime.utc(2026, 10, 6, 20);
@@ -205,6 +207,83 @@ void main() {
     expect(result, isEmpty);
     expect(routeEstimator.calls, 1);
   });
+  test('skips driver while dispatch penalty is active', () async {
+    final shift = buildShift();
+
+    final locationRepository = _FakeDriverLiveLocationRepository(
+      locations: {
+        'driver-001': DriverLiveLocation(
+          driverId: 'driver-001',
+          latitude: 42.6977,
+          longitude: 23.3219,
+          updatedAt: now,
+        ),
+      },
+    );
+
+    final routeEstimator = _FakeRouteEstimator(
+      result: RouteEstimate(distanceMeters: 1000, durationSeconds: 200),
+    );
+
+    final service = DispatchCandidateService(
+      shiftRepository: _FakeDriverShiftRepository(shifts: [shift]),
+      liveLocationRepository: locationRepository,
+      dispatchStateRepository: _FakeDriverDispatchStateRepository(
+        states: {
+          'driver-001': DriverDispatchState(
+            driverId: 'driver-001',
+            consecutiveRejects: 0,
+            penaltyLevel: 1,
+            dispatchBlockedUntil: now.add(const Duration(minutes: 20)),
+            penaltyResetEligibleAt: null,
+          ),
+        },
+      ),
+      routeEstimator: routeEstimator,
+    );
+
+    final result = await service.buildForRide(ride: buildRide(), now: now);
+
+    expect(result, isEmpty);
+    expect(locationRepository.findCalls, 0);
+    expect(routeEstimator.calls, 0);
+  });
+  test('allows driver after dispatch penalty expires', () async {
+    final shift = buildShift();
+
+    final service = DispatchCandidateService(
+      shiftRepository: _FakeDriverShiftRepository(shifts: [shift]),
+      liveLocationRepository: _FakeDriverLiveLocationRepository(
+        locations: {
+          'driver-001': DriverLiveLocation(
+            driverId: 'driver-001',
+            latitude: 42.6977,
+            longitude: 23.3219,
+            updatedAt: now,
+          ),
+        },
+      ),
+      dispatchStateRepository: _FakeDriverDispatchStateRepository(
+        states: {
+          'driver-001': DriverDispatchState(
+            driverId: 'driver-001',
+            consecutiveRejects: 0,
+            penaltyLevel: 1,
+            dispatchBlockedUntil: now.subtract(const Duration(seconds: 1)),
+            penaltyResetEligibleAt: null,
+          ),
+        },
+      ),
+      routeEstimator: _FakeRouteEstimator(
+        result: RouteEstimate(distanceMeters: 1000, durationSeconds: 200),
+      ),
+    );
+
+    final result = await service.buildForRide(ride: buildRide(), now: now);
+
+    expect(result, hasLength(1));
+    expect(result.single.driverId, 'driver-001');
+  });
 }
 
 class _FakeDriverShiftRepository implements DriverShiftRepository {
@@ -303,5 +382,22 @@ class _FailingRouteEstimator implements RouteEstimator {
   }) async {
     calls += 1;
     throw Exception('Route service unavailable.');
+  }
+}
+
+class _FakeDriverDispatchStateRepository
+    implements DriverDispatchStateRepository {
+  _FakeDriverDispatchStateRepository({this.states = const {}});
+
+  final Map<String, DriverDispatchState> states;
+
+  @override
+  Future<DriverDispatchState?> findByDriverId(String driverId) async {
+    return states[driverId];
+  }
+
+  @override
+  Future<DriverDispatchState> save(DriverDispatchState state) {
+    throw UnsupportedError('Not needed by this test.');
   }
 }

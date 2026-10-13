@@ -73,6 +73,8 @@ import 'package:gocity6_backend/dispatch/automatic_dispatch_continuation_service
 import 'package:gocity6_backend/dispatch/ride_offer_expiration_service.dart';
 import 'package:gocity6_backend/dispatch/ride_offer_timeout_processor.dart';
 import 'package:gocity6_backend/dispatch/customer_bonus_decision_service.dart';
+import 'package:gocity6_backend/dispatch/driver_dispatch_state_repository.dart';
+import 'package:gocity6_backend/dispatch/postgres_driver_dispatch_state_repository.dart';
 
 Future<Map<String, double>> geocodeAddress(
   String address,
@@ -445,6 +447,7 @@ void main(List<String> args) async {
   RideOfferTimeoutProcessor? rideOfferTimeoutProcessor;
   DriverRideOfferActionService? driverRideOfferActionService;
   DriverLiveLocationRepository? driverLiveLocationRepository;
+  DriverDispatchStateRepository? driverDispatchStateRepository;
   DriverLiveLocationService? driverLiveLocationService;
 
   AssignedDriverInfoService? assignedDriverInfoService;
@@ -499,6 +502,9 @@ void main(List<String> args) async {
       database: databasePool,
     );
     driverLiveLocationRepository = PostgresDriverLiveLocationRepository(
+      database: databasePool,
+    );
+    driverDispatchStateRepository = PostgresDriverDispatchStateRepository(
       database: databasePool,
     );
     rideOfferRepository = PostgresRideOfferRepository(database: databasePool);
@@ -574,6 +580,7 @@ void main(List<String> args) async {
     driverStateService = DriverStateService(repository: workStateRepository);
   }
   final liveLocationRepository = driverLiveLocationRepository;
+  final dispatchStateRepository = driverDispatchStateRepository;
 
   if (liveLocationRepository != null) {
     driverLiveLocationService = DriverLiveLocationService(
@@ -587,6 +594,7 @@ void main(List<String> args) async {
 
   if (shiftRepository != null &&
       liveLocationRepository != null &&
+      dispatchStateRepository != null &&
       estimator != null &&
       offerRepository != null &&
       atomicOfferRepository != null &&
@@ -594,6 +602,7 @@ void main(List<String> args) async {
     final candidateService = DispatchCandidateService(
       shiftRepository: shiftRepository,
       liveLocationRepository: liveLocationRepository,
+      dispatchStateRepository: dispatchStateRepository,
       routeEstimator: estimator,
     );
 

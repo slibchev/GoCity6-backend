@@ -4,6 +4,7 @@ import 'dispatch_candidate.dart';
 import 'driver_live_location_repository.dart';
 import 'driver_queue_state.dart';
 import 'driver_shift_repository.dart';
+import 'driver_dispatch_state_repository.dart';
 
 class DispatchCandidateBatch {
   final List<DispatchCandidate> candidates;
@@ -20,12 +21,14 @@ class DispatchCandidateService {
 
   final DriverShiftRepository shiftRepository;
   final DriverLiveLocationRepository liveLocationRepository;
+  final DriverDispatchStateRepository? dispatchStateRepository;
   final RouteEstimator routeEstimator;
   final Duration maxLocationAge;
 
   const DispatchCandidateService({
     required this.shiftRepository,
     required this.liveLocationRepository,
+    this.dispatchStateRepository,
     required this.routeEstimator,
     this.maxLocationAge = defaultMaxLocationAge,
   });
@@ -54,6 +57,13 @@ class DispatchCandidateService {
 
       if (queueState.availability != DriverQueueAvailability.available ||
           queueState.hasPendingOffer) {
+        continue;
+      }
+      final dispatchState = dispatchStateRepository == null
+          ? null
+          : await dispatchStateRepository!.findByDriverId(shift.driverId);
+
+      if (dispatchState?.isBlockedAt(nowUtc) ?? false) {
         continue;
       }
 
