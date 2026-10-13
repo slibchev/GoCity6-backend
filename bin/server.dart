@@ -1239,6 +1239,7 @@ void main(List<String> args) async {
     final tokenService = driverTokenService;
     final stateService = driverStateService;
     final liveLocationRepository = driverLiveLocationRepository;
+    final dispatchStateRepo = driverDispatchStateRepository;
 
     if (liveLocationRepository != null) {
       driverLiveLocationService = DriverLiveLocationService(
@@ -1277,6 +1278,9 @@ void main(List<String> args) async {
 
     try {
       final state = await stateService.load(driverId: tokenPayload.driverId);
+      final dispatchState = await dispatchStateRepo?.findByDriverId(
+        tokenPayload.driverId,
+      );
 
       final shift = state.activeShift;
       final pendingOffer = state.pendingOffer;
@@ -1286,6 +1290,16 @@ void main(List<String> args) async {
       return Response.ok(
         jsonEncode({
           'isWorking': state.isWorking,
+          'dispatchState': {
+            'consecutiveRejects': dispatchState?.consecutiveRejects ?? 0,
+            'penaltyLevel': dispatchState?.penaltyLevel ?? 0,
+            'dispatchBlockedUntil': dispatchState?.dispatchBlockedUntil
+                ?.toUtc()
+                .toIso8601String(),
+            'penaltyResetEligibleAt': dispatchState?.penaltyResetEligibleAt
+                ?.toUtc()
+                .toIso8601String(),
+          },
           'shift': shift == null
               ? null
               : {
