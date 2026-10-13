@@ -910,6 +910,10 @@ void main(List<String> args) async {
       final shift = await shiftStartService.start(
         driverId: tokenPayload.driverId,
       );
+      await driverDispatchPolicyService?.recordShiftStarted(
+        driverId: tokenPayload.driverId,
+        startedAt: shift.startedAt,
+      );
 
       return Response.ok(
         jsonEncode({
