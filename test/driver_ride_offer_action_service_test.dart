@@ -3,11 +3,23 @@ import 'package:gocity6_backend/dispatch/driver_ride_offer_action_service.dart';
 import 'package:gocity6_backend/dispatch/ride_offer.dart';
 import 'package:gocity6_backend/dispatch/ride_offer_repository.dart';
 import 'package:test/test.dart';
+import 'package:gocity6_backend/dispatch/driver_dispatch_policy_service.dart';
+import 'package:gocity6_backend/dispatch/driver_dispatch_state.dart';
+import 'package:gocity6_backend/dispatch/driver_dispatch_state_repository.dart';
 
 void main() {
   final now = DateTime.utc(2026, 10, 6, 20);
+  DriverDispatchPolicyService buildDispatchPolicyService(
+    _FakeDriverDispatchStateRepository repository,
+  ) {
+    return DriverDispatchPolicyService(repository: repository);
+  }
 
-  RideOffer buildOffer({String driverId = 'driver-001'}) {
+  RideOffer buildOffer({
+    String driverId = 'driver-001',
+    int dispatchRound = RideOffer.normalDispatchRound,
+    int bonusMinor = RideOffer.noBonusMinor,
+  }) {
     return RideOffer.create(
       id: 'offer-001',
       rideId: 'ride-001',
@@ -17,6 +29,8 @@ void main() {
       distanceMeters: 900,
       offeredAt: now.subtract(const Duration(seconds: 5)),
       timeout: const Duration(seconds: 15),
+      dispatchRound: dispatchRound,
+      bonusMinor: bonusMinor,
     );
   }
 
@@ -28,6 +42,9 @@ void main() {
     final service = DriverRideOfferActionService(
       offerRepository: _FakeRideOfferRepository(offer: offer),
       atomicOfferRepository: atomicRepository,
+      dispatchPolicyService: buildDispatchPolicyService(
+        _FakeDriverDispatchStateRepository(),
+      ),
       continueRide: ({required String rideId}) async => null,
     );
 
@@ -52,6 +69,9 @@ void main() {
     final service = DriverRideOfferActionService(
       offerRepository: _FakeRideOfferRepository(offer: offer),
       atomicOfferRepository: atomicRepository,
+      dispatchPolicyService: buildDispatchPolicyService(
+        _FakeDriverDispatchStateRepository(),
+      ),
       continueRide: ({required String rideId}) async {
         continuedRideId = rideId;
         return null;
@@ -69,6 +89,63 @@ void main() {
     expect(atomicRepository.lastOfferId, 'offer-001');
     expect(continuedRideId, 'ride-001');
   });
+  test('records normal rejected offer in dispatch policy', () async {
+    final offer = buildOffer();
+    final atomicRepository = _FakeAtomicRideOfferRepository(offer: offer);
+    final dispatchStateRepository = _FakeDriverDispatchStateRepository();
+
+    final service = DriverRideOfferActionService(
+      offerRepository: _FakeRideOfferRepository(offer: offer),
+      atomicOfferRepository: atomicRepository,
+      dispatchPolicyService: buildDispatchPolicyService(
+        dispatchStateRepository,
+      ),
+      continueRide: ({required String rideId}) async => null,
+    );
+
+    await service.reject(
+      driverId: 'driver-001',
+      offerId: 'offer-001',
+      now: now,
+    );
+
+    expect(dispatchStateRepository.state?.consecutiveRejects, 1);
+    expect(dispatchStateRepository.state?.penaltyLevel, 0);
+    expect(dispatchStateRepository.state?.dispatchBlockedUntil, isNull);
+  });
+  test(
+    'records bonus rejected offer with immediate 30 minute cooldown',
+    () async {
+      final offer = buildOffer(
+        dispatchRound: RideOffer.bonusDispatchRound,
+        bonusMinor: RideOffer.shortRideBonusMinor,
+      );
+      final atomicRepository = _FakeAtomicRideOfferRepository(offer: offer);
+      final dispatchStateRepository = _FakeDriverDispatchStateRepository();
+
+      final service = DriverRideOfferActionService(
+        offerRepository: _FakeRideOfferRepository(offer: offer),
+        atomicOfferRepository: atomicRepository,
+        dispatchPolicyService: buildDispatchPolicyService(
+          dispatchStateRepository,
+        ),
+        continueRide: ({required String rideId}) async => null,
+      );
+
+      await service.reject(
+        driverId: 'driver-001',
+        offerId: 'offer-001',
+        now: now,
+      );
+
+      expect(dispatchStateRepository.state?.consecutiveRejects, 0);
+      expect(dispatchStateRepository.state?.penaltyLevel, 0);
+      expect(
+        dispatchStateRepository.state?.dispatchBlockedUntil,
+        now.add(const Duration(minutes: 30)),
+      );
+    },
+  );
 
   test('rejects action on offer owned by another driver', () async {
     final offer = buildOffer(driverId: 'driver-other');
@@ -78,6 +155,9 @@ void main() {
     final service = DriverRideOfferActionService(
       offerRepository: _FakeRideOfferRepository(offer: offer),
       atomicOfferRepository: atomicRepository,
+      dispatchPolicyService: buildDispatchPolicyService(
+        _FakeDriverDispatchStateRepository(),
+      ),
       continueRide: ({required String rideId}) async => null,
     );
 
@@ -101,6 +181,9 @@ void main() {
     final service = DriverRideOfferActionService(
       offerRepository: _FakeRideOfferRepository(),
       atomicOfferRepository: atomicRepository,
+      dispatchPolicyService: buildDispatchPolicyService(
+        _FakeDriverDispatchStateRepository(),
+      ),
       continueRide: ({required String rideId}) async => null,
     );
 
@@ -205,5 +288,21 @@ class _FakeAtomicRideOfferRepository implements AtomicRideOfferRepository {
   @override
   Future<void> movePendingRideToWaitingForVehicle({required String rideId}) {
     throw UnsupportedError('Not needed by this test.');
+  }
+}
+
+class _FakeDriverDispatchStateRepository
+    implements DriverDispatchStateRepository {
+  DriverDispatchState? state;
+
+  @override
+  Future<DriverDispatchState?> findByDriverId(String driverId) async {
+    return state;
+  }
+
+  @override
+  Future<DriverDispatchState> save(DriverDispatchState state) async {
+    this.state = state;
+    return state;
   }
 }

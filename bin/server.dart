@@ -75,6 +75,7 @@ import 'package:gocity6_backend/dispatch/ride_offer_timeout_processor.dart';
 import 'package:gocity6_backend/dispatch/customer_bonus_decision_service.dart';
 import 'package:gocity6_backend/dispatch/driver_dispatch_state_repository.dart';
 import 'package:gocity6_backend/dispatch/postgres_driver_dispatch_state_repository.dart';
+import 'package:gocity6_backend/dispatch/driver_dispatch_policy_service.dart';
 
 Future<Map<String, double>> geocodeAddress(
   String address,
@@ -623,9 +624,13 @@ void main(List<String> args) async {
       offerIdFactory: () => uuid.v4(),
       now: () => DateTime.now().toUtc(),
     );
+    final dispatchPolicyService = DriverDispatchPolicyService(
+      repository: dispatchStateRepository,
+    );
     driverRideOfferActionService = DriverRideOfferActionService(
       offerRepository: offerRepository,
       atomicOfferRepository: atomicOfferRepository,
+      dispatchPolicyService: dispatchPolicyService,
       continueRide: continuationService.continueRide,
     );
     customerBonusDecisionService = CustomerBonusDecisionService(
