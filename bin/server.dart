@@ -449,6 +449,7 @@ void main(List<String> args) async {
   DriverRideOfferActionService? driverRideOfferActionService;
   DriverLiveLocationRepository? driverLiveLocationRepository;
   DriverDispatchStateRepository? driverDispatchStateRepository;
+  DriverDispatchPolicyService? driverDispatchPolicyService;
   DriverLiveLocationService? driverLiveLocationService;
 
   AssignedDriverInfoService? assignedDriverInfoService;
@@ -624,13 +625,13 @@ void main(List<String> args) async {
       offerIdFactory: () => uuid.v4(),
       now: () => DateTime.now().toUtc(),
     );
-    final dispatchPolicyService = DriverDispatchPolicyService(
+    driverDispatchPolicyService = DriverDispatchPolicyService(
       repository: dispatchStateRepository,
     );
     driverRideOfferActionService = DriverRideOfferActionService(
       offerRepository: offerRepository,
       atomicOfferRepository: atomicOfferRepository,
-      dispatchPolicyService: dispatchPolicyService,
+      dispatchPolicyService: driverDispatchPolicyService,
       continueRide: continuationService.continueRide,
     );
     customerBonusDecisionService = CustomerBonusDecisionService(
@@ -2088,6 +2089,9 @@ void main(List<String> args) async {
         rideId: rideId,
         driverId: tokenPayload.driverId,
         meterFareMinor: meterFareMinor,
+      );
+      await driverDispatchPolicyService?.recordCompletedRide(
+        driverId: tokenPayload.driverId,
       );
 
       return Response.ok(
