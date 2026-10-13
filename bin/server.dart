@@ -44,6 +44,7 @@ import 'package:gocity6_backend/dispatch/postgres_atomic_ride_reservation_reposi
 import 'package:gocity6_backend/dispatch/postgres_driver_shift_repository.dart';
 import 'package:gocity6_backend/dispatch/driver_assigned_vehicle_repository.dart';
 import 'package:gocity6_backend/dispatch/driver_shift_start_service.dart';
+import 'package:gocity6_backend/dispatch/driver_shift_end_service.dart';
 import 'package:gocity6_backend/dispatch/postgres_driver_assigned_vehicle_repository.dart';
 
 import 'package:gocity6_backend/routing/google_route_estimator.dart';
@@ -438,6 +439,7 @@ void main(List<String> args) async {
   DriverTokenService? driverTokenService;
   DriverAssignedVehicleRepository? driverAssignedVehicleRepository;
   DriverShiftStartService? driverShiftStartService;
+  DriverShiftEndService? driverShiftEndService;
   DriverStateService? driverStateService;
   DriverWorkStateRepository? driverWorkStateRepository;
   RideOfferRepository? rideOfferRepository;
@@ -628,6 +630,13 @@ void main(List<String> args) async {
     driverDispatchPolicyService = DriverDispatchPolicyService(
       repository: dispatchStateRepository,
     );
+    if (driverShiftRepository != null) {
+      driverShiftEndService = DriverShiftEndService(
+        shiftRepository: driverShiftRepository,
+        dispatchPolicyService: driverDispatchPolicyService,
+        now: () => DateTime.now().toUtc(),
+      );
+    }
     driverRideOfferActionService = DriverRideOfferActionService(
       offerRepository: offerRepository,
       atomicOfferRepository: atomicOfferRepository,
@@ -954,6 +963,69 @@ void main(List<String> args) async {
 
       return Response.internalServerError(
         body: jsonEncode({'error': 'Driver shift could not be started.'}),
+        headers: {'Content-Type': 'application/json'},
+      );
+    }
+  });
+  router.post('/driver/shift/end', (Request request) async {
+    final tokenService = driverTokenService;
+    final shiftEndService = driverShiftEndService;
+
+    if (tokenService == null || shiftEndService == null) {
+      return Response(
+        503,
+        body: jsonEncode({'error': 'Driver shift service is unavailable.'}),
+        headers: {'Content-Type': 'application/json'},
+      );
+    }
+
+    final authorization = request.headers['authorization'];
+
+    if (authorization == null || !authorization.startsWith('Bearer ')) {
+      return Response(
+        401,
+        body: jsonEncode({'error': 'Authentication required.'}),
+        headers: {'Content-Type': 'application/json'},
+      );
+    }
+
+    final token = authorization.substring(7).trim();
+    final tokenPayload = tokenService.verifyToken(token);
+
+    if (tokenPayload == null) {
+      return Response(
+        401,
+        body: jsonEncode({'error': 'Invalid or expired token.'}),
+        headers: {'Content-Type': 'application/json'},
+      );
+    }
+
+    try {
+      final endedAt = await shiftEndService.end(
+        driverId: tokenPayload.driverId,
+      );
+
+      return Response.ok(
+        jsonEncode({'endedAt': endedAt.toIso8601String()}),
+        headers: {'Content-Type': 'application/json'},
+      );
+    } on DriverShiftEndException catch (error) {
+      switch (error.failure) {
+        case DriverShiftEndFailure.noActiveShift:
+          return Response(
+            409,
+            body: jsonEncode({
+              'code': 'noActiveShift',
+              'error': 'Driver has no active shift.',
+            }),
+            headers: {'Content-Type': 'application/json'},
+          );
+      }
+    } catch (error) {
+      print('Driver shift end error: $error');
+
+      return Response.internalServerError(
+        body: jsonEncode({'error': 'Driver shift could not be ended.'}),
         headers: {'Content-Type': 'application/json'},
       );
     }
