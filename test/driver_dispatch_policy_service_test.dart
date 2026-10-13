@@ -87,6 +87,78 @@ void main() {
       expect(result.dispatchBlockedUntil, now.add(const Duration(minutes: 30)));
     },
   );
+  test('ending shift schedules penalty reset after 8 hours', () async {
+    final repository = _FakeDriverDispatchStateRepository(
+      initialState: const DriverDispatchState(
+        driverId: 'driver-001',
+        consecutiveRejects: 2,
+        penaltyLevel: 3,
+        dispatchBlockedUntil: null,
+        penaltyResetEligibleAt: null,
+      ),
+    );
+
+    final service = DriverDispatchPolicyService(repository: repository);
+
+    final result = await service.recordShiftEnded(
+      driverId: 'driver-001',
+      endedAt: now,
+    );
+
+    expect(result.consecutiveRejects, 2);
+    expect(result.penaltyLevel, 3);
+    expect(result.penaltyResetEligibleAt, now.add(const Duration(hours: 8)));
+  });
+  test('starting shift before 8 hours preserves penalty state', () async {
+    final resetEligibleAt = now.add(const Duration(hours: 8));
+
+    final repository = _FakeDriverDispatchStateRepository(
+      initialState: DriverDispatchState(
+        driverId: 'driver-001',
+        consecutiveRejects: 2,
+        penaltyLevel: 3,
+        dispatchBlockedUntil: now.add(const Duration(minutes: 45)),
+        penaltyResetEligibleAt: resetEligibleAt,
+      ),
+    );
+
+    final service = DriverDispatchPolicyService(repository: repository);
+
+    final result = await service.recordShiftStarted(
+      driverId: 'driver-001',
+      startedAt: now.add(const Duration(hours: 7)),
+    );
+
+    expect(result.consecutiveRejects, 2);
+    expect(result.penaltyLevel, 3);
+    expect(result.dispatchBlockedUntil, now.add(const Duration(minutes: 45)));
+    expect(result.penaltyResetEligibleAt, isNull);
+  });
+  test('starting shift after 8 hours resets penalty state', () async {
+    final resetEligibleAt = now.add(const Duration(hours: 8));
+
+    final repository = _FakeDriverDispatchStateRepository(
+      initialState: DriverDispatchState(
+        driverId: 'driver-001',
+        consecutiveRejects: 2,
+        penaltyLevel: 3,
+        dispatchBlockedUntil: now.add(const Duration(hours: 2)),
+        penaltyResetEligibleAt: resetEligibleAt,
+      ),
+    );
+
+    final service = DriverDispatchPolicyService(repository: repository);
+
+    final result = await service.recordShiftStarted(
+      driverId: 'driver-001',
+      startedAt: resetEligibleAt,
+    );
+
+    expect(result.consecutiveRejects, 0);
+    expect(result.penaltyLevel, 0);
+    expect(result.dispatchBlockedUntil, isNull);
+    expect(result.penaltyResetEligibleAt, isNull);
+  });
   test('next three rejects increase penalty to 60 minutes', () async {
     final repository = _FakeDriverDispatchStateRepository(
       initialState: DriverDispatchState(
