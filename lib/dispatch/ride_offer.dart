@@ -37,6 +37,7 @@ class RideOffer {
 
   final RideOfferStatus status;
   final DateTime? resolvedAt;
+  final DateTime? displayedAt;
 
   const RideOffer._({
     required this.id,
@@ -51,6 +52,7 @@ class RideOffer {
     required this.expiresAt,
     required this.status,
     required this.resolvedAt,
+    required this.displayedAt,
   });
 
   factory RideOffer.create({
@@ -107,6 +109,7 @@ class RideOffer {
       expiresAt: offeredAt.add(timeout),
       status: RideOfferStatus.pending,
       resolvedAt: null,
+      displayedAt: null,
     );
   }
 
@@ -123,6 +126,7 @@ class RideOffer {
     required DateTime expiresAt,
     required RideOfferStatus status,
     required DateTime? resolvedAt,
+    DateTime? displayedAt,
   }) {
     if (etaSeconds < 0) {
       throw ArgumentError.value(
@@ -184,6 +188,7 @@ class RideOffer {
       expiresAt: expiresAt,
       status: status,
       resolvedAt: resolvedAt,
+      displayedAt: displayedAt,
     );
   }
 
@@ -246,6 +251,7 @@ class RideOffer {
       expiresAt: expiresAt,
       status: status,
       resolvedAt: resolvedAt,
+      displayedAt: displayedAt,
     );
   }
 

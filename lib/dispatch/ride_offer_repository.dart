@@ -10,4 +10,9 @@ abstract interface class RideOfferRepository {
   Future<void> create(RideOffer offer);
 
   Future<bool> resolve(RideOffer offer);
+  Future<bool> markDisplayed({
+    required String offerId,
+    required String driverId,
+    required DateTime displayedAt,
+  });
 }

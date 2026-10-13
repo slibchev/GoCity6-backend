@@ -236,6 +236,15 @@ class _FakeRideOfferRepository implements RideOfferRepository {
   }
 
   @override
+  Future<bool> markDisplayed({
+    required String offerId,
+    required String driverId,
+    required DateTime displayedAt,
+  }) {
+    throw UnsupportedError('Not needed by this test.');
+  }
+
+  @override
   Future<bool> resolve(RideOffer offer) async {
     throw UnsupportedError('Not needed by this test.');
   }

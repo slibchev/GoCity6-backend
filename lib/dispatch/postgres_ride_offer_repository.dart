@@ -24,7 +24,8 @@ class PostgresRideOfferRepository implements RideOfferRepository {
           offered_at,
           expires_at,
           status,
-          resolved_at
+resolved_at,
+displayed_at
         FROM ride_offers
         WHERE id = @id
         LIMIT 1
@@ -55,7 +56,8 @@ class PostgresRideOfferRepository implements RideOfferRepository {
           offered_at,
           expires_at,
           status,
-          resolved_at
+resolved_at,
+displayed_at
         FROM ride_offers
         WHERE ride_id = @rideId
         ORDER BY offered_at ASC
@@ -82,7 +84,8 @@ class PostgresRideOfferRepository implements RideOfferRepository {
           offered_at,
           expires_at,
           status,
-          resolved_at
+resolved_at,
+displayed_at
         FROM ride_offers
         WHERE status = 'pending'
           AND expires_at <= @now
@@ -175,6 +178,33 @@ class PostgresRideOfferRepository implements RideOfferRepository {
     return result.affectedRows == 1;
   }
 
+  @override
+  Future<bool> markDisplayed({
+    required String offerId,
+    required String driverId,
+    required DateTime displayedAt,
+  }) async {
+    final result = await database.execute(
+      Sql.named('''
+      UPDATE ride_offers
+      SET displayed_at = @displayedAt
+      WHERE id = @offerId
+        AND driver_id = @driverId
+        AND status = 'pending'
+        AND displayed_at IS NULL
+        AND offered_at <= @displayedAt
+        AND expires_at > @displayedAt
+    '''),
+      parameters: {
+        'offerId': offerId,
+        'driverId': driverId,
+        'displayedAt': displayedAt.toUtc(),
+      },
+    );
+
+    return result.affectedRows == 1;
+  }
+
   RideOffer _offerFromRow(Map<String, dynamic> row) {
     return RideOffer.restore(
       id: row['id'] as String,
@@ -189,6 +219,7 @@ class PostgresRideOfferRepository implements RideOfferRepository {
       expiresAt: (row['expires_at'] as DateTime).toUtc(),
       status: RideOfferStatus.values.byName(row['status'] as String),
       resolvedAt: (row['resolved_at'] as DateTime?)?.toUtc(),
+      displayedAt: (row['displayed_at'] as DateTime?)?.toUtc(),
     );
   }
 }
