@@ -480,7 +480,7 @@ void main(List<String> args) async {
 
         port: 5432,
 
-        database: 'city6',
+        database: Platform.environment['CITY6_DB_NAME'] ?? 'city6',
 
         username: 'city6_app',
 
@@ -1366,6 +1366,106 @@ void main(List<String> args) async {
       );
     }
   });
+
+  router.post('/driver/offers/<offerId>/displayed', (
+    Request request,
+    String offerId,
+  ) async {
+    final tokenService = driverTokenService;
+    final offerRepository = rideOfferRepository;
+
+    if (tokenService == null || offerRepository == null) {
+      return Response(
+        503,
+        body: jsonEncode({
+          'error': 'Driver offer display service is unavailable.',
+        }),
+        headers: {'Content-Type': 'application/json'},
+      );
+    }
+
+    final authorization = request.headers['authorization'];
+
+    if (authorization == null || !authorization.startsWith('Bearer ')) {
+      return Response(
+        401,
+        body: jsonEncode({'error': 'Authentication required.'}),
+        headers: {'Content-Type': 'application/json'},
+      );
+    }
+
+    final token = authorization.substring(7).trim();
+    final tokenPayload = tokenService.verifyToken(token);
+
+    if (tokenPayload == null) {
+      return Response(
+        401,
+        body: jsonEncode({'error': 'Invalid or expired token.'}),
+        headers: {'Content-Type': 'application/json'},
+      );
+    }
+
+    try {
+      final driverId = tokenPayload.driverId;
+      final now = DateTime.now().toUtc();
+
+      final recorded = await offerRepository.markDisplayed(
+        offerId: offerId,
+        driverId: driverId,
+        displayedAt: now,
+      );
+
+      // A repeated acknowledgement is considered successful
+      // only when the offer already belongs to this driver
+      // and a display timestamp was previously recorded.
+      if (!recorded) {
+        final existing = await offerRepository.findById(offerId);
+
+        if (existing == null || existing.driverId != driverId) {
+          return Response(
+            404,
+            body: jsonEncode({'error': 'Offer not found.'}),
+            headers: {'Content-Type': 'application/json'},
+          );
+        }
+
+        if (existing.displayedAt == null) {
+          return Response(
+            409,
+            body: jsonEncode({'error': 'Offer cannot be acknowledged.'}),
+            headers: {'Content-Type': 'application/json'},
+          );
+        }
+      }
+
+      final offer = await offerRepository.findById(offerId);
+
+      if (offer == null || offer.driverId != driverId) {
+        return Response(
+          404,
+          body: jsonEncode({'error': 'Offer not found.'}),
+          headers: {'Content-Type': 'application/json'},
+        );
+      }
+
+      return Response.ok(
+        jsonEncode({
+          'offerId': offer.id,
+          'displayedAt': offer.displayedAt?.toUtc().toIso8601String(),
+          'acknowledged': true,
+        }),
+        headers: {'Content-Type': 'application/json'},
+      );
+    } catch (error) {
+      print('Driver offer display acknowledgement error: $error');
+
+      return Response.internalServerError(
+        body: jsonEncode({'error': 'Offer display acknowledgement failed.'}),
+        headers: {'Content-Type': 'application/json'},
+      );
+    }
+  });
+
   router.post('/driver/offers/<offerId>/accept', (
     Request request,
     String offerId,

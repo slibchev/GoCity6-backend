@@ -81,5 +81,29 @@ void main() {
         throwsArgumentError,
       );
     });
+    test('restores offer with display acknowledgement', () {
+      final displayedAt = offeredAt.add(const Duration(seconds: 3));
+
+      final offer = RideOffer.restore(
+        id: 'offer-001',
+        rideId: 'ride-001',
+        driverId: 'driver-001',
+        vehicleId: 'vehicle-001',
+        etaSeconds: 300,
+        distanceMeters: 700,
+        offeredAt: offeredAt,
+        expiresAt: expiresAt,
+        status: RideOfferStatus.pending,
+        resolvedAt: null,
+        displayedAt: displayedAt,
+      );
+
+      expect(offer.displayedAt, displayedAt);
+
+      final rejected = offer.reject(offeredAt.add(const Duration(seconds: 5)));
+
+      expect(rejected.displayedAt, displayedAt);
+      expect(rejected.status, RideOfferStatus.rejected);
+    });
   });
 }
