@@ -73,6 +73,7 @@ import 'package:gocity6_backend/dispatch/dispatch_candidate_service.dart';
 import 'package:gocity6_backend/dispatch/automatic_dispatch_continuation_service.dart';
 import 'package:gocity6_backend/dispatch/ride_offer_expiration_service.dart';
 import 'package:gocity6_backend/dispatch/ride_offer_timeout_processor.dart';
+import 'package:gocity6_backend/dispatch/ride_offer.dart';
 import 'package:gocity6_backend/dispatch/customer_bonus_decision_service.dart';
 import 'package:gocity6_backend/dispatch/driver_dispatch_state_repository.dart';
 import 'package:gocity6_backend/dispatch/postgres_driver_dispatch_state_repository.dart';
@@ -656,6 +657,20 @@ void main(List<String> args) async {
     rideOfferTimeoutProcessor = RideOfferTimeoutProcessor(
       expireDueOffers: expirationService.expireDueOffers,
       continueRide: continuationService.continueRide,
+      recordIgnoredOffer:
+          ({required RideOffer offer, required DateTime now}) async {
+            if (offer.dispatchRound == RideOffer.bonusDispatchRound) {
+              await driverDispatchPolicyService!.recordRejectedBonusOffer(
+                driverId: offer.driverId,
+                now: now,
+              );
+            } else {
+              await driverDispatchPolicyService!.recordRejectedOffer(
+                driverId: offer.driverId,
+                now: now,
+              );
+            }
+          },
     );
 
     automaticRideSubmissionService = AutomaticRideSubmissionService(

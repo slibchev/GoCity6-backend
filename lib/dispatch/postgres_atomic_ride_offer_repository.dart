@@ -3,23 +3,15 @@ import 'package:postgres/postgres.dart';
 import 'atomic_ride_offer_repository.dart';
 import 'ride_offer.dart';
 
-class PostgresAtomicRideOfferRepository
-    implements AtomicRideOfferRepository {
+class PostgresAtomicRideOfferRepository implements AtomicRideOfferRepository {
   final SessionExecutor database;
 
-  PostgresAtomicRideOfferRepository({
-    required this.database,
-  });
+  PostgresAtomicRideOfferRepository({required this.database});
 
   @override
-  Future<RideOffer> createPendingOffer({
-    required RideOffer offer,
-  }) {
-    if (offer.status != RideOfferStatus.pending ||
-        offer.resolvedAt != null) {
-      throw ArgumentError(
-        'Only a pending unresolved offer can be created.',
-      );
+  Future<RideOffer> createPendingOffer({required RideOffer offer}) {
+    if (offer.status != RideOfferStatus.pending || offer.resolvedAt != null) {
+      throw ArgumentError('Only a pending unresolved offer can be created.');
     }
 
     return database.runTx((transaction) async {
@@ -36,9 +28,7 @@ class PostgresAtomicRideOfferRepository
           WHERE id = @rideId
           FOR UPDATE
         '''),
-        parameters: {
-          'rideId': offer.rideId,
-        },
+        parameters: {'rideId': offer.rideId},
       );
 
       if (rideResult.isEmpty) {
@@ -62,10 +52,7 @@ class PostgresAtomicRideOfferRepository
         );
       }
 
-      if (!_rideMatchesOfferDispatchState(
-        rideRow,
-        offer,
-      )) {
+      if (!_rideMatchesOfferDispatchState(rideRow, offer)) {
         throw const AtomicRideOfferConflictException(
           AtomicRideOfferConflict.rideDispatchStateMismatch,
         );
@@ -106,9 +93,7 @@ class PostgresAtomicRideOfferRepository
             AND status = 'pending'
           LIMIT 1
         '''),
-        parameters: {
-          'rideId': offer.rideId,
-        },
+        parameters: {'rideId': offer.rideId},
       );
 
       if (pendingRideResult.isNotEmpty) {
@@ -131,9 +116,7 @@ class PostgresAtomicRideOfferRepository
             AND s.ended_at IS NULL
           FOR UPDATE OF s, q
         '''),
-        parameters: {
-          'driverId': offer.driverId,
-        },
+        parameters: {'driverId': offer.driverId},
       );
 
       if (shiftResult.isEmpty) {
@@ -216,9 +199,7 @@ class PostgresAtomicRideOfferRepository
             AND has_pending_offer = FALSE
           RETURNING shift_id
         '''),
-        parameters: {
-          'shiftId': shiftRow['shift_id'],
-        },
+        parameters: {'shiftId': shiftRow['shift_id']},
       );
 
       if (queueUpdate.isEmpty) {
@@ -239,10 +220,7 @@ class PostgresAtomicRideOfferRepository
     final nowUtc = now.toUtc();
 
     return database.runTx((transaction) async {
-      final offer = await _lockPendingOffer(
-        transaction,
-        offerId,
-      );
+      final offer = await _lockPendingOffer(transaction, offerId);
 
       if (!nowUtc.isBefore(offer.expiresAt)) {
         throw const AtomicRideOfferConflictException(
@@ -263,9 +241,7 @@ class PostgresAtomicRideOfferRepository
           WHERE id = @rideId
           FOR UPDATE
         '''),
-        parameters: {
-          'rideId': offer.rideId,
-        },
+        parameters: {'rideId': offer.rideId},
       );
 
       if (rideResult.isEmpty) {
@@ -289,10 +265,7 @@ class PostgresAtomicRideOfferRepository
         );
       }
 
-      if (!_rideMatchesOfferDispatchState(
-        rideRow,
-        offer,
-      )) {
+      if (!_rideMatchesOfferDispatchState(rideRow, offer)) {
         throw const AtomicRideOfferConflictException(
           AtomicRideOfferConflict.rideDispatchStateMismatch,
         );
@@ -332,10 +305,7 @@ class PostgresAtomicRideOfferRepository
           WHERE id = @offerId
             AND status = 'pending'
         '''),
-        parameters: {
-          'offerId': offer.id,
-          'resolvedAt': nowUtc,
-        },
+        parameters: {'offerId': offer.id, 'resolvedAt': nowUtc},
       );
 
       final rideUpdate = await transaction.execute(
@@ -360,9 +330,7 @@ class PostgresAtomicRideOfferRepository
           'vehicleId': offer.vehicleId,
           'dispatchRound': offer.dispatchRound,
           'bonusMinor': offer.bonusMinor,
-          'bonusDecision': _expectedBonusDecisionForOffer(
-            offer,
-          ),
+          'bonusDecision': _expectedBonusDecisionForOffer(offer),
         },
       );
 
@@ -383,9 +351,7 @@ class PostgresAtomicRideOfferRepository
             AND has_pending_offer = TRUE
           RETURNING shift_id
         '''),
-        parameters: {
-          'shiftId': shiftRow['shift_id'],
-        },
+        parameters: {'shiftId': shiftRow['shift_id']},
       );
 
       if (queueUpdate.isEmpty) {
@@ -406,10 +372,7 @@ class PostgresAtomicRideOfferRepository
     final nowUtc = now.toUtc();
 
     return database.runTx((transaction) async {
-      final offer = await _lockPendingOffer(
-        transaction,
-        offerId,
-      );
+      final offer = await _lockPendingOffer(transaction, offerId);
 
       if (!nowUtc.isBefore(offer.expiresAt)) {
         throw const AtomicRideOfferConflictException(
@@ -451,10 +414,7 @@ class PostgresAtomicRideOfferRepository
           WHERE id = @offerId
             AND status = 'pending'
         '''),
-        parameters: {
-          'offerId': offer.id,
-          'resolvedAt': nowUtc,
-        },
+        parameters: {'offerId': offer.id, 'resolvedAt': nowUtc},
       );
 
       final queueUpdate = await transaction.execute(
@@ -492,10 +452,7 @@ class PostgresAtomicRideOfferRepository
     final nowUtc = now.toUtc();
 
     return database.runTx((transaction) async {
-      final offer = await _lockPendingOffer(
-        transaction,
-        offerId,
-      );
+      final offer = await _lockPendingOffer(transaction, offerId);
 
       if (nowUtc.isBefore(offer.expiresAt)) {
         throw const AtomicRideOfferConflictException(
@@ -537,10 +494,7 @@ class PostgresAtomicRideOfferRepository
           WHERE id = @offerId
             AND status = 'pending'
         '''),
-        parameters: {
-          'offerId': offer.id,
-          'resolvedAt': nowUtc,
-        },
+        parameters: {'offerId': offer.id, 'resolvedAt': nowUtc},
       );
 
       final queueUpdate = await transaction.execute(
@@ -571,9 +525,7 @@ class PostgresAtomicRideOfferRepository
   }
 
   @override
-  Future<void> movePendingRideToWaitingForVehicle({
-    required String rideId,
-  }) {
+  Future<void> movePendingRideToWaitingForVehicle({required String rideId}) {
     return database.runTx((transaction) async {
       // Заключваме ride реда. createPendingOffer() също започва
       // със заключване на същия ред, така че нова автоматична
@@ -588,9 +540,7 @@ class PostgresAtomicRideOfferRepository
           WHERE id = @rideId
           FOR UPDATE
         '''),
-        parameters: {
-          'rideId': rideId,
-        },
+        parameters: {'rideId': rideId},
       );
 
       if (rideResult.isEmpty) {
@@ -624,9 +574,7 @@ class PostgresAtomicRideOfferRepository
             AND status = 'pending'
           LIMIT 1
         '''),
-        parameters: {
-          'rideId': rideId,
-        },
+        parameters: {'rideId': rideId},
       );
 
       if (pendingOfferResult.isNotEmpty) {
@@ -645,9 +593,7 @@ class PostgresAtomicRideOfferRepository
             AND assigned_vehicle_id IS NULL
           RETURNING id
         '''),
-        parameters: {
-          'rideId': rideId,
-        },
+        parameters: {'rideId': rideId},
       );
 
       if (updateResult.isEmpty) {
@@ -676,14 +622,13 @@ class PostgresAtomicRideOfferRepository
           offered_at,
           expires_at,
           status,
-          resolved_at
-        FROM ride_offers
+resolved_at,
+displayed_at
+FROM ride_offers
         WHERE id = @offerId
         FOR UPDATE
       '''),
-      parameters: {
-        'offerId': offerId,
-      },
+      parameters: {'offerId': offerId},
     );
 
     if (result.isEmpty) {
@@ -709,12 +654,11 @@ class PostgresAtomicRideOfferRepository
       distanceMeters: row['distance_meters'] as int,
       dispatchRound: row['dispatch_round'] as int,
       bonusMinor: row['bonus_minor'] as int,
-      offeredAt:
-          (row['offered_at'] as DateTime).toUtc(),
-      expiresAt:
-          (row['expires_at'] as DateTime).toUtc(),
+      offeredAt: (row['offered_at'] as DateTime).toUtc(),
+      expiresAt: (row['expires_at'] as DateTime).toUtc(),
       status: RideOfferStatus.pending,
       resolvedAt: null,
+      displayedAt: (row['displayed_at'] as DateTime?)?.toUtc(),
     );
   }
 
@@ -736,9 +680,7 @@ class PostgresAtomicRideOfferRepository
           AND s.ended_at IS NULL
         FOR UPDATE OF s, q
       '''),
-      parameters: {
-        'driverId': driverId,
-      },
+      parameters: {'driverId': driverId},
     );
 
     if (result.isEmpty) {
@@ -754,41 +696,32 @@ class PostgresAtomicRideOfferRepository
     Map<String, dynamic> rideRow,
     RideOffer offer,
   ) {
-    final dispatchRound =
-        rideRow['dispatch_round'] as int;
-    final bonusMinor =
-        rideRow['driver_bonus_minor'] as int;
-    final bonusDecision =
-        rideRow['bonus_decision'] as String;
+    final dispatchRound = rideRow['dispatch_round'] as int;
+    final bonusMinor = rideRow['driver_bonus_minor'] as int;
+    final bonusDecision = rideRow['bonus_decision'] as String;
 
     if (dispatchRound != offer.dispatchRound ||
         bonusMinor != offer.bonusMinor) {
       return false;
     }
 
-    if (offer.dispatchRound ==
-        RideOffer.normalDispatchRound) {
+    if (offer.dispatchRound == RideOffer.normalDispatchRound) {
       return bonusDecision == 'not_offered';
     }
 
-    if (offer.dispatchRound ==
-        RideOffer.bonusDispatchRound) {
+    if (offer.dispatchRound == RideOffer.bonusDispatchRound) {
       return bonusDecision == 'accepted';
     }
 
     return false;
   }
 
-  String _expectedBonusDecisionForOffer(
-    RideOffer offer,
-  ) {
-    if (offer.dispatchRound ==
-        RideOffer.normalDispatchRound) {
+  String _expectedBonusDecisionForOffer(RideOffer offer) {
+    if (offer.dispatchRound == RideOffer.normalDispatchRound) {
       return 'not_offered';
     }
 
-    if (offer.dispatchRound ==
-        RideOffer.bonusDispatchRound) {
+    if (offer.dispatchRound == RideOffer.bonusDispatchRound) {
       return 'accepted';
     }
 
