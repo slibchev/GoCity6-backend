@@ -73,6 +73,7 @@ import 'package:gocity6_backend/dispatch/dispatch_candidate_service.dart';
 import 'package:gocity6_backend/dispatch/automatic_dispatch_continuation_service.dart';
 import 'package:gocity6_backend/dispatch/ride_offer_expiration_service.dart';
 import 'package:gocity6_backend/dispatch/ride_offer_timeout_processor.dart';
+import 'package:gocity6_backend/dispatch/postgres_ignored_offer_penalty_service.dart';
 import 'package:gocity6_backend/dispatch/ride_offer.dart';
 import 'package:gocity6_backend/dispatch/customer_bonus_decision_service.dart';
 import 'package:gocity6_backend/dispatch/driver_dispatch_state_repository.dart';
@@ -453,6 +454,7 @@ void main(List<String> args) async {
   DriverLiveLocationRepository? driverLiveLocationRepository;
   DriverDispatchStateRepository? driverDispatchStateRepository;
   DriverDispatchPolicyService? driverDispatchPolicyService;
+  PostgresIgnoredOfferPenaltyService? ignoredOfferPenaltyService;
   DriverLiveLocationService? driverLiveLocationService;
 
   AssignedDriverInfoService? assignedDriverInfoService;
@@ -465,6 +467,8 @@ void main(List<String> args) async {
 
   RouteEstimator? routeEstimator;
 
+  late final Pool databasePool;
+
   if (rideStorage == 'postgres') {
     final databasePassword = Platform.environment['CITY6_DB_PASSWORD'];
 
@@ -475,7 +479,7 @@ void main(List<String> args) async {
       );
     }
 
-    final databasePool = Pool.withEndpoints([
+    databasePool = Pool.withEndpoints([
       Endpoint(
         host: 'localhost',
 
@@ -654,22 +658,19 @@ void main(List<String> args) async {
       atomicOfferRepository: atomicOfferRepository,
     );
 
+    ignoredOfferPenaltyService = PostgresIgnoredOfferPenaltyService(
+      database: databasePool,
+    );
+
     rideOfferTimeoutProcessor = RideOfferTimeoutProcessor(
       expireDueOffers: expirationService.expireDueOffers,
       continueRide: continuationService.continueRide,
       recordIgnoredOffer:
           ({required RideOffer offer, required DateTime now}) async {
-            if (offer.dispatchRound == RideOffer.bonusDispatchRound) {
-              await driverDispatchPolicyService!.recordRejectedBonusOffer(
-                driverId: offer.driverId,
-                now: now,
-              );
-            } else {
-              await driverDispatchPolicyService!.recordRejectedOffer(
-                driverId: offer.driverId,
-                now: now,
-              );
-            }
+            await ignoredOfferPenaltyService!.recordIgnoredOffer(
+              offerId: offer.id,
+              now: now,
+            );
           },
     );
 
@@ -2544,6 +2545,14 @@ void main(List<String> args) async {
       .addHandler(router.call);
 
   final port = int.tryParse(Platform.environment['PORT'] ?? '') ?? 8080;
+  final penaltyRecoveryService = ignoredOfferPenaltyService;
+
+  if (penaltyRecoveryService != null) {
+    final recoveredCount = await penaltyRecoveryService
+        .recoverUnprocessedIgnoredOffers(now: DateTime.now().toUtc());
+
+    print('Recovered ignored offer penalties: $recoveredCount');
+  }
 
   final server = await shelf_io.serve(handler, InternetAddress.anyIPv4, port);
 

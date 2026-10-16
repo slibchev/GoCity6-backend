@@ -13,164 +13,125 @@ class DriverDispatchPolicyService {
   Future<DriverDispatchState> recordRejectedOffer({
     required String driverId,
     required DateTime now,
-  }) async {
+  }) {
     final nowUtc = now.toUtc();
 
-    final current =
-        await repository.findByDriverId(driverId) ??
-        DriverDispatchState(
-          driverId: driverId,
-          consecutiveRejects: 0,
-          penaltyLevel: 0,
-          dispatchBlockedUntil: null,
-          penaltyResetEligibleAt: null,
+    return repository.updateAtomically(
+      driverId: driverId,
+      transform: (current) {
+        final nextRejectCount = current.consecutiveRejects + 1;
+
+        if (nextRejectCount < maxConsecutiveRejects) {
+          return DriverDispatchState(
+            driverId: driverId,
+            consecutiveRejects: nextRejectCount,
+            penaltyLevel: current.penaltyLevel,
+            dispatchBlockedUntil: current.dispatchBlockedUntil,
+            penaltyResetEligibleAt: current.penaltyResetEligibleAt,
+          );
+        }
+
+        final nextPenaltyLevel = current.penaltyLevel + 1;
+        final penaltyDuration = Duration(
+          minutes: penaltyStep.inMinutes * nextPenaltyLevel,
         );
 
-    final nextRejectCount = current.consecutiveRejects + 1;
-
-    if (nextRejectCount < maxConsecutiveRejects) {
-      return repository.save(
-        DriverDispatchState(
+        return DriverDispatchState(
           driverId: driverId,
-          consecutiveRejects: nextRejectCount,
-          penaltyLevel: current.penaltyLevel,
-          dispatchBlockedUntil: current.dispatchBlockedUntil,
+          consecutiveRejects: 0,
+          penaltyLevel: nextPenaltyLevel,
+          dispatchBlockedUntil: nowUtc.add(penaltyDuration),
           penaltyResetEligibleAt: current.penaltyResetEligibleAt,
-        ),
-      );
-    }
-
-    final nextPenaltyLevel = current.penaltyLevel + 1;
-    final penaltyDuration = Duration(
-      minutes: penaltyStep.inMinutes * nextPenaltyLevel,
-    );
-
-    return repository.save(
-      DriverDispatchState(
-        driverId: driverId,
-        consecutiveRejects: 0,
-        penaltyLevel: nextPenaltyLevel,
-        dispatchBlockedUntil: nowUtc.add(penaltyDuration),
-        penaltyResetEligibleAt: current.penaltyResetEligibleAt,
-      ),
+        );
+      },
     );
   }
 
   Future<DriverDispatchState> recordRejectedBonusOffer({
     required String driverId,
     required DateTime now,
-  }) async {
+  }) {
     final nowUtc = now.toUtc();
 
-    final current =
-        await repository.findByDriverId(driverId) ??
-        DriverDispatchState(
+    return repository.updateAtomically(
+      driverId: driverId,
+      transform: (current) {
+        return DriverDispatchState(
           driverId: driverId,
           consecutiveRejects: 0,
-          penaltyLevel: 0,
-          dispatchBlockedUntil: null,
-          penaltyResetEligibleAt: null,
+          penaltyLevel: current.penaltyLevel,
+          dispatchBlockedUntil: nowUtc.add(penaltyStep),
+          penaltyResetEligibleAt: current.penaltyResetEligibleAt,
         );
-
-    return repository.save(
-      DriverDispatchState(
-        driverId: driverId,
-        consecutiveRejects: 0,
-        penaltyLevel: current.penaltyLevel,
-        dispatchBlockedUntil: nowUtc.add(const Duration(minutes: 30)),
-        penaltyResetEligibleAt: current.penaltyResetEligibleAt,
-      ),
+      },
     );
   }
 
-  Future<DriverDispatchState> recordCompletedRide({
-    required String driverId,
-  }) async {
-    final current =
-        await repository.findByDriverId(driverId) ??
-        DriverDispatchState(
+  Future<DriverDispatchState> recordCompletedRide({required String driverId}) {
+    return repository.updateAtomically(
+      driverId: driverId,
+      transform: (current) {
+        return DriverDispatchState(
           driverId: driverId,
           consecutiveRejects: 0,
-          penaltyLevel: 0,
-          dispatchBlockedUntil: null,
-          penaltyResetEligibleAt: null,
+          penaltyLevel: current.penaltyLevel,
+          dispatchBlockedUntil: current.dispatchBlockedUntil,
+          penaltyResetEligibleAt: current.penaltyResetEligibleAt,
         );
-
-    return repository.save(
-      DriverDispatchState(
-        driverId: driverId,
-        consecutiveRejects: 0,
-        penaltyLevel: current.penaltyLevel,
-        dispatchBlockedUntil: current.dispatchBlockedUntil,
-        penaltyResetEligibleAt: current.penaltyResetEligibleAt,
-      ),
+      },
     );
   }
 
   Future<DriverDispatchState> recordShiftEnded({
     required String driverId,
     required DateTime endedAt,
-  }) async {
-    final current =
-        await repository.findByDriverId(driverId) ??
-        DriverDispatchState(
-          driverId: driverId,
-          consecutiveRejects: 0,
-          penaltyLevel: 0,
-          dispatchBlockedUntil: null,
-          penaltyResetEligibleAt: null,
-        );
+  }) {
+    final endedAtUtc = endedAt.toUtc();
 
-    return repository.save(
-      DriverDispatchState(
-        driverId: driverId,
-        consecutiveRejects: current.consecutiveRejects,
-        penaltyLevel: current.penaltyLevel,
-        dispatchBlockedUntil: current.dispatchBlockedUntil,
-        penaltyResetEligibleAt: endedAt.toUtc().add(penaltyResetDelay),
-      ),
+    return repository.updateAtomically(
+      driverId: driverId,
+      transform: (current) {
+        return DriverDispatchState(
+          driverId: driverId,
+          consecutiveRejects: current.consecutiveRejects,
+          penaltyLevel: current.penaltyLevel,
+          dispatchBlockedUntil: current.dispatchBlockedUntil,
+          penaltyResetEligibleAt: endedAtUtc.add(penaltyResetDelay),
+        );
+      },
     );
   }
 
   Future<DriverDispatchState> recordShiftStarted({
     required String driverId,
     required DateTime startedAt,
-  }) async {
+  }) {
     final startedAtUtc = startedAt.toUtc();
 
-    final current =
-        await repository.findByDriverId(driverId) ??
-        DriverDispatchState(
+    return repository.updateAtomically(
+      driverId: driverId,
+      transform: (current) {
+        final resetEligibleAt = current.penaltyResetEligibleAt;
+
+        if (resetEligibleAt != null &&
+            !startedAtUtc.isBefore(resetEligibleAt.toUtc())) {
+          return DriverDispatchState(
+            driverId: driverId,
+            consecutiveRejects: 0,
+            penaltyLevel: 0,
+            dispatchBlockedUntil: null,
+            penaltyResetEligibleAt: null,
+          );
+        }
+
+        return DriverDispatchState(
           driverId: driverId,
-          consecutiveRejects: 0,
-          penaltyLevel: 0,
-          dispatchBlockedUntil: null,
+          consecutiveRejects: current.consecutiveRejects,
+          penaltyLevel: current.penaltyLevel,
+          dispatchBlockedUntil: current.dispatchBlockedUntil,
           penaltyResetEligibleAt: null,
         );
-
-    final resetEligibleAt = current.penaltyResetEligibleAt;
-
-    if (resetEligibleAt != null &&
-        !startedAtUtc.isBefore(resetEligibleAt.toUtc())) {
-      return repository.save(
-        DriverDispatchState(
-          driverId: driverId,
-          consecutiveRejects: 0,
-          penaltyLevel: 0,
-          dispatchBlockedUntil: null,
-          penaltyResetEligibleAt: null,
-        ),
-      );
-    }
-
-    return repository.save(
-      DriverDispatchState(
-        driverId: driverId,
-        consecutiveRejects: current.consecutiveRejects,
-        penaltyLevel: current.penaltyLevel,
-        dispatchBlockedUntil: current.dispatchBlockedUntil,
-        penaltyResetEligibleAt: null,
-      ),
+      },
     );
   }
 }

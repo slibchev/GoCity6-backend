@@ -400,4 +400,12 @@ class _FakeDriverDispatchStateRepository
   Future<DriverDispatchState> save(DriverDispatchState state) {
     throw UnsupportedError('Not needed by this test.');
   }
+
+  @override
+  Future<DriverDispatchState> updateAtomically({
+    required String driverId,
+    required DriverDispatchState Function(DriverDispatchState) transform,
+  }) {
+    throw UnsupportedError('Not needed by this test.');
+  }
 }

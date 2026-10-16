@@ -314,4 +314,24 @@ class _FakeDriverDispatchStateRepository
     this.state = state;
     return state;
   }
+
+  @override
+  Future<DriverDispatchState> updateAtomically({
+    required String driverId,
+    required DriverDispatchState Function(DriverDispatchState) transform,
+  }) async {
+    final current =
+        state ??
+        DriverDispatchState(
+          driverId: driverId,
+          consecutiveRejects: 0,
+          penaltyLevel: 0,
+          dispatchBlockedUntil: null,
+          penaltyResetEligibleAt: null,
+        );
+
+    final next = transform(current);
+    state = next;
+    return next;
+  }
 }
