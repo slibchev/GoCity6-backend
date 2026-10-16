@@ -152,6 +152,18 @@ void main() {
           'now': now,
         },
       );
+      // Simulate two previous manual rejections.
+      await db.execute(
+        Sql.named('''
+    INSERT INTO driver_dispatch_states (
+      driver_id,
+      consecutive_rejects,
+      penalty_level
+    )
+    VALUES (@driverId, 2, 0)
+  '''),
+        parameters: {'driverId': driverId},
+      );
 
       final service = PostgresIgnoredOfferPenaltyService(database: db);
       final undisplayedResult = await service.recordIgnoredOffer(
@@ -182,15 +194,22 @@ void main() {
 
       final states = await db.execute(
         Sql.named('''
-          SELECT consecutive_rejects, penalty_level
-          FROM driver_dispatch_states
+         SELECT
+  consecutive_rejects,
+  penalty_level,
+  dispatch_blocked_until
+FROM driver_dispatch_states
           WHERE driver_id = @driverId
         '''),
         parameters: {'driverId': driverId},
       );
 
-      expect(states.single[0], 1);
-      expect(states.single[1], 0);
+      expect(states.single[0], 0);
+      expect(states.single[1], 1);
+      expect(
+        (states.single[2] as DateTime).toUtc(),
+        expiresAt.add(const Duration(minutes: 30)),
+      );
 
       final tracking = await db.execute(
         Sql.named('''
