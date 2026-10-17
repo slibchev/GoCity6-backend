@@ -1,6 +1,5 @@
 import 'package:gocity6_backend/dispatch/atomic_ride_bonus_decision_repository.dart';
 import 'package:gocity6_backend/dispatch/customer_bonus_decision_service.dart';
-import 'package:gocity6_backend/dispatch/ride_offer.dart';
 import 'package:test/test.dart';
 
 void main() {
@@ -17,9 +16,7 @@ void main() {
       },
     );
 
-    await service.accept(
-      rideId: 'ride-001',
-    );
+    await service.accept(rideId: 'ride-001');
 
     expect(repository.acceptedRideIds, ['ride-001']);
     expect(repository.declinedRideIds, isEmpty);
@@ -39,9 +36,7 @@ void main() {
       },
     );
 
-    await service.decline(
-      rideId: 'ride-002',
-    );
+    await service.decline(rideId: 'ride-002');
 
     expect(repository.declinedRideIds, ['ride-002']);
     expect(repository.acceptedRideIds, isEmpty);
@@ -55,9 +50,7 @@ class _FakeBonusDecisionRepository
   final List<String> declinedRideIds = [];
 
   @override
-  Future<void> acceptFiveEuroBonus({
-    required String rideId,
-  }) async {
+  Future<void> acceptFiveEuroBonus({required String rideId}) async {
     acceptedRideIds.add(rideId);
   }
 
@@ -69,9 +62,7 @@ class _FakeBonusDecisionRepository
   }
 
   @override
-  Future<void> markAwaitingCustomer({
-    required String rideId,
-  }) {
+  Future<void> markAwaitingCustomer({required String rideId}) {
     throw UnsupportedError('Not needed by this test.');
   }
 
@@ -83,9 +74,7 @@ class _FakeBonusDecisionRepository
   }
 
   @override
-  Future<void> moveRoundTwoBonusToWaitingForVehicle({
-    required String rideId,
-  }) {
+  Future<void> moveRoundTwoBonusToWaitingForVehicle({required String rideId}) {
     throw UnsupportedError('Not needed by this test.');
   }
 }

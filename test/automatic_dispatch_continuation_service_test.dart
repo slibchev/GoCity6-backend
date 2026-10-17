@@ -15,6 +15,7 @@ import 'package:gocity6_backend/ride/ride_request.dart';
 import 'package:gocity6_backend/ride/ride_request_repository.dart';
 import 'package:gocity6_backend/routing/route_estimator.dart';
 import 'package:test/test.dart';
+import 'package:gocity6_backend/ride/ride_request_status.dart';
 
 void main() {
   test('creates next offer for different driver after expired offer', () async {
@@ -136,6 +137,17 @@ class _FakeRideRequestRepository implements RideRequestRepository {
 
   @override
   Future<List<RideRequest>> findByAssignedDriverId(String driverId) async {
+    return [];
+  }
+
+  @override
+  Future<List<RideRequest>> findWaitingForVehicle() async {
+    if (ride.status == RideRequestStatus.waitingForVehicle &&
+        ride.assignedDriverId == null &&
+        ride.assignedVehicleId == null) {
+      return [ride];
+    }
+
     return [];
   }
 

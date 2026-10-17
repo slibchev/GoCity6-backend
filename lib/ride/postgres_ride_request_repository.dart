@@ -140,6 +140,40 @@ class PostgresRideRequestRepository
   }
 
   @override
+  Future<List<RideRequest>> findWaitingForVehicle() async {
+    final result = await database.execute(
+      Sql.named('''
+        SELECT
+          id,
+          pickup,
+          destination,
+          passengers,
+          has_luggage,
+          requested_at,
+          status,
+          assigned_driver_id,
+          assigned_vehicle_id,
+          dispatch_round,
+          driver_bonus_minor,
+          bonus_decision,
+          currency,
+          meter_fare_minor,
+          commission_rate_bps,
+          commission_amount_minor,
+          completed_by_driver_id,
+          completed_at
+        FROM rides
+        WHERE status = 'waitingForVehicle'
+          AND assigned_driver_id IS NULL
+          AND assigned_vehicle_id IS NULL
+        ORDER BY requested_at ASC, id ASC
+      '''),
+    );
+
+    return result.map((row) => _rideFromRow(row.toColumnMap())).toList();
+  }
+
+  @override
   Future<void> save(RideRequest request) async {
     await database.execute(
       Sql.named('''

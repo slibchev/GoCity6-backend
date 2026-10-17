@@ -5,8 +5,10 @@ abstract interface class RideRequestRepository {
   Future<RideRequest?> findById(String id);
 
   Future<List<RideRequest>> findByAssignedDriverId(
+
     String driverId,
   );
+  Future<List<RideRequest>> findWaitingForVehicle();
 
   Future<void> save(RideRequest request);
 }

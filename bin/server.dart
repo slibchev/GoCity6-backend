@@ -336,7 +336,7 @@ const corsResponseHeaders = {
 
   'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
 
-  'Access-Control-Allow-Headers': 'Origin, Content-Type, Accept',
+  'Access-Control-Allow-Headers': 'Origin, Content-Type, Accept, Authorization',
 };
 
 Middleware corsMiddleware() {
@@ -1251,6 +1251,81 @@ void main(List<String> args) async {
       );
     }
   });
+
+  router.get('/driver/rides/waiting', (Request request) async {
+    final tokenService = driverTokenService;
+    final shiftRepository = driverShiftRepository;
+
+    if (tokenService == null || shiftRepository == null) {
+      return Response(
+        503,
+        body: jsonEncode({'error': 'Driver service unavailable.'}),
+        headers: {'Content-Type': 'application/json'},
+      );
+    }
+
+    final authorization = request.headers['authorization'];
+
+    if (authorization == null || !authorization.startsWith('Bearer ')) {
+      return Response(
+        401,
+        body: jsonEncode({'error': 'Authentication required.'}),
+        headers: {'Content-Type': 'application/json'},
+      );
+    }
+
+    final token = authorization.substring(7).trim();
+    final tokenPayload = tokenService.verifyToken(token);
+
+    if (tokenPayload == null) {
+      return Response(
+        401,
+        body: jsonEncode({'error': 'Invalid or expired token.'}),
+        headers: {'Content-Type': 'application/json'},
+      );
+    }
+
+    try {
+      final activeShift = await shiftRepository.findActiveByDriverId(
+        tokenPayload.driverId,
+      );
+
+      if (activeShift == null) {
+        return Response(
+          409,
+          body: jsonEncode({'error': 'No active driver shift.'}),
+          headers: {'Content-Type': 'application/json'},
+        );
+      }
+
+      final waitingRides = await rideRepository.findWaitingForVehicle();
+
+      final ridesJson = await Future.wait(
+        waitingRides.map(
+          (ride) => rideRequestToJson(
+            ride,
+            assignedDriverInfoService: assignedDriverInfoService,
+          ),
+        ),
+      );
+
+      return Response.ok(
+        jsonEncode({'rides': ridesJson}),
+        headers: {
+          'Content-Type': 'application/json',
+          'Cache-Control': 'no-store',
+        },
+      );
+    } catch (error) {
+      print('Waiting rides error: $error');
+
+      return Response.internalServerError(
+        body: jsonEncode({'error': 'Could not load waiting rides.'}),
+        headers: {'Content-Type': 'application/json'},
+      );
+    }
+  });
+
   router.get('/driver/state', (Request request) async {
     final tokenService = driverTokenService;
     final stateService = driverStateService;
@@ -1708,6 +1783,37 @@ void main(List<String> args) async {
   });
 
   router.post('/rides/<rideId>/select', (Request request, String rideId) async {
+    final tokenService = driverTokenService;
+
+    if (tokenService == null) {
+      return Response(
+        503,
+        body: jsonEncode({'error': 'Driver authentication unavailable.'}),
+        headers: {'Content-Type': 'application/json'},
+      );
+    }
+
+    final authorization = request.headers['authorization'];
+
+    if (authorization == null || !authorization.startsWith('Bearer ')) {
+      return Response(
+        401,
+        body: jsonEncode({'error': 'Authentication required.'}),
+        headers: {'Content-Type': 'application/json'},
+      );
+    }
+
+    final token = authorization.substring(7).trim();
+    final tokenPayload = tokenService.verifyToken(token);
+
+    if (tokenPayload == null) {
+      return Response(
+        401,
+        body: jsonEncode({'error': 'Invalid or expired token.'}),
+        headers: {'Content-Type': 'application/json'},
+      );
+    }
+
     try {
       final decodedBody = jsonDecode(await request.readAsString());
 
@@ -1721,33 +1827,33 @@ void main(List<String> args) async {
         );
       }
 
-      final driverId = decodedBody['driverId'];
+      final driverId = tokenPayload.driverId;
 
-      final vehicleId = decodedBody['vehicleId'];
+      final shiftRepository = driverShiftRepository;
+
+      if (shiftRepository == null) {
+        return Response(
+          503,
+          body: jsonEncode({'error': 'Driver shift service unavailable.'}),
+          headers: {'Content-Type': 'application/json'},
+        );
+      }
+
+      final activeShift = await shiftRepository.findActiveByDriverId(driverId);
+
+      if (activeShift == null) {
+        return Response(
+          409,
+          body: jsonEncode({'error': 'No active driver shift.'}),
+          headers: {'Content-Type': 'application/json'},
+        );
+      }
+
+      final vehicleId = activeShift.vehicleId;
 
       final driverLatitude = decodedBody['driverLatitude'];
 
       final driverLongitude = decodedBody['driverLongitude'];
-
-      if (driverId is! String || driverId.trim().isEmpty) {
-        return Response(
-          400,
-
-          body: jsonEncode({'error': 'driverId is required.'}),
-
-          headers: {'Content-Type': 'application/json'},
-        );
-      }
-
-      if (vehicleId is! String || vehicleId.trim().isEmpty) {
-        return Response(
-          400,
-
-          body: jsonEncode({'error': 'vehicleId is required.'}),
-
-          headers: {'Content-Type': 'application/json'},
-        );
-      }
 
       if (driverLatitude != null && driverLatitude is! num) {
         return Response(

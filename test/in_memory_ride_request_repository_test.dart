@@ -106,4 +106,45 @@ void main() {
       expect(result.map((ride) => ride.id).toSet(), {'ride-001', 'ride-002'});
     },
   );
+
+  test(
+    'findWaitingForVehicle returns only free waiting rides in order',
+    () async {
+      final oldest = createRide(id: 'ride-b')
+          .copyWith(requestedAt: DateTime.utc(2026, 10, 1, 9));
+
+      final newerA = createRide(id: 'ride-a')
+          .copyWith(requestedAt: DateTime.utc(2026, 10, 1, 10));
+
+      final newerC = createRide(id: 'ride-c')
+          .copyWith(requestedAt: DateTime.utc(2026, 10, 1, 10));
+
+      final assigned = createRide(
+        id: 'ride-assigned',
+        assignedDriverId: 'driver-001',
+        assignedVehicleId: 'vehicle-001',
+      );
+
+      final accepted = createRide(
+        id: 'ride-accepted',
+        status: RideRequestStatus.accepted,
+      );
+
+      final repository = InMemoryRideRequestRepository([
+        newerC,
+        assigned,
+        accepted,
+        oldest,
+        newerA,
+      ]);
+
+      final result = await repository.findWaitingForVehicle();
+
+      expect(result.map((ride) => ride.id).toList(), [
+        'ride-b',
+        'ride-a',
+        'ride-c',
+      ]);
+    },
+  );
 }

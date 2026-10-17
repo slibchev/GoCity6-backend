@@ -27,6 +27,25 @@ class FakeRideRequestRepository implements RideRequestRepository {
   }
 
   @override
+  Future<List<RideRequest>> findWaitingForVehicle() async {
+    final waiting = _rides.values
+        .where(
+          (ride) =>
+              ride.status == RideRequestStatus.waitingForVehicle &&
+              ride.assignedDriverId == null &&
+              ride.assignedVehicleId == null,
+        )
+        .toList();
+
+    waiting.sort((a, b) {
+      final byTime = a.requestedAt.compareTo(b.requestedAt);
+      return byTime != 0 ? byTime : a.id.compareTo(b.id);
+    });
+
+    return waiting;
+  }
+
+  @override
   Future<void> save(RideRequest request) async {
     _rides[request.id] = request;
   }
@@ -108,47 +127,44 @@ void main() {
     },
   );
 
-  test(
-    'selectWaitingRide uses atomic acceptance when free-driver path is available',
-    () async {
-      final waitingRide = createRide(
-        id: 'ride-atomic',
-        status: RideRequestStatus.waitingForVehicle,
-      );
+  test('selectWaitingRide uses atomic acceptance when free-driver path is available', () async {
+    final waitingRide = createRide(
+      id: 'ride-atomic',
+      status: RideRequestStatus.waitingForVehicle,
+    );
 
-      final acceptedRide = createRide(
-        id: 'ride-atomic',
-        status: RideRequestStatus.accepted,
-        assignedDriverId: 'driver-001',
-        assignedVehicleId: 'vehicle-from-active-shift',
-      );
+    final acceptedRide = createRide(
+      id: 'ride-atomic',
+      status: RideRequestStatus.accepted,
+      assignedDriverId: 'driver-001',
+      assignedVehicleId: 'vehicle-from-active-shift',
+    );
 
-      final repository = FakeRideRequestRepository([waitingRide]);
+    final repository = FakeRideRequestRepository([waitingRide]);
 
-      final atomicRepository = FakeAtomicWaitingRideAcceptanceRepository(
-        acceptedRide: acceptedRide,
-      );
+    final atomicRepository = FakeAtomicWaitingRideAcceptanceRepository(
+      acceptedRide: acceptedRide,
+    );
 
-      final service = RideDispatchService(
-        repository: repository,
-        waitingRideAcceptanceRepository: atomicRepository,
-      );
+    final service = RideDispatchService(
+      repository: repository,
+      waitingRideAcceptanceRepository: atomicRepository,
+    );
 
-      final result = await service.selectWaitingRide(
-        rideId: 'ride-atomic',
-        driverId: 'driver-001',
-        vehicleId: 'stale-client-vehicle',
-      );
+    final result = await service.selectWaitingRide(
+      rideId: 'ride-atomic',
+      driverId: 'driver-001',
+      vehicleId: 'stale-client-vehicle',
+    );
 
-      expect(atomicRepository.called, isTrue);
-      expect(atomicRepository.receivedRideId, 'ride-atomic');
-      expect(atomicRepository.receivedDriverId, 'driver-001');
+    expect(atomicRepository.called, isTrue);
+    expect(atomicRepository.receivedRideId, 'ride-atomic');
+    expect(atomicRepository.receivedDriverId, 'driver-001');
 
-      expect(result.status, RideRequestStatus.accepted);
-      expect(result.assignedDriverId, 'driver-001');
-      expect(result.assignedVehicleId, 'vehicle-from-active-shift');
-    },
-  );
+    expect(result.status, RideRequestStatus.accepted);
+    expect(result.assignedDriverId, 'driver-001');
+    expect(result.assignedVehicleId, 'vehicle-from-active-shift');
+  });
 
   test(
     'selectWaitingRide maps atomic unavailable driver to dispatch conflict',
@@ -162,8 +178,7 @@ void main() {
 
       final atomicRepository = FakeAtomicWaitingRideAcceptanceRepository(
         acceptedRide: waitingRide,
-        conflictToThrow:
-            AtomicWaitingRideAcceptanceConflict.driverNotAvailable,
+        conflictToThrow: AtomicWaitingRideAcceptanceConflict.driverNotAvailable,
       );
 
       final service = RideDispatchService(

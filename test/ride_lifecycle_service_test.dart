@@ -29,6 +29,25 @@ class FakeRideRequestRepository implements RideRequestRepository {
   }
 
   @override
+  Future<List<RideRequest>> findWaitingForVehicle() async {
+    final waiting = _rides.values
+        .where(
+          (ride) =>
+              ride.status == RideRequestStatus.waitingForVehicle &&
+              ride.assignedDriverId == null &&
+              ride.assignedVehicleId == null,
+        )
+        .toList();
+
+    waiting.sort((a, b) {
+      final byTime = a.requestedAt.compareTo(b.requestedAt);
+      return byTime != 0 ? byTime : a.id.compareTo(b.id);
+    });
+
+    return waiting;
+  }
+
+  @override
   Future<void> save(RideRequest request) async {
     _rides[request.id] = request;
   }

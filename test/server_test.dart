@@ -397,7 +397,7 @@ void main() {
     expect(body['error'], 'Ride not found.');
   });
 
-  test('POST ride select requires driver and vehicle', () async {
+  test('POST ride select requires configured driver authentication', () async {
     final createResponse = await post(
       Uri.parse('$host/rides'),
       headers: {'Content-Type': 'application/json'},
@@ -420,11 +420,11 @@ void main() {
       body: jsonEncode({}),
     );
 
-    expect(response.statusCode, 400);
+    expect(response.statusCode, 503);
 
     final body = jsonDecode(response.body) as Map<String, dynamic>;
 
-    expect(body['error'], 'driverId is required.');
+    expect(body['error'], 'Driver authentication unavailable.');
   });
   test(
     'POST ride promote rejects reserved ride while driver is busy',

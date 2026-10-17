@@ -30,6 +30,25 @@ class FakeRideRequestRepository implements RideRequestRepository {
   }
 
   @override
+  Future<List<RideRequest>> findWaitingForVehicle() async {
+    final waiting = rides.values
+        .where(
+          (ride) =>
+              ride.status == RideRequestStatus.waitingForVehicle &&
+              ride.assignedDriverId == null &&
+              ride.assignedVehicleId == null,
+        )
+        .toList();
+
+    waiting.sort((a, b) {
+      final byTime = a.requestedAt.compareTo(b.requestedAt);
+      return byTime != 0 ? byTime : a.id.compareTo(b.id);
+    });
+
+    return waiting;
+  }
+
+  @override
   Future<void> save(RideRequest request) async {
     rides[request.id] = request;
   }
@@ -73,10 +92,7 @@ class FakeDriverShiftRepository implements DriverShiftRepository {
   }
 
   @override
-  Future<void> endShift({
-    required String shiftId,
-    required DateTime endedAt,
-  }) {
+  Future<void> endShift({required String shiftId, required DateTime endedAt}) {
     throw UnimplementedError();
   }
 }
@@ -138,10 +154,7 @@ class RouteCall {
   final RouteWaypoint origin;
   final RouteWaypoint destination;
 
-  const RouteCall({
-    required this.origin,
-    required this.destination,
-  });
+  const RouteCall({required this.origin, required this.destination});
 }
 
 class FakeRouteEstimator implements RouteEstimator {
@@ -156,12 +169,7 @@ class FakeRouteEstimator implements RouteEstimator {
     required RouteWaypoint origin,
     required RouteWaypoint destination,
   }) async {
-    calls.add(
-      RouteCall(
-        origin: origin,
-        destination: destination,
-      ),
-    );
+    calls.add(RouteCall(origin: origin, destination: destination));
 
     if (estimates.isEmpty) {
       throw StateError('No fake route estimate configured.');
@@ -238,132 +246,111 @@ void main() {
     );
   }
 
-  test(
-    'available queue state uses atomic waiting ride acceptance',
-    () async {
-      final waitingRide = createRide(
-        id: 'ride-next',
-        status: RideRequestStatus.waitingForVehicle,
-      );
+  test('available queue state uses atomic waiting ride acceptance', () async {
+    final waitingRide = createRide(
+      id: 'ride-next',
+      status: RideRequestStatus.waitingForVehicle,
+    );
 
-      final acceptedRide = waitingRide
-          .transitionTo(RideRequestStatus.accepted)
-          .copyWith(
-            assignedDriverId: 'driver-001',
-            assignedVehicleId: 'vehicle-001',
-          );
+    final acceptedRide = waitingRide
+        .transitionTo(RideRequestStatus.accepted)
+        .copyWith(
+          assignedDriverId: 'driver-001',
+          assignedVehicleId: 'vehicle-001',
+        );
 
-      final rideRepository = FakeRideRequestRepository([waitingRide]);
-      final acceptanceRepository =
-          FakeAtomicWaitingRideAcceptanceRepository(acceptedRide);
+    final rideRepository = FakeRideRequestRepository([waitingRide]);
+    final acceptanceRepository = FakeAtomicWaitingRideAcceptanceRepository(
+      acceptedRide,
+    );
 
-      final service = RideDispatchService(
-        repository: rideRepository,
-        waitingRideAcceptanceRepository: acceptanceRepository,
-        driverShiftRepository: FakeDriverShiftRepository(
-          createShift(DriverQueueAvailability.available),
-        ),
-      );
+    final service = RideDispatchService(
+      repository: rideRepository,
+      waitingRideAcceptanceRepository: acceptanceRepository,
+      driverShiftRepository: FakeDriverShiftRepository(
+        createShift(DriverQueueAvailability.available),
+      ),
+    );
 
-      final result = await service.selectWaitingRide(
-        rideId: waitingRide.id,
-        driverId: 'driver-001',
-        vehicleId: 'stale-client-vehicle',
-      );
+    final result = await service.selectWaitingRide(
+      rideId: waitingRide.id,
+      driverId: 'driver-001',
+      vehicleId: 'stale-client-vehicle',
+    );
 
-      expect(acceptanceRepository.called, isTrue);
-      expect(result.status, RideRequestStatus.accepted);
-      expect(result.assignedVehicleId, 'vehicle-001');
-    },
-  );
+    expect(acceptanceRepository.called, isTrue);
+    expect(result.status, RideRequestStatus.accepted);
+    expect(result.assignedVehicleId, 'vehicle-001');
+  });
 
-  test(
-    'busy inProgress driver reserves with two-leg combined ETA',
-    () async {
-      final currentRide = createRide(
-        id: 'ride-current',
-        status: RideRequestStatus.inProgress,
-        assignedDriverId: 'driver-001',
-        assignedVehicleId: 'vehicle-001',
-        destination: 'Current destination',
-      );
+  test('busy inProgress driver reserves with two-leg combined ETA', () async {
+    final currentRide = createRide(
+      id: 'ride-current',
+      status: RideRequestStatus.inProgress,
+      assignedDriverId: 'driver-001',
+      assignedVehicleId: 'vehicle-001',
+      destination: 'Current destination',
+    );
 
-      final waitingRide = createRide(
-        id: 'ride-next',
-        status: RideRequestStatus.waitingForVehicle,
-        pickup: 'Next pickup',
-        withFiveEuroBonus: true,
-      );
+    final waitingRide = createRide(
+      id: 'ride-next',
+      status: RideRequestStatus.waitingForVehicle,
+      pickup: 'Next pickup',
+      withFiveEuroBonus: true,
+    );
 
-      final routeEstimator = FakeRouteEstimator([
-        estimate(
-          durationSeconds: 300.2,
-          destinationLatitude: 42.7001,
-          destinationLongitude: 23.3001,
-        ),
-        estimate(durationSeconds: 299.1),
-      ]);
+    final routeEstimator = FakeRouteEstimator([
+      estimate(
+        durationSeconds: 300.2,
+        destinationLatitude: 42.7001,
+        destinationLongitude: 23.3001,
+      ),
+      estimate(durationSeconds: 299.1),
+    ]);
 
-      final reservationRepository =
-          FakeAtomicRideReservationRepository();
+    final reservationRepository = FakeAtomicRideReservationRepository();
 
-      final service = RideDispatchService(
-        repository: FakeRideRequestRepository([
-          currentRide,
-          waitingRide,
-        ]),
-        waitingRideAcceptanceRepository:
-            FakeAtomicWaitingRideAcceptanceRepository(waitingRide),
-        driverShiftRepository: FakeDriverShiftRepository(
-          createShift(DriverQueueAvailability.busy),
-        ),
-        rideReservationRepository: reservationRepository,
-        routeEstimator: routeEstimator,
-      );
+    final service = RideDispatchService(
+      repository: FakeRideRequestRepository([currentRide, waitingRide]),
+      waitingRideAcceptanceRepository:
+          FakeAtomicWaitingRideAcceptanceRepository(waitingRide),
+      driverShiftRepository: FakeDriverShiftRepository(
+        createShift(DriverQueueAvailability.busy),
+      ),
+      rideReservationRepository: reservationRepository,
+      routeEstimator: routeEstimator,
+    );
 
-      final result = await service.selectWaitingRide(
-        rideId: waitingRide.id,
-        driverId: 'driver-001',
-        vehicleId: 'stale-client-vehicle',
-        driverLatitude: 42.6500,
-        driverLongitude: 23.2500,
-        reservationId: 'reservation-001',
-        now: now,
-      );
+    final result = await service.selectWaitingRide(
+      rideId: waitingRide.id,
+      driverId: 'driver-001',
+      vehicleId: 'stale-client-vehicle',
+      driverLatitude: 42.6500,
+      driverLongitude: 23.2500,
+      reservationId: 'reservation-001',
+      now: now,
+    );
 
-      expect(routeEstimator.calls, hasLength(2));
+    expect(routeEstimator.calls, hasLength(2));
 
-      expect(
-        routeEstimator.calls.first.destination.address,
-        'Current destination',
-      );
+    expect(
+      routeEstimator.calls.first.destination.address,
+      'Current destination',
+    );
 
-      expect(
-        routeEstimator.calls.last.origin.latitude,
-        42.7001,
-      );
-      expect(
-        routeEstimator.calls.last.origin.longitude,
-        23.3001,
-      );
-      expect(
-        routeEstimator.calls.last.destination.address,
-        'Next pickup',
-      );
+    expect(routeEstimator.calls.last.origin.latitude, 42.7001);
+    expect(routeEstimator.calls.last.origin.longitude, 23.3001);
+    expect(routeEstimator.calls.last.destination.address, 'Next pickup');
 
-      expect(reservationRepository.callCount, 1);
-      expect(reservationRepository.combinedEtaSeconds, 600);
+    expect(reservationRepository.callCount, 1);
+    expect(reservationRepository.combinedEtaSeconds, 600);
 
-      expect(result.status, RideRequestStatus.reserved);
-      expect(result.assignedDriverId, isNull);
-      expect(result.assignedVehicleId, isNull);
-      expect(
-        result.driverBonusMinor,
-        RideRequest.driverBonusFiveEuroMinor,
-      );
-      expect(result.bonusDecision, RideBonusDecision.accepted);
-    },
-  );
+    expect(result.status, RideRequestStatus.reserved);
+    expect(result.assignedDriverId, isNull);
+    expect(result.assignedVehicleId, isNull);
+    expect(result.driverBonusMinor, RideRequest.driverBonusFiveEuroMinor);
+    expect(result.bonusDecision, RideBonusDecision.accepted);
+  });
 
   test(
     'busy driverArriving driver includes current pickup in remaining ETA',
@@ -397,14 +384,10 @@ void main() {
         estimate(durationSeconds: 299.2),
       ]);
 
-      final reservationRepository =
-          FakeAtomicRideReservationRepository();
+      final reservationRepository = FakeAtomicRideReservationRepository();
 
       final service = RideDispatchService(
-        repository: FakeRideRequestRepository([
-          currentRide,
-          waitingRide,
-        ]),
+        repository: FakeRideRequestRepository([currentRide, waitingRide]),
         waitingRideAcceptanceRepository:
             FakeAtomicWaitingRideAcceptanceRepository(waitingRide),
         driverShiftRepository: FakeDriverShiftRepository(
@@ -425,74 +408,61 @@ void main() {
       );
 
       expect(routeEstimator.calls, hasLength(3));
-      expect(
-        routeEstimator.calls[0].destination.address,
-        'Current pickup',
-      );
+      expect(routeEstimator.calls[0].destination.address, 'Current pickup');
       expect(
         routeEstimator.calls[1].destination.address,
         'Current destination',
       );
-      expect(
-        routeEstimator.calls[2].destination.address,
-        'Next pickup',
-      );
+      expect(routeEstimator.calls[2].destination.address, 'Next pickup');
 
       expect(reservationRepository.combinedEtaSeconds, 600);
     },
   );
 
-  test(
-    'externalRide driver uses current GPS to next pickup only',
-    () async {
-      final waitingRide = createRide(
-        id: 'ride-next',
-        status: RideRequestStatus.waitingForVehicle,
-        pickup: 'Next pickup',
-      );
+  test('externalRide driver uses current GPS to next pickup only', () async {
+    final waitingRide = createRide(
+      id: 'ride-next',
+      status: RideRequestStatus.waitingForVehicle,
+      pickup: 'Next pickup',
+    );
 
-      final routeEstimator = FakeRouteEstimator([
-        estimate(durationSeconds: 420.4),
-      ]);
+    final routeEstimator = FakeRouteEstimator([
+      estimate(durationSeconds: 420.4),
+    ]);
 
-      final reservationRepository =
-          FakeAtomicRideReservationRepository();
+    final reservationRepository = FakeAtomicRideReservationRepository();
 
-      final service = RideDispatchService(
-        repository: FakeRideRequestRepository([waitingRide]),
-        waitingRideAcceptanceRepository:
-            FakeAtomicWaitingRideAcceptanceRepository(waitingRide),
-        driverShiftRepository: FakeDriverShiftRepository(
-          createShift(DriverQueueAvailability.externalRide),
-        ),
-        rideReservationRepository: reservationRepository,
-        routeEstimator: routeEstimator,
-      );
+    final service = RideDispatchService(
+      repository: FakeRideRequestRepository([waitingRide]),
+      waitingRideAcceptanceRepository:
+          FakeAtomicWaitingRideAcceptanceRepository(waitingRide),
+      driverShiftRepository: FakeDriverShiftRepository(
+        createShift(DriverQueueAvailability.externalRide),
+      ),
+      rideReservationRepository: reservationRepository,
+      routeEstimator: routeEstimator,
+    );
 
-      final result = await service.selectWaitingRide(
-        rideId: waitingRide.id,
-        driverId: 'driver-001',
-        vehicleId: 'vehicle-001',
-        driverLatitude: 42.6500,
-        driverLongitude: 23.2500,
-        reservationId: 'reservation-001',
-        now: now,
-      );
+    final result = await service.selectWaitingRide(
+      rideId: waitingRide.id,
+      driverId: 'driver-001',
+      vehicleId: 'vehicle-001',
+      driverLatitude: 42.6500,
+      driverLongitude: 23.2500,
+      reservationId: 'reservation-001',
+      now: now,
+    );
 
-      expect(routeEstimator.calls, hasLength(1));
-      expect(routeEstimator.calls.single.origin.latitude, 42.6500);
-      expect(routeEstimator.calls.single.origin.longitude, 23.2500);
-      expect(
-        routeEstimator.calls.single.destination.address,
-        'Next pickup',
-      );
+    expect(routeEstimator.calls, hasLength(1));
+    expect(routeEstimator.calls.single.origin.latitude, 42.6500);
+    expect(routeEstimator.calls.single.origin.longitude, 23.2500);
+    expect(routeEstimator.calls.single.destination.address, 'Next pickup');
 
-      expect(reservationRepository.combinedEtaSeconds, 421);
-      expect(result.status, RideRequestStatus.reserved);
-      expect(result.assignedDriverId, isNull);
-      expect(result.assignedVehicleId, isNull);
-    },
-  );
+    expect(reservationRepository.combinedEtaSeconds, 421);
+    expect(result.status, RideRequestStatus.reserved);
+    expect(result.assignedDriverId, isNull);
+    expect(result.assignedVehicleId, isNull);
+  });
 
   test(
     'reservation ETA rounds up and rejects anything above 600 seconds',
@@ -506,8 +476,7 @@ void main() {
         estimate(durationSeconds: 600.01),
       ]);
 
-      final reservationRepository =
-          FakeAtomicRideReservationRepository();
+      final reservationRepository = FakeAtomicRideReservationRepository();
 
       final service = RideDispatchService(
         repository: FakeRideRequestRepository([waitingRide]),
@@ -543,63 +512,57 @@ void main() {
     },
   );
 
-  test(
-    'busy or external reservation requires valid driver GPS',
-    () async {
-      final waitingRide = createRide(
-        id: 'ride-next',
-        status: RideRequestStatus.waitingForVehicle,
-      );
+  test('busy or external reservation requires valid driver GPS', () async {
+    final waitingRide = createRide(
+      id: 'ride-next',
+      status: RideRequestStatus.waitingForVehicle,
+    );
 
-      final service = RideDispatchService(
-        repository: FakeRideRequestRepository([waitingRide]),
-        waitingRideAcceptanceRepository:
-            FakeAtomicWaitingRideAcceptanceRepository(waitingRide),
-        driverShiftRepository: FakeDriverShiftRepository(
-          createShift(DriverQueueAvailability.externalRide),
-        ),
-        rideReservationRepository:
-            FakeAtomicRideReservationRepository(),
-        routeEstimator: FakeRouteEstimator([
-          estimate(durationSeconds: 100),
-        ]),
-      );
+    final service = RideDispatchService(
+      repository: FakeRideRequestRepository([waitingRide]),
+      waitingRideAcceptanceRepository:
+          FakeAtomicWaitingRideAcceptanceRepository(waitingRide),
+      driverShiftRepository: FakeDriverShiftRepository(
+        createShift(DriverQueueAvailability.externalRide),
+      ),
+      rideReservationRepository: FakeAtomicRideReservationRepository(),
+      routeEstimator: FakeRouteEstimator([estimate(durationSeconds: 100)]),
+    );
 
-      expect(
-        () => service.selectWaitingRide(
-          rideId: waitingRide.id,
-          driverId: 'driver-001',
-          vehicleId: 'vehicle-001',
-          reservationId: 'reservation-001',
-          now: now,
+    expect(
+      () => service.selectWaitingRide(
+        rideId: waitingRide.id,
+        driverId: 'driver-001',
+        vehicleId: 'vehicle-001',
+        reservationId: 'reservation-001',
+        now: now,
+      ),
+      throwsA(
+        isA<RideDispatchInputException>().having(
+          (error) => error.conflict,
+          'conflict',
+          RideDispatchInputConflict.driverLocationRequired,
         ),
-        throwsA(
-          isA<RideDispatchInputException>().having(
-            (error) => error.conflict,
-            'conflict',
-            RideDispatchInputConflict.driverLocationRequired,
-          ),
-        ),
-      );
+      ),
+    );
 
-      expect(
-        () => service.selectWaitingRide(
-          rideId: waitingRide.id,
-          driverId: 'driver-001',
-          vehicleId: 'vehicle-001',
-          driverLatitude: 95,
-          driverLongitude: 23.25,
-          reservationId: 'reservation-002',
-          now: now,
+    expect(
+      () => service.selectWaitingRide(
+        rideId: waitingRide.id,
+        driverId: 'driver-001',
+        vehicleId: 'vehicle-001',
+        driverLatitude: 95,
+        driverLongitude: 23.25,
+        reservationId: 'reservation-002',
+        now: now,
+      ),
+      throwsA(
+        isA<RideDispatchInputException>().having(
+          (error) => error.conflict,
+          'conflict',
+          RideDispatchInputConflict.invalidDriverLocation,
         ),
-        throwsA(
-          isA<RideDispatchInputException>().having(
-            (error) => error.conflict,
-            'conflict',
-            RideDispatchInputConflict.invalidDriverLocation,
-          ),
-        ),
-      );
-    },
-  );
+      ),
+    );
+  });
 }
