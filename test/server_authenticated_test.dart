@@ -151,6 +151,62 @@ void main() {
     }
   });
 
+  test('concurrent HTTP ride submissions are idempotent', () async {
+    final clientId = const Uuid().v4();
+    final url = Uri.parse('$host/rides');
+    final headers = {'Content-Type': 'application/json'};
+
+    final payload = {
+      'clientRequestId': clientId,
+      'pickup': 'Test Sofia Center',
+      'destination': 'Test Sofia Airport',
+      'passengers': 2,
+      'hasLuggage': false,
+    };
+
+    try {
+      final responses = await Future.wait([
+        http.post(url, headers: headers, body: jsonEncode(payload)),
+        http.post(url, headers: headers, body: jsonEncode(payload)),
+      ]);
+
+      for (final response in responses) {
+        expect(response.statusCode, 201, reason: response.body);
+      }
+
+      final first = jsonDecode(responses[0].body) as Map<String, dynamic>;
+      final second = jsonDecode(responses[1].body) as Map<String, dynamic>;
+
+      expect(first['id'], isA<String>());
+      expect(second['id'], first['id']);
+
+      final count = await db.execute(
+        Sql.named('''
+          SELECT COUNT(*) FROM rides
+          WHERE client_request_id = @clientId
+        '''),
+        parameters: {'clientId': clientId},
+      );
+
+      expect(count.single[0], 1);
+
+      final conflict = await http.post(
+        url,
+        headers: headers,
+        body: jsonEncode({...payload, 'destination': 'Different destination'}),
+      );
+
+      expect(conflict.statusCode, 409, reason: conflict.body);
+    } finally {
+      await db.execute(
+        Sql.named('''
+          DELETE FROM rides
+          WHERE client_request_id = @clientId
+        '''),
+        parameters: {'clientId': clientId},
+      );
+    }
+  });
   test('waiting rides API requires valid driver JWT', () async {
     final url = Uri.parse('$host/driver/rides/waiting');
 
