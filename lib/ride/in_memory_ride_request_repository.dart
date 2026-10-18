@@ -19,6 +19,16 @@ class InMemoryRideRequestRepository implements RideRequestRepository {
   }
 
   @override
+  Future<RideRequest?> findByClientRequestId(String clientRequestId) async {
+    for (final ride in _rides.values) {
+      if (ride.clientRequestId == clientRequestId) {
+        return ride;
+      }
+    }
+    return null;
+  }
+
+  @override
   Future<List<RideRequest>> findByAssignedDriverId(String driverId) async {
     return _rides.values
         .where((ride) => ride.assignedDriverId == driverId)

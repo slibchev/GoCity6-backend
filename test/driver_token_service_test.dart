@@ -21,13 +21,9 @@ void main() {
     });
 
     test('rejects token signed with different secret', () {
-      final issuer = DriverTokenService(
-        secret: 'first-test-secret',
-      );
+      final issuer = DriverTokenService(secret: 'first-test-secret');
 
-      final verifier = DriverTokenService(
-        secret: 'second-test-secret',
-      );
+      final verifier = DriverTokenService(secret: 'second-test-secret');
 
       final token = issuer.createToken(
         driverId: 'driver-001',

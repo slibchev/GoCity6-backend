@@ -1,4 +1,3 @@
-
 import 'dart:io';
 
 import 'package:postgres/postgres.dart';
@@ -23,9 +22,7 @@ void main() {
         username: 'city6_app',
         password: password,
       ),
-      settings: const ConnectionSettings(
-        sslMode: SslMode.disable,
-      ),
+      settings: const ConnectionSettings(sslMode: SslMode.disable),
     );
 
     final uuid = const Uuid();
@@ -35,15 +32,11 @@ void main() {
     final offerId = uuid.v4();
 
     try {
-      final dbName = await database.execute(
-        'SELECT current_database()',
-      );
+      final dbName = await database.execute('SELECT current_database()');
 
       expect(dbName.first[0], 'city6_test');
 
-      final repository = PostgresRideOfferRepository(
-        database: database,
-      );
+      final repository = PostgresRideOfferRepository(database: database);
 
       final now = DateTime.now().toUtc();
 
@@ -58,11 +51,7 @@ void main() {
             'Test', 'Driver', '000', @now
           )
         '''),
-        parameters: {
-          'id': driverId,
-          'username': 'test-$driverId',
-          'now': now,
-        },
+        parameters: {'id': driverId, 'username': 'test-$driverId', 'now': now},
       );
 
       await database.execute(
@@ -72,11 +61,7 @@ void main() {
           )
           VALUES (@id, @plate, @now)
         '''),
-        parameters: {
-          'id': vehicleId,
-          'plate': 'TEST-$vehicleId',
-          'now': now,
-        },
+        parameters: {'id': vehicleId, 'plate': 'TEST-$vehicleId', 'now': now},
       );
 
       await database.execute(
@@ -90,15 +75,10 @@ void main() {
             2, @now, 'pending'
           )
         '''),
-        parameters: {
-          'id': rideId,
-          'now': now,
-        },
+        parameters: {'id': rideId, 'now': now},
       );
 
-      final offeredAt = now.subtract(
-        const Duration(seconds: 2),
-      );
+      final offeredAt = now.subtract(const Duration(seconds: 2));
 
       final offer = RideOffer.create(
         id: offerId,
@@ -153,9 +133,7 @@ void main() {
       );
 
       final expiredOfferId = uuid.v4();
-      final expiredAt = now.subtract(
-        const Duration(seconds: 20),
-      );
+      final expiredAt = now.subtract(const Duration(seconds: 20));
 
       final expiredOffer = RideOffer.create(
         id: expiredOfferId,

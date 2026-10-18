@@ -15,6 +15,16 @@ class FakeRideRequestRepository implements RideRequestRepository {
   }
 
   @override
+  Future<RideRequest?> findByClientRequestId(String clientRequestId) async {
+    for (final ride in _rides.values) {
+      if (ride.clientRequestId == clientRequestId) {
+        return ride;
+      }
+    }
+    return null;
+  }
+
+  @override
   Future<RideRequest?> findById(String id) async {
     return _rides[id];
   }

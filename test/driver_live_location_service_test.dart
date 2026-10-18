@@ -9,9 +9,7 @@ void main() {
   test('updates driver live location through repository', () async {
     final repository = _FakeDriverLiveLocationRepository();
 
-    final service = DriverLiveLocationService(
-      repository: repository,
-    );
+    final service = DriverLiveLocationService(repository: repository);
 
     final result = await service.update(
       driverId: 'driver-001',
@@ -36,17 +34,11 @@ void main() {
       updatedAt: now,
     );
 
-    final repository = _FakeDriverLiveLocationRepository(
-      location: location,
-    );
+    final repository = _FakeDriverLiveLocationRepository(location: location);
 
-    final service = DriverLiveLocationService(
-      repository: repository,
-    );
+    final service = DriverLiveLocationService(repository: repository);
 
-    final result = await service.get(
-      driverId: 'driver-001',
-    );
+    final result = await service.get(driverId: 'driver-001');
 
     expect(result, same(location));
     expect(repository.findCalls, 1);
@@ -55,9 +47,7 @@ void main() {
 
 class _FakeDriverLiveLocationRepository
     implements DriverLiveLocationRepository {
-  _FakeDriverLiveLocationRepository({
-    this.location,
-  });
+  _FakeDriverLiveLocationRepository({this.location});
 
   DriverLiveLocation? location;
 

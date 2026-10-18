@@ -26,9 +26,7 @@ void main() {
       ),
     );
 
-    final state = await service.load(
-      driverId: 'driver-001',
-    );
+    final state = await service.load(driverId: 'driver-001');
 
     expect(state.isWorking, isTrue);
     expect(state.activeShift, isNotNull);
@@ -52,9 +50,7 @@ void main() {
       ),
     );
 
-    final state = await service.load(
-      driverId: 'driver-001',
-    );
+    final state = await service.load(driverId: 'driver-001');
 
     expect(state.isWorking, isFalse);
     expect(state.activeShift, isNull);
@@ -88,18 +84,13 @@ ActiveDriverShift _buildShift({
   );
 }
 
-class _FakeDriverWorkStateRepository
-    implements DriverWorkStateRepository {
-  const _FakeDriverWorkStateRepository({
-    required this.snapshot,
-  });
+class _FakeDriverWorkStateRepository implements DriverWorkStateRepository {
+  const _FakeDriverWorkStateRepository({required this.snapshot});
 
   final DriverWorkStateSnapshot snapshot;
 
   @override
-  Future<DriverWorkStateSnapshot> loadByDriverId(
-    String driverId,
-  ) async {
+  Future<DriverWorkStateSnapshot> loadByDriverId(String driverId) async {
     return snapshot;
   }
 }

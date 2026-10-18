@@ -3,11 +3,9 @@ import 'ride_request_status.dart';
 
 abstract interface class RideRequestRepository {
   Future<RideRequest?> findById(String id);
+  Future<RideRequest?> findByClientRequestId(String clientRequestId);
 
-  Future<List<RideRequest>> findByAssignedDriverId(
-
-    String driverId,
-  );
+  Future<List<RideRequest>> findByAssignedDriverId(String driverId);
   Future<List<RideRequest>> findWaitingForVehicle();
 
   Future<void> save(RideRequest request);

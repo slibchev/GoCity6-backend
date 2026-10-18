@@ -58,9 +58,7 @@ void main() {
       ).end(reservedAt.add(const Duration(minutes: 10)));
 
       expect(
-        () => reservation.end(
-          reservedAt.add(const Duration(minutes: 20)),
-        ),
+        () => reservation.end(reservedAt.add(const Duration(minutes: 20))),
         throwsA(
           isA<RideReservationConflictException>().having(
             (error) => error.conflict,
@@ -82,9 +80,7 @@ void main() {
       );
 
       expect(
-        () => reservation.end(
-          reservedAt.subtract(const Duration(seconds: 1)),
-        ),
+        () => reservation.end(reservedAt.subtract(const Duration(seconds: 1))),
         throwsArgumentError,
       );
     });

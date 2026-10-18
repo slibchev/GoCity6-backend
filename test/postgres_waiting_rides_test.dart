@@ -1,4 +1,3 @@
-
 import 'dart:io';
 
 import 'package:postgres/postgres.dart';
@@ -53,9 +52,7 @@ void main() {
             'requestedAt': id == olderId
                 ? time
                 : time.add(const Duration(hours: 1)),
-            'status': id == pendingId
-                ? 'pending'
-                : 'waitingForVehicle',
+            'status': id == pendingId ? 'pending' : 'waitingForVehicle',
           },
         );
       }

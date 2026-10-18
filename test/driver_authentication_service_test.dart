@@ -24,10 +24,7 @@ class _FakeDriverAuthRepository implements DriverAuthRepository {
 void main() {
   group('DriverAuthenticationService', () {
     test('authenticates active driver with correct password', () async {
-      final passwordHash = BCrypt.hashpw(
-        'secret123',
-        BCrypt.gensalt(),
-      );
+      final passwordHash = BCrypt.hashpw('secret123', BCrypt.gensalt());
 
       final repository = _FakeDriverAuthRepository(
         DriverAuthRecord(
@@ -41,9 +38,7 @@ void main() {
         ),
       );
 
-      final service = DriverAuthenticationService(
-        repository: repository,
-      );
+      final service = DriverAuthenticationService(repository: repository);
 
       final result = await service.authenticate(
         username: 'driver1',
@@ -59,10 +54,7 @@ void main() {
     });
 
     test('rejects incorrect password', () async {
-      final passwordHash = BCrypt.hashpw(
-        'secret123',
-        BCrypt.gensalt(),
-      );
+      final passwordHash = BCrypt.hashpw('secret123', BCrypt.gensalt());
 
       final repository = _FakeDriverAuthRepository(
         DriverAuthRecord(
@@ -76,9 +68,7 @@ void main() {
         ),
       );
 
-      final service = DriverAuthenticationService(
-        repository: repository,
-      );
+      final service = DriverAuthenticationService(repository: repository);
 
       final result = await service.authenticate(
         username: 'driver1',
@@ -89,10 +79,7 @@ void main() {
     });
 
     test('rejects inactive driver', () async {
-      final passwordHash = BCrypt.hashpw(
-        'secret123',
-        BCrypt.gensalt(),
-      );
+      final passwordHash = BCrypt.hashpw('secret123', BCrypt.gensalt());
 
       final repository = _FakeDriverAuthRepository(
         DriverAuthRecord(
@@ -106,9 +93,7 @@ void main() {
         ),
       );
 
-      final service = DriverAuthenticationService(
-        repository: repository,
-      );
+      final service = DriverAuthenticationService(repository: repository);
 
       final result = await service.authenticate(
         username: 'driver1',

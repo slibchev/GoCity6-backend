@@ -39,6 +39,7 @@ class PostgresRideRequestRepository
           has_luggage,
 
           requested_at,
+          client_request_id,
 
           status,
 
@@ -83,6 +84,25 @@ class PostgresRideRequestRepository
   }
 
   @override
+  Future<RideRequest?> findByClientRequestId(String clientRequestId) async {
+    final result = await database.execute(
+      Sql.named('''
+        SELECT *
+        FROM rides
+        WHERE client_request_id = @clientRequestId
+        LIMIT 1
+      '''),
+      parameters: {'clientRequestId': clientRequestId},
+    );
+
+    if (result.isEmpty) {
+      return null;
+    }
+
+    return _rideFromRow(result.first.toColumnMap());
+  }
+
+  @override
   Future<List<RideRequest>> findByAssignedDriverId(String driverId) async {
     final result = await database.execute(
       Sql.named('''
@@ -100,6 +120,7 @@ class PostgresRideRequestRepository
           has_luggage,
 
           requested_at,
+          client_request_id,
 
           status,
 
@@ -150,6 +171,7 @@ class PostgresRideRequestRepository
           passengers,
           has_luggage,
           requested_at,
+          client_request_id,
           status,
           assigned_driver_id,
           assigned_vehicle_id,
@@ -191,6 +213,7 @@ class PostgresRideRequestRepository
           has_luggage,
 
           requested_at,
+          client_request_id,
 
           status,
 
@@ -232,6 +255,8 @@ class PostgresRideRequestRepository
 
           @requestedAt,
 
+          @clientRequestId,
+
           @status,
 
           @assignedDriverId,
@@ -272,6 +297,8 @@ class PostgresRideRequestRepository
 
           requested_at = EXCLUDED.requested_at,
 
+          client_request_id = COALESCE(rides.client_request_id, EXCLUDED.client_request_id),
+
           status = EXCLUDED.status,
 
           assigned_driver_id = EXCLUDED.assigned_driver_id,
@@ -310,6 +337,8 @@ class PostgresRideRequestRepository
         'hasLuggage': request.hasLuggage,
 
         'requestedAt': request.requestedAt.toUtc(),
+
+        'clientRequestId': request.clientRequestId,
 
         'status': request.status.name,
 
@@ -393,6 +422,7 @@ class PostgresRideRequestRepository
           has_luggage,
 
           requested_at,
+          client_request_id,
 
           status,
 
@@ -648,6 +678,7 @@ class PostgresRideRequestRepository
           passengers,
           has_luggage,
           requested_at,
+          client_request_id,
           status,
           assigned_driver_id,
           assigned_vehicle_id,
@@ -1010,6 +1041,7 @@ class PostgresRideRequestRepository
           passengers,
           has_luggage,
           requested_at,
+          client_request_id,
           status,
           assigned_driver_id,
           assigned_vehicle_id,
@@ -1376,6 +1408,7 @@ class PostgresRideRequestRepository
             has_luggage,
 
             requested_at,
+            client_request_id,
 
             status,
 
@@ -1577,6 +1610,8 @@ class PostgresRideRequestRepository
       hasLuggage: row['has_luggage'] as bool,
 
       requestedAt: (row['requested_at'] as DateTime).toUtc(),
+
+      clientRequestId: row['client_request_id'] as String?,
 
       status: RideRequestStatus.values.byName(row['status'] as String),
 

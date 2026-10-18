@@ -51,6 +51,7 @@ class RideRequest {
   static const int driverBonusFiveEuroMinor = 500;
 
   final String id;
+  final String? clientRequestId;
 
   final String pickup;
   final String destination;
@@ -78,6 +79,7 @@ class RideRequest {
 
   const RideRequest({
     required this.id,
+    this.clientRequestId,
     required this.pickup,
     required this.destination,
     required this.passengers,
@@ -114,6 +116,7 @@ class RideRequest {
 
   RideRequest copyWith({
     String? id,
+    String? clientRequestId,
     String? pickup,
     String? destination,
     int? passengers,
@@ -133,6 +136,7 @@ class RideRequest {
   }) {
     return RideRequest(
       id: id ?? this.id,
+      clientRequestId: clientRequestId ?? this.clientRequestId,
       pickup: pickup ?? this.pickup,
       destination: destination ?? this.destination,
       passengers: passengers ?? this.passengers,
@@ -172,6 +176,7 @@ class RideRequest {
 
     return RideRequest(
       id: id,
+      clientRequestId: clientRequestId,
       pickup: pickup,
       destination: destination,
       passengers: passengers,

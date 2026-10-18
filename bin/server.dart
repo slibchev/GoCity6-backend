@@ -1069,6 +1069,8 @@ void main(List<String> args) async {
 
       final hasLuggage = decodedBody['hasLuggage'];
 
+      final clientRequestId = decodedBody['clientRequestId'];
+
       if (pickup is! String ||
           pickup.trim().isEmpty ||
           destination is! String ||
@@ -1102,8 +1104,53 @@ void main(List<String> args) async {
         );
       }
 
+      if (clientRequestId != null &&
+          (clientRequestId is! String ||
+              !RegExp(
+                r'^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$',
+              ).hasMatch(clientRequestId))) {
+        return Response(
+          400,
+          body: jsonEncode({'error': 'Invalid clientRequestId.'}),
+          headers: {'Content-Type': 'application/json'},
+        );
+      }
+
+      if (clientRequestId is String) {
+        final existing = await rideRepository.findByClientRequestId(
+          clientRequestId,
+        );
+
+        if (existing != null) {
+          if (existing.pickup != pickup.trim() ||
+              existing.destination != destination.trim() ||
+              existing.passengers != passengers ||
+              existing.hasLuggage != (hasLuggage ?? false)) {
+            return Response(
+              409,
+              body: jsonEncode({
+                'error': 'Client request ID already used for another ride.',
+              }),
+              headers: {'Content-Type': 'application/json'},
+            );
+          }
+
+          return Response(
+            201,
+            body: jsonEncode(
+              await rideRequestToJson(
+                existing,
+                assignedDriverInfoService: assignedDriverInfoService,
+              ),
+            ),
+            headers: {'Content-Type': 'application/json'},
+          );
+        }
+      }
       final ride = RideRequest(
         id: uuid.v4(),
+
+        clientRequestId: clientRequestId as String?,
 
         pickup: pickup.trim(),
 
@@ -1118,9 +1165,50 @@ void main(List<String> args) async {
 
       final automaticSubmissionService = automaticRideSubmissionService;
 
-      final submittedRide = automaticSubmissionService == null
-          ? await rideLifecycleService.submitRide(ride)
-          : (await automaticSubmissionService.submit(ride)).ride;
+      late final RideRequest submittedRide;
+
+      try {
+        submittedRide = automaticSubmissionService == null
+            ? await rideLifecycleService.submitRide(ride)
+            : (await automaticSubmissionService.submit(ride)).ride;
+      } on UniqueViolationException catch (error) {
+        if (error.constraintName != 'rides_client_request_id_unique_idx' ||
+            clientRequestId is! String) {
+          rethrow;
+        }
+
+        final existing = await rideRepository.findByClientRequestId(
+          clientRequestId,
+        );
+
+        if (existing == null) {
+          rethrow;
+        }
+
+        if (existing.pickup != ride.pickup ||
+            existing.destination != ride.destination ||
+            existing.passengers != ride.passengers ||
+            existing.hasLuggage != ride.hasLuggage) {
+          return Response(
+            409,
+            body: jsonEncode({
+              'error': 'Client request ID already used for another ride.',
+            }),
+            headers: {'Content-Type': 'application/json'},
+          );
+        }
+
+        return Response(
+          201,
+          body: jsonEncode(
+            await rideRequestToJson(
+              existing,
+              assignedDriverInfoService: assignedDriverInfoService,
+            ),
+          ),
+          headers: {'Content-Type': 'application/json'},
+        );
+      }
 
       return Response(
         201,

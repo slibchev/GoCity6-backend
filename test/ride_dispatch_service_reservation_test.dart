@@ -20,6 +20,16 @@ class FakeRideRequestRepository implements RideRequestRepository {
     : rides = {for (final ride in rides) ride.id: ride};
 
   @override
+  Future<RideRequest?> findByClientRequestId(String clientRequestId) async {
+    for (final ride in rides.values) {
+      if (ride.clientRequestId == clientRequestId) {
+        return ride;
+      }
+    }
+    return null;
+  }
+
+  @override
   Future<RideRequest?> findById(String id) async => rides[id];
 
   @override
