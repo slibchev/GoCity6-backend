@@ -5,6 +5,16 @@ class DriverDispatchPolicyService {
   static const int maxConsecutiveRejects = 3;
   static const Duration penaltyStep = Duration(minutes: 30);
   static const Duration penaltyResetDelay = Duration(hours: 8);
+  static const Duration penaltyEligibilityWindow = Duration(minutes: 20);
+
+  static bool isOfferPenaltyEligible({
+    required DateTime requestedAt,
+    required DateTime offeredAt,
+  }) {
+    final age = offeredAt.toUtc().difference(requestedAt.toUtc());
+
+    return !age.isNegative && age < penaltyEligibilityWindow;
+  }
 
   final DriverDispatchStateRepository repository;
 

@@ -645,6 +645,7 @@ void main(List<String> args) async {
     driverRideOfferActionService = DriverRideOfferActionService(
       offerRepository: offerRepository,
       atomicOfferRepository: atomicOfferRepository,
+      rideRepository: rideRepository,
       dispatchPolicyService: driverDispatchPolicyService,
       continueRide: continuationService.continueRide,
     );

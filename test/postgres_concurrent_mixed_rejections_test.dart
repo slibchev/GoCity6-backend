@@ -77,10 +77,13 @@ void main() {
           )
           VALUES (
             @id, 'Test pickup', 'Test destination',
-            2, @now, 'pending'
+            2, @requestedAt, 'pending'
           )
         '''),
-        parameters: {'id': rideId, 'now': now},
+        parameters: {
+          'id': rideId,
+          'requestedAt': offeredAt.subtract(const Duration(minutes: 1)),
+        },
       );
 
       await db1.execute(

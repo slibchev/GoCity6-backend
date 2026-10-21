@@ -70,10 +70,15 @@ void main() {
           )
           VALUES (
             @id, 'Bonus pickup', 'Bonus destination',
-            2, @now, 'pending'
+            2, @requestedAt, 'pending'
           )
         '''),
-        parameters: {'id': rideId, 'now': now},
+        parameters: {
+          'id': rideId,
+          'requestedAt': offeredAt.subtract(
+            const Duration(minutes: 19, seconds: 59),
+          ),
+        },
       );
 
       await db.execute(

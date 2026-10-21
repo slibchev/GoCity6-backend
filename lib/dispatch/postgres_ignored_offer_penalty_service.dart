@@ -31,15 +31,13 @@ class PostgresIgnoredOfferPenaltyService {
             o.dispatch_round,
             @now
           FROM ride_offers o
+          JOIN rides r ON r.id = o.ride_id
           WHERE o.id = @offerId
             AND o.status = 'expired'
             AND o.displayed_at IS NOT NULL
             AND o.displayed_at < o.expires_at
           ON CONFLICT (offer_id) DO NOTHING
-RETURNING driver_id, dispatch_round,
-  (SELECT expires_at
-   FROM ride_offers
-   WHERE id = offer_id) AS expires_at
+          RETURNING offer_id
         '''),
         parameters: {'offerId': offerId, 'now': nowUtc},
       );
@@ -48,10 +46,35 @@ RETURNING driver_id, dispatch_round,
         return false;
       }
 
-      final offerRow = claimed.first.toColumnMap();
+      final claimedOfferId = claimed.first[0] as String;
+      final offerRows = await tx.execute(
+        Sql.named('''
+          SELECT
+            o.driver_id,
+            o.dispatch_round,
+            o.expires_at,
+            o.offered_at,
+            r.requested_at
+          FROM ride_offers o
+          JOIN rides r ON r.id = o.ride_id
+          WHERE o.id = @offerId
+        '''),
+        parameters: {'offerId': claimedOfferId},
+      );
+      final offerRow = offerRows.single.toColumnMap();
       final driverId = offerRow['driver_id'] as String;
       final dispatchRound = offerRow['dispatch_round'] as int;
       final expiredAt = (offerRow['expires_at'] as DateTime).toUtc();
+      final offeredAt = (offerRow['offered_at'] as DateTime).toUtc();
+      final requestedAt = (offerRow['requested_at'] as DateTime).toUtc();
+
+      if (!DriverDispatchPolicyService.isOfferPenaltyEligible(
+        requestedAt: requestedAt,
+        offeredAt: offeredAt,
+      )) {
+        // Keep the tracking row so recovery does not retry this offer forever.
+        return false;
+      }
 
       // Ensure a state row exists before locking it.
       await tx.execute(

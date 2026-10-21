@@ -72,10 +72,15 @@ void main() {
             )
             VALUES (
               @id, 'Test pickup', 'Test destination',
-              2, @now, 'pending'
+              2, @requestedAt, 'pending'
             )
           '''),
-          parameters: {'id': rideIds[i], 'now': now},
+          parameters: {
+            'id': rideIds[i],
+            'requestedAt': now
+                .subtract(Duration(minutes: 3 - i))
+                .subtract(const Duration(minutes: 19)),
+          },
         );
 
         final offeredAt = now.subtract(Duration(minutes: 3 - i));

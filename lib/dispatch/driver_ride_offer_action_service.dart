@@ -2,6 +2,7 @@ import 'atomic_ride_offer_repository.dart';
 import 'ride_offer.dart';
 import 'ride_offer_repository.dart';
 import 'driver_dispatch_policy_service.dart';
+import '../ride/ride_request_repository.dart';
 
 typedef ContinueAutomaticDispatch = Future<RideOffer?> Function({
   required String rideId,
@@ -23,12 +24,14 @@ class DriverRideOfferActionException implements Exception {
 class DriverRideOfferActionService {
   final RideOfferRepository offerRepository;
   final AtomicRideOfferRepository atomicOfferRepository;
+  final RideRequestRepository rideRepository;
   final ContinueAutomaticDispatch continueRide;
   final DriverDispatchPolicyService dispatchPolicyService;
 
   const DriverRideOfferActionService({
     required this.offerRepository,
     required this.atomicOfferRepository,
+    required this.rideRepository,
     required this.continueRide,
     required this.dispatchPolicyService,
   });
@@ -48,22 +51,37 @@ class DriverRideOfferActionService {
     required String offerId,
     required DateTime now,
   }) async {
-    await _requireOwnedOffer(driverId: driverId, offerId: offerId);
+    final offer = await _requireOwnedOffer(
+      driverId: driverId,
+      offerId: offerId,
+    );
+    final ride = await rideRepository.findById(offer.rideId);
+
+    if (ride == null) {
+      throw StateError(
+        'Ride ${offer.rideId} for offer ${offer.id} was not found.',
+      );
+    }
 
     final rejectedOffer = await atomicOfferRepository.rejectPendingOffer(
       offerId: offerId,
       now: now,
     );
-    if (rejectedOffer.dispatchRound == RideOffer.bonusDispatchRound) {
-      await dispatchPolicyService.recordRejectedBonusOffer(
-        driverId: driverId,
-        now: now,
-      );
-    } else {
-      await dispatchPolicyService.recordRejectedOffer(
-        driverId: driverId,
-        now: now,
-      );
+    if (DriverDispatchPolicyService.isOfferPenaltyEligible(
+      requestedAt: ride.requestedAt,
+      offeredAt: rejectedOffer.offeredAt,
+    )) {
+      if (rejectedOffer.dispatchRound == RideOffer.bonusDispatchRound) {
+        await dispatchPolicyService.recordRejectedBonusOffer(
+          driverId: driverId,
+          now: now,
+        );
+      } else {
+        await dispatchPolicyService.recordRejectedOffer(
+          driverId: driverId,
+          now: now,
+        );
+      }
     }
 
     await continueRide(rideId: rejectedOffer.rideId);
@@ -71,7 +89,7 @@ class DriverRideOfferActionService {
     return rejectedOffer;
   }
 
-  Future<void> _requireOwnedOffer({
+  Future<RideOffer> _requireOwnedOffer({
     required String driverId,
     required String offerId,
   }) async {
@@ -88,5 +106,7 @@ class DriverRideOfferActionService {
         DriverRideOfferActionConflict.offerDoesNotBelongToDriver,
       );
     }
+
+    return offer;
   }
 }
