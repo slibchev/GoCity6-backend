@@ -20,12 +20,11 @@ enum RideDispatchConflict {
   driverStillHasActiveRide,
   rideNotReserved,
   rideAssignedToAnotherDriver,
+  rideTooOld,
+  rideHasAutomaticOffer,
 }
 
-enum RideDispatchInputConflict {
-  driverLocationRequired,
-  invalidDriverLocation,
-}
+enum RideDispatchInputConflict { driverLocationRequired, invalidDriverLocation }
 
 class RideNotFoundException implements Exception {
   final String rideId;
@@ -63,8 +62,7 @@ class RideDispatchInputException implements Exception {
 class RideDispatchService {
   final RideRequestRepository repository;
 
-  final AtomicWaitingRideAcceptanceRepository?
-      waitingRideAcceptanceRepository;
+  final AtomicWaitingRideAcceptanceRepository? waitingRideAcceptanceRepository;
 
   final DriverShiftRepository? driverShiftRepository;
 
@@ -91,6 +89,17 @@ class RideDispatchService {
   }) async {
     final ride = await _requireRide(rideId);
 
+    final nowUtc = now?.toUtc();
+
+    if (nowUtc != null &&
+        !nowUtc.isBefore(
+          ride.requestedAt.toUtc().add(const Duration(minutes: 30)),
+        )) {
+      throw const RideDispatchConflictException(
+        RideDispatchConflict.rideTooOld,
+      );
+    }
+
     if (ride.status != RideRequestStatus.waitingForVehicle) {
       throw const RideDispatchConflictException(
         RideDispatchConflict.rideNotWaitingForVehicle,
@@ -110,7 +119,7 @@ class RideDispatchService {
         driverLatitude: driverLatitude,
         driverLongitude: driverLongitude,
         reservationId: reservationId,
-        now: now,
+        now: nowUtc,
       );
     }
 
@@ -118,6 +127,7 @@ class RideDispatchService {
       ride: ride,
       driverId: driverId,
       vehicleId: vehicleId,
+      now: nowUtc,
     );
   }
 
@@ -187,21 +197,18 @@ class RideDispatchService {
         return _acceptWaitingRideAtomically(
           rideId: ride.id,
           driverId: driverId,
+          now: now,
         );
 
       case DriverQueueAvailability.busy:
-        _requireReservationDependencies(
-          reservationId: reservationId,
-          now: now,
-        );
+        _requireReservationDependencies(reservationId: reservationId, now: now);
 
         final location = _requireDriverLocation(
           latitude: driverLatitude,
           longitude: driverLongitude,
         );
 
-        final driverRides =
-            await repository.findByAssignedDriverId(driverId);
+        final driverRides = await repository.findByAssignedDriverId(driverId);
 
         final activeCurrentRides = driverRides
             .where(
@@ -234,22 +241,18 @@ class RideDispatchService {
         );
 
       case DriverQueueAvailability.externalRide:
-        _requireReservationDependencies(
-          reservationId: reservationId,
-          now: now,
-        );
+        _requireReservationDependencies(reservationId: reservationId, now: now);
 
         final location = _requireDriverLocation(
           latitude: driverLatitude,
           longitude: driverLongitude,
         );
 
-        final combinedEtaSeconds =
-            await _calculateExternalCombinedEtaSeconds(
-              nextRide: ride,
-              driverLatitude: location.$1,
-              driverLongitude: location.$2,
-            );
+        final combinedEtaSeconds = await _calculateExternalCombinedEtaSeconds(
+          nextRide: ride,
+          driverLatitude: location.$1,
+          driverLongitude: location.$2,
+        );
 
         return _reserveWaitingRideAtomically(
           ride: ride,
@@ -271,6 +274,7 @@ class RideDispatchService {
     required RideRequest ride,
     required String driverId,
     required String vehicleId,
+    required DateTime? now,
   }) async {
     final driverRides = await repository.findByAssignedDriverId(driverId);
 
@@ -296,6 +300,7 @@ class RideDispatchService {
       return _acceptWaitingRideAtomically(
         rideId: ride.id,
         driverId: driverId,
+        now: now,
       );
     }
 
@@ -447,6 +452,16 @@ class RideDispatchService {
             RideDispatchConflict.rideAlreadyAssigned,
           );
 
+        case AtomicRideReservationConflict.rideTooOld:
+          throw const RideDispatchConflictException(
+            RideDispatchConflict.rideTooOld,
+          );
+
+        case AtomicRideReservationConflict.activeAutomaticOffer:
+          throw const RideDispatchConflictException(
+            RideDispatchConflict.rideHasAutomaticOffer,
+          );
+
         case AtomicRideReservationConflict.activeShiftNotFound:
         case AtomicRideReservationConflict.driverNotReservable:
         case AtomicRideReservationConflict.queueStateMismatch:
@@ -493,6 +508,7 @@ class RideDispatchService {
   Future<RideRequest> _acceptWaitingRideAtomically({
     required String rideId,
     required String driverId,
+    required DateTime? now,
   }) async {
     final atomicRepository = waitingRideAcceptanceRepository!;
 
@@ -500,6 +516,7 @@ class RideDispatchService {
       return await atomicRepository.acceptWaitingRide(
         rideId: rideId,
         driverId: driverId,
+        now: now,
       );
     } on AtomicWaitingRideAcceptanceConflictException catch (error) {
       switch (error.conflict) {
@@ -514,6 +531,16 @@ class RideDispatchService {
         case AtomicWaitingRideAcceptanceConflict.rideAlreadyAssigned:
           throw const RideDispatchConflictException(
             RideDispatchConflict.rideAlreadyAssigned,
+          );
+
+        case AtomicWaitingRideAcceptanceConflict.rideTooOld:
+          throw const RideDispatchConflictException(
+            RideDispatchConflict.rideTooOld,
+          );
+
+        case AtomicWaitingRideAcceptanceConflict.activeAutomaticOffer:
+          throw const RideDispatchConflictException(
+            RideDispatchConflict.rideHasAutomaticOffer,
           );
 
         case AtomicWaitingRideAcceptanceConflict.activeShiftNotFound:
@@ -556,9 +583,7 @@ class RideDispatchService {
     required DateTime? now,
   }) {
     if (rideReservationRepository == null || routeEstimator == null) {
-      throw StateError(
-        'Ride reservation orchestration is not configured.',
-      );
+      throw StateError('Ride reservation orchestration is not configured.');
     }
 
     if (reservationId == null || reservationId.trim().isEmpty || now == null) {
@@ -576,18 +601,14 @@ class RideDispatchService {
     final longitude = estimate.destinationLongitude;
 
     if (latitude != null && longitude != null) {
-      return RouteWaypoint(
-        latitude: latitude,
-        longitude: longitude,
-      );
+      return RouteWaypoint(latitude: latitude, longitude: longitude);
     }
 
     return RouteWaypoint(address: fallbackAddress);
   }
 
   double _requireFiniteDuration(RouteEstimate estimate) {
-    if (!estimate.durationSeconds.isFinite ||
-        estimate.durationSeconds < 0) {
+    if (!estimate.durationSeconds.isFinite || estimate.durationSeconds < 0) {
       throw StateError('Route estimate has an invalid duration.');
     }
 

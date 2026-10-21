@@ -79,6 +79,7 @@ class FakeAtomicWaitingRideAcceptanceRepository
   Future<RideRequest> acceptWaitingRide({
     required String rideId,
     required String driverId,
+    DateTime? now,
   }) async {
     called = true;
     receivedRideId = rideId;

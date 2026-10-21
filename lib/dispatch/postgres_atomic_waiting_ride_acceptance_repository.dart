@@ -8,15 +8,16 @@ class PostgresAtomicWaitingRideAcceptanceRepository
     implements AtomicWaitingRideAcceptanceRepository {
   final SessionExecutor database;
 
-  PostgresAtomicWaitingRideAcceptanceRepository({
-    required this.database,
-  });
+  PostgresAtomicWaitingRideAcceptanceRepository({required this.database});
 
   @override
   Future<RideRequest> acceptWaitingRide({
     required String rideId,
     required String driverId,
+    DateTime? now,
   }) {
+    final nowUtc = (now ?? DateTime.now()).toUtc();
+
     return database.runTx((transaction) async {
       final rideResult = await transaction.execute(
         Sql.named('''
@@ -43,9 +44,7 @@ class PostgresAtomicWaitingRideAcceptanceRepository
           WHERE id = @rideId
           FOR UPDATE
         '''),
-        parameters: {
-          'rideId': rideId,
-        },
+        parameters: {'rideId': rideId},
       );
 
       if (rideResult.isEmpty) {
@@ -69,6 +68,38 @@ class PostgresAtomicWaitingRideAcceptanceRepository
         );
       }
 
+      final requestedAt = (rideRow['requested_at'] as DateTime).toUtc();
+      final databaseTimeResult = await transaction.execute(
+        Sql('SELECT clock_timestamp() AS database_now'),
+      );
+      final databaseNow =
+          (databaseTimeResult.single.toColumnMap()['database_now'] as DateTime)
+              .toUtc();
+      final cutoff = requestedAt.add(const Duration(minutes: 30));
+
+      if (!nowUtc.isBefore(cutoff) || !databaseNow.isBefore(cutoff)) {
+        throw const AtomicWaitingRideAcceptanceConflictException(
+          AtomicWaitingRideAcceptanceConflict.rideTooOld,
+        );
+      }
+
+      final activeOfferResult = await transaction.execute(
+        Sql.named('''
+          SELECT 1
+          FROM ride_offers
+          WHERE ride_id = @rideId
+            AND status = 'pending'
+          LIMIT 1
+        '''),
+        parameters: {'rideId': rideId},
+      );
+
+      if (activeOfferResult.isNotEmpty) {
+        throw const AtomicWaitingRideAcceptanceConflictException(
+          AtomicWaitingRideAcceptanceConflict.activeAutomaticOffer,
+        );
+      }
+
       final shiftResult = await transaction.execute(
         Sql.named('''
           SELECT
@@ -84,9 +115,7 @@ class PostgresAtomicWaitingRideAcceptanceRepository
           LIMIT 1
           FOR UPDATE OF s, q
         '''),
-        parameters: {
-          'driverId': driverId,
-        },
+        parameters: {'driverId': driverId},
       );
 
       if (shiftResult.isEmpty) {
@@ -169,9 +198,7 @@ class PostgresAtomicWaitingRideAcceptanceRepository
             AND has_pending_offer = FALSE
           RETURNING shift_id
         '''),
-        parameters: {
-          'shiftId': shiftId,
-        },
+        parameters: {'shiftId': shiftId},
       );
 
       if (queueUpdateResult.isEmpty) {
@@ -180,9 +207,7 @@ class PostgresAtomicWaitingRideAcceptanceRepository
         );
       }
 
-      return _rideFromRow(
-        acceptedRideResult.single.toColumnMap(),
-      );
+      return _rideFromRow(acceptedRideResult.single.toColumnMap());
     });
   }
 
@@ -194,9 +219,7 @@ class PostgresAtomicWaitingRideAcceptanceRepository
       passengers: row['passengers'] as int,
       hasLuggage: row['has_luggage'] as bool,
       requestedAt: (row['requested_at'] as DateTime).toUtc(),
-      status: RideRequestStatus.values.byName(
-        row['status'] as String,
-      ),
+      status: RideRequestStatus.values.byName(row['status'] as String),
       assignedDriverId: row['assigned_driver_id'] as String?,
       assignedVehicleId: row['assigned_vehicle_id'] as String?,
       dispatchRound: row['dispatch_round'] as int,

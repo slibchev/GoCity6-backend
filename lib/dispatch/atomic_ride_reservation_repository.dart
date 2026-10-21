@@ -4,6 +4,8 @@ enum AtomicRideReservationConflict {
   rideNotFound,
   rideNotWaitingForVehicle,
   rideAlreadyAssigned,
+  rideTooOld,
+  activeAutomaticOffer,
 
   activeShiftNotFound,
   driverNotReservable,

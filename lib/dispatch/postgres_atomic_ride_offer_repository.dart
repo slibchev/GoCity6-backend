@@ -21,6 +21,7 @@ class PostgresAtomicRideOfferRepository implements AtomicRideOfferRepository {
             status,
             assigned_driver_id,
             assigned_vehicle_id,
+            requested_at,
             dispatch_round,
             driver_bonus_minor,
             bonus_decision
@@ -32,16 +33,22 @@ class PostgresAtomicRideOfferRepository implements AtomicRideOfferRepository {
       );
 
       if (rideResult.isEmpty) {
-        throw const AtomicRideOfferConflictException(
+        throw AtomicRideOfferConflictException(
           AtomicRideOfferConflict.rideNotFound,
         );
       }
 
       final rideRow = rideResult.first.toColumnMap();
 
-      if (rideRow['status'] != 'pending') {
-        throw const AtomicRideOfferConflictException(
-          AtomicRideOfferConflict.rideNotPending,
+      final expectedStatus = offer.source == RideOfferSource.waitingBoard
+          ? 'waitingForVehicle'
+          : 'pending';
+
+      if (rideRow['status'] != expectedStatus) {
+        throw AtomicRideOfferConflictException(
+          offer.source == RideOfferSource.waitingBoard
+              ? AtomicRideOfferConflict.rideNotWaitingForVehicle
+              : AtomicRideOfferConflict.rideNotPending,
         );
       }
 
@@ -50,6 +57,25 @@ class PostgresAtomicRideOfferRepository implements AtomicRideOfferRepository {
         throw const AtomicRideOfferConflictException(
           AtomicRideOfferConflict.rideAlreadyAssigned,
         );
+      }
+
+      if (offer.source == RideOfferSource.waitingBoard) {
+        final databaseTimeResult = await transaction.execute(
+          Sql('SELECT clock_timestamp() AS database_now'),
+        );
+        final databaseNow =
+            (databaseTimeResult.single.toColumnMap()['database_now']
+                    as DateTime)
+                .toUtc();
+        final requestedAt = (rideRow['requested_at'] as DateTime).toUtc();
+
+        if (!databaseNow.isBefore(
+          requestedAt.add(const Duration(minutes: 30)),
+        )) {
+          throw const AtomicRideOfferConflictException(
+            AtomicRideOfferConflict.rideTooOld,
+          );
+        }
       }
 
       if (!_rideMatchesOfferDispatchState(rideRow, offer)) {
@@ -108,7 +134,8 @@ class PostgresAtomicRideOfferRepository implements AtomicRideOfferRepository {
             s.id AS shift_id,
             s.vehicle_id,
             q.availability,
-            q.has_pending_offer
+            q.has_pending_offer,
+            q.location_updated_at
           FROM driver_shifts s
           JOIN driver_queue_states q
             ON q.shift_id = s.id
@@ -145,6 +172,55 @@ class PostgresAtomicRideOfferRepository implements AtomicRideOfferRepository {
         );
       }
 
+      var persistedOffer = offer;
+
+      if (offer.source == RideOfferSource.waitingBoard) {
+        final databaseTimeResult = await transaction.execute(
+          Sql('SELECT clock_timestamp() AS database_now'),
+        );
+        final databaseNow =
+            (databaseTimeResult.single.toColumnMap()['database_now']
+                    as DateTime)
+                .toUtc();
+        final requestedAt = (rideRow['requested_at'] as DateTime).toUtc();
+        final cutoff = requestedAt.add(const Duration(minutes: 30));
+
+        if (!databaseNow.isBefore(cutoff)) {
+          throw const AtomicRideOfferConflictException(
+            AtomicRideOfferConflict.rideTooOld,
+          );
+        }
+
+        final locationUpdatedAt = shiftRow['location_updated_at'] as DateTime?;
+        final locationAge = locationUpdatedAt == null
+            ? null
+            : databaseNow.difference(locationUpdatedAt.toUtc());
+
+        if (locationAge == null ||
+            locationAge.isNegative ||
+            locationAge > const Duration(seconds: 30)) {
+          throw const AtomicRideOfferConflictException(
+            AtomicRideOfferConflict.driverLocationStale,
+          );
+        }
+
+        // The response window starts after route calculation and all row
+        // locks, so contention cannot consume the driver's 15 seconds.
+        persistedOffer = RideOffer.create(
+          id: offer.id,
+          rideId: offer.rideId,
+          driverId: offer.driverId,
+          vehicleId: offer.vehicleId,
+          etaSeconds: offer.etaSeconds,
+          distanceMeters: offer.distanceMeters,
+          dispatchRound: offer.dispatchRound,
+          bonusMinor: offer.bonusMinor,
+          source: offer.source,
+          offeredAt: databaseNow,
+          timeout: offer.expiresAt.difference(offer.offeredAt),
+        );
+      }
+
       await transaction.execute(
         Sql.named('''
           INSERT INTO ride_offers (
@@ -152,6 +228,7 @@ class PostgresAtomicRideOfferRepository implements AtomicRideOfferRepository {
             ride_id,
             driver_id,
             vehicle_id,
+            source,
             eta_seconds,
             distance_meters,
             dispatch_round,
@@ -166,6 +243,7 @@ class PostgresAtomicRideOfferRepository implements AtomicRideOfferRepository {
             @rideId,
             @driverId,
             @vehicleId,
+            @source,
             @etaSeconds,
             @distanceMeters,
             @dispatchRound,
@@ -177,16 +255,17 @@ class PostgresAtomicRideOfferRepository implements AtomicRideOfferRepository {
           )
         '''),
         parameters: {
-          'id': offer.id,
-          'rideId': offer.rideId,
-          'driverId': offer.driverId,
-          'vehicleId': offer.vehicleId,
-          'etaSeconds': offer.etaSeconds,
-          'distanceMeters': offer.distanceMeters,
-          'dispatchRound': offer.dispatchRound,
-          'bonusMinor': offer.bonusMinor,
-          'offeredAt': offer.offeredAt.toUtc(),
-          'expiresAt': offer.expiresAt.toUtc(),
+          'id': persistedOffer.id,
+          'rideId': persistedOffer.rideId,
+          'driverId': persistedOffer.driverId,
+          'vehicleId': persistedOffer.vehicleId,
+          'source': persistedOffer.source.databaseValue,
+          'etaSeconds': persistedOffer.etaSeconds,
+          'distanceMeters': persistedOffer.distanceMeters,
+          'dispatchRound': persistedOffer.dispatchRound,
+          'bonusMinor': persistedOffer.bonusMinor,
+          'offeredAt': persistedOffer.offeredAt.toUtc(),
+          'expiresAt': persistedOffer.expiresAt.toUtc(),
         },
       );
 
@@ -208,7 +287,7 @@ class PostgresAtomicRideOfferRepository implements AtomicRideOfferRepository {
         );
       }
 
-      return offer;
+      return persistedOffer;
     });
   }
 
@@ -252,9 +331,13 @@ class PostgresAtomicRideOfferRepository implements AtomicRideOfferRepository {
 
       final rideRow = rideResult.first.toColumnMap();
 
-      if (rideRow['status'] != 'pending') {
+      final expectedStatus = offer.source == RideOfferSource.waitingBoard
+          ? 'waitingForVehicle'
+          : 'pending';
+
+      if (rideRow['status'] != expectedStatus) {
         throw const AtomicRideOfferConflictException(
-          AtomicRideOfferConflict.rideNotPending,
+          AtomicRideOfferConflict.rideDispatchStateMismatch,
         );
       }
 
@@ -316,7 +399,7 @@ class PostgresAtomicRideOfferRepository implements AtomicRideOfferRepository {
             assigned_driver_id = @driverId,
             assigned_vehicle_id = @vehicleId
           WHERE id = @rideId
-            AND status = 'pending'
+            AND status = @expectedStatus
             AND assigned_driver_id IS NULL
             AND assigned_vehicle_id IS NULL
             AND dispatch_round = @dispatchRound
@@ -328,9 +411,10 @@ class PostgresAtomicRideOfferRepository implements AtomicRideOfferRepository {
           'rideId': offer.rideId,
           'driverId': offer.driverId,
           'vehicleId': offer.vehicleId,
+          'expectedStatus': expectedStatus,
           'dispatchRound': offer.dispatchRound,
           'bonusMinor': offer.bonusMinor,
-          'bonusDecision': _expectedBonusDecisionForOffer(offer),
+          'bonusDecision': rideRow['bonus_decision'],
         },
       );
 
@@ -615,6 +699,7 @@ class PostgresAtomicRideOfferRepository implements AtomicRideOfferRepository {
           ride_id,
           driver_id,
           vehicle_id,
+            source,
           eta_seconds,
           distance_meters,
           dispatch_round,
@@ -650,6 +735,7 @@ FROM ride_offers
       rideId: row['ride_id'] as String,
       driverId: row['driver_id'] as String,
       vehicleId: row['vehicle_id'] as String,
+      source: RideOfferSource.fromDatabaseValue(row['source'] as String),
       etaSeconds: row['eta_seconds'] as int,
       distanceMeters: row['distance_meters'] as int,
       dispatchRound: row['dispatch_round'] as int,
@@ -706,7 +792,9 @@ FROM ride_offers
     }
 
     if (offer.dispatchRound == RideOffer.normalDispatchRound) {
-      return bonusDecision == 'not_offered';
+      return bonusDecision == 'not_offered' ||
+          (offer.source == RideOfferSource.waitingBoard &&
+              bonusDecision == 'declined');
     }
 
     if (offer.dispatchRound == RideOffer.bonusDispatchRound) {
@@ -714,21 +802,5 @@ FROM ride_offers
     }
 
     return false;
-  }
-
-  String _expectedBonusDecisionForOffer(RideOffer offer) {
-    if (offer.dispatchRound == RideOffer.normalDispatchRound) {
-      return 'not_offered';
-    }
-
-    if (offer.dispatchRound == RideOffer.bonusDispatchRound) {
-      return 'accepted';
-    }
-
-    throw ArgumentError.value(
-      offer.dispatchRound,
-      'dispatchRound',
-      'Unsupported dispatch round.',
-    );
   }
 }

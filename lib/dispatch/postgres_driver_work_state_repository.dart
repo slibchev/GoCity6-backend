@@ -7,18 +7,13 @@ import 'driver_queue_state.dart';
 import 'driver_work_state_repository.dart';
 import 'ride_offer.dart';
 
-class PostgresDriverWorkStateRepository
-    implements DriverWorkStateRepository {
+class PostgresDriverWorkStateRepository implements DriverWorkStateRepository {
   final SessionExecutor database;
 
-  PostgresDriverWorkStateRepository({
-    required this.database,
-  });
+  PostgresDriverWorkStateRepository({required this.database});
 
   @override
-  Future<DriverWorkStateSnapshot> loadByDriverId(
-    String driverId,
-  ) {
+  Future<DriverWorkStateSnapshot> loadByDriverId(String driverId) {
     return database.run((session) async {
       final shiftResult = await session.execute(
         Sql.named('''
@@ -39,15 +34,11 @@ class PostgresDriverWorkStateRepository
             AND s.ended_at IS NULL
           LIMIT 2
         '''),
-        parameters: {
-          'driverId': driverId,
-        },
+        parameters: {'driverId': driverId},
       );
 
       if (shiftResult.length > 1) {
-        throw StateError(
-          'Driver has more than one active shift.',
-        );
+        throw StateError('Driver has more than one active shift.');
       }
 
       if (shiftResult.isEmpty) {
@@ -59,8 +50,7 @@ class PostgresDriverWorkStateRepository
         );
       }
 
-      final shift =
-          _shiftFromRow(shiftResult.single.toColumnMap());
+      final shift = _shiftFromRow(shiftResult.single.toColumnMap());
 
       final pendingOfferResult = await session.execute(
         Sql.named('''
@@ -69,6 +59,7 @@ class PostgresDriverWorkStateRepository
             o.ride_id AS offer_ride_id,
             o.driver_id AS offer_driver_id,
             o.vehicle_id AS offer_vehicle_id,
+            o.source AS offer_source,
             o.eta_seconds AS offer_eta_seconds,
             o.distance_meters AS offer_distance_meters,
             o.dispatch_round AS offer_dispatch_round,
@@ -104,22 +95,17 @@ class PostgresDriverWorkStateRepository
           ORDER BY o.offered_at DESC
           LIMIT 2
         '''),
-        parameters: {
-          'driverId': driverId,
-        },
+        parameters: {'driverId': driverId},
       );
 
       if (pendingOfferResult.length > 1) {
-        throw StateError(
-          'Driver has more than one pending offer.',
-        );
+        throw StateError('Driver has more than one pending offer.');
       }
 
       DriverPendingOfferState? pendingOffer;
 
       if (pendingOfferResult.isNotEmpty) {
-        final row =
-            pendingOfferResult.single.toColumnMap();
+        final row = pendingOfferResult.single.toColumnMap();
 
         pendingOffer = DriverPendingOfferState(
           offer: _offerFromRow(row),
@@ -158,22 +144,16 @@ class PostgresDriverWorkStateRepository
           ORDER BY r.requested_at ASC
           LIMIT 2
         '''),
-        parameters: {
-          'driverId': driverId,
-        },
+        parameters: {'driverId': driverId},
       );
 
       if (currentRideResult.length > 1) {
-        throw StateError(
-          'Driver has more than one current City6 ride.',
-        );
+        throw StateError('Driver has more than one current City6 ride.');
       }
 
       final currentRide = currentRideResult.isEmpty
           ? null
-          : _rideFromRow(
-              currentRideResult.single.toColumnMap(),
-            );
+          : _rideFromRow(currentRideResult.single.toColumnMap());
 
       final reservedRideResult = await session.execute(
         Sql.named('''
@@ -205,22 +185,16 @@ class PostgresDriverWorkStateRepository
           ORDER BY rr.reserved_at DESC
           LIMIT 2
         '''),
-        parameters: {
-          'driverId': driverId,
-        },
+        parameters: {'driverId': driverId},
       );
 
       if (reservedRideResult.length > 1) {
-        throw StateError(
-          'Driver has more than one active reserved ride.',
-        );
+        throw StateError('Driver has more than one active reserved ride.');
       }
 
       final reservedRide = reservedRideResult.isEmpty
           ? null
-          : _rideFromRow(
-              reservedRideResult.single.toColumnMap(),
-            );
+          : _rideFromRow(reservedRideResult.single.toColumnMap());
 
       return DriverWorkStateSnapshot(
         activeShift: shift,
@@ -231,115 +205,69 @@ class PostgresDriverWorkStateRepository
     });
   }
 
-  ActiveDriverShift _shiftFromRow(
-    Map<String, dynamic> row,
-  ) {
+  ActiveDriverShift _shiftFromRow(Map<String, dynamic> row) {
     final driverId = row['driver_id'] as String;
 
     final queueState = DriverQueueState.restore(
       driverId: driverId,
-      queuePrioritySince:
-          (row['queue_priority_since'] as DateTime)
-              .toUtc(),
-      availability:
-          DriverQueueAvailability.values.byName(
+      queuePrioritySince: (row['queue_priority_since'] as DateTime).toUtc(),
+      availability: DriverQueueAvailability.values.byName(
         row['availability'] as String,
       ),
-      shortBreaksUsed:
-          row['protected_breaks_used'] as int,
-      breakStartedAt:
-          (row['break_started_at'] as DateTime?)
-              ?.toUtc(),
-      hasPendingOffer:
-          row['has_pending_offer'] as bool,
+      shortBreaksUsed: row['protected_breaks_used'] as int,
+      breakStartedAt: (row['break_started_at'] as DateTime?)?.toUtc(),
+      hasPendingOffer: row['has_pending_offer'] as bool,
     );
 
     return ActiveDriverShift.restore(
       id: row['shift_id'] as String,
       driverId: driverId,
       vehicleId: row['vehicle_id'] as String,
-      startedAt:
-          (row['started_at'] as DateTime).toUtc(),
+      startedAt: (row['started_at'] as DateTime).toUtc(),
       queueState: queueState,
     );
   }
 
-  RideOffer _offerFromRow(
-    Map<String, dynamic> row,
-  ) {
+  RideOffer _offerFromRow(Map<String, dynamic> row) {
     return RideOffer.restore(
       id: row['offer_id'] as String,
       rideId: row['offer_ride_id'] as String,
       driverId: row['offer_driver_id'] as String,
-      vehicleId:
-          row['offer_vehicle_id'] as String,
-      etaSeconds:
-          row['offer_eta_seconds'] as int,
-      distanceMeters:
-          row['offer_distance_meters'] as int,
-      dispatchRound:
-          row['offer_dispatch_round'] as int,
-      bonusMinor:
-          row['offer_bonus_minor'] as int,
-      offeredAt:
-          (row['offer_offered_at'] as DateTime)
-              .toUtc(),
-      expiresAt:
-          (row['offer_expires_at'] as DateTime)
-              .toUtc(),
-      status: RideOfferStatus.values.byName(
-        row['offer_status'] as String,
-      ),
-      resolvedAt:
-          (row['offer_resolved_at'] as DateTime?)
-              ?.toUtc(),
+      vehicleId: row['offer_vehicle_id'] as String,
+      source: RideOfferSource.fromDatabaseValue(row['offer_source'] as String),
+      etaSeconds: row['offer_eta_seconds'] as int,
+      distanceMeters: row['offer_distance_meters'] as int,
+      dispatchRound: row['offer_dispatch_round'] as int,
+      bonusMinor: row['offer_bonus_minor'] as int,
+      offeredAt: (row['offer_offered_at'] as DateTime).toUtc(),
+      expiresAt: (row['offer_expires_at'] as DateTime).toUtc(),
+      status: RideOfferStatus.values.byName(row['offer_status'] as String),
+      resolvedAt: (row['offer_resolved_at'] as DateTime?)?.toUtc(),
     );
   }
 
-  RideRequest _rideFromRow(
-    Map<String, dynamic> row,
-  ) {
+  RideRequest _rideFromRow(Map<String, dynamic> row) {
     return RideRequest(
       id: row['ride_id'] as String,
       pickup: row['ride_pickup'] as String,
-      destination:
-          row['ride_destination'] as String,
-      passengers:
-          row['ride_passengers'] as int,
-      hasLuggage:
-          row['ride_has_luggage'] as bool,
-      requestedAt:
-          (row['ride_requested_at'] as DateTime)
-              .toUtc(),
-      status: RideRequestStatus.values.byName(
-        row['ride_status'] as String,
-      ),
-      assignedDriverId:
-          row['ride_assigned_driver_id'] as String?,
-      assignedVehicleId:
-          row['ride_assigned_vehicle_id'] as String?,
-      dispatchRound:
-          row['ride_dispatch_round'] as int,
-      driverBonusMinor:
-          row['ride_driver_bonus_minor'] as int,
-      bonusDecision:
-          RideBonusDecision.fromDatabaseValue(
+      destination: row['ride_destination'] as String,
+      passengers: row['ride_passengers'] as int,
+      hasLuggage: row['ride_has_luggage'] as bool,
+      requestedAt: (row['ride_requested_at'] as DateTime).toUtc(),
+      status: RideRequestStatus.values.byName(row['ride_status'] as String),
+      assignedDriverId: row['ride_assigned_driver_id'] as String?,
+      assignedVehicleId: row['ride_assigned_vehicle_id'] as String?,
+      dispatchRound: row['ride_dispatch_round'] as int,
+      driverBonusMinor: row['ride_driver_bonus_minor'] as int,
+      bonusDecision: RideBonusDecision.fromDatabaseValue(
         row['ride_bonus_decision'] as String,
       ),
-      currency:
-          (row['ride_currency'] as String).trim(),
-      meterFareMinor:
-          row['ride_meter_fare_minor'] as int?,
-      commissionRateBps:
-          row['ride_commission_rate_bps'] as int?,
-      commissionAmountMinor:
-          row['ride_commission_amount_minor'] as int?,
-      completedByDriverId:
-          row['ride_completed_by_driver_id']
-              as String?,
-      completedAt:
-          (row['ride_completed_at'] as DateTime?)
-              ?.toUtc(),
+      currency: (row['ride_currency'] as String).trim(),
+      meterFareMinor: row['ride_meter_fare_minor'] as int?,
+      commissionRateBps: row['ride_commission_rate_bps'] as int?,
+      commissionAmountMinor: row['ride_commission_amount_minor'] as int?,
+      completedByDriverId: row['ride_completed_by_driver_id'] as String?,
+      completedAt: (row['ride_completed_at'] as DateTime?)?.toUtc(),
     );
   }
 }

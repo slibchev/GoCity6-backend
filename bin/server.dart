@@ -20,6 +20,7 @@ import 'package:gocity6_backend/ride/postgres_assigned_driver_info_repository.da
 import 'package:gocity6_backend/ride/ride_lifecycle_service.dart';
 
 import 'package:gocity6_backend/ride/ride_request.dart';
+import 'package:gocity6_backend/ride/ride_request_status.dart';
 
 import 'package:gocity6_backend/ride/ride_dispatch_service.dart';
 
@@ -79,6 +80,8 @@ import 'package:gocity6_backend/dispatch/customer_bonus_decision_service.dart';
 import 'package:gocity6_backend/dispatch/driver_dispatch_state_repository.dart';
 import 'package:gocity6_backend/dispatch/postgres_driver_dispatch_state_repository.dart';
 import 'package:gocity6_backend/dispatch/driver_dispatch_policy_service.dart';
+import 'package:gocity6_backend/dispatch/postgres_waiting_ride_redispatch_repository.dart';
+import 'package:gocity6_backend/dispatch/waiting_board_redispatch_service.dart';
 
 Future<Map<String, double>> geocodeAddress(
   String address,
@@ -450,6 +453,7 @@ void main(List<String> args) async {
   AutomaticRideSubmissionService? automaticRideSubmissionService;
   CustomerBonusDecisionService? customerBonusDecisionService;
   RideOfferTimeoutProcessor? rideOfferTimeoutProcessor;
+  WaitingBoardRedispatchService? waitingBoardRedispatchService;
   DriverRideOfferActionService? driverRideOfferActionService;
   DriverLiveLocationRepository? driverLiveLocationRepository;
   DriverDispatchStateRepository? driverDispatchStateRepository;
@@ -621,6 +625,16 @@ void main(List<String> args) async {
       atomicOfferRepository: atomicOfferRepository,
     );
 
+    final waitingRideRedispatchRepository =
+        PostgresWaitingRideRedispatchRepository(database: databasePool);
+    waitingBoardRedispatchService = WaitingBoardRedispatchService(
+      rideRepository: waitingRideRedispatchRepository,
+      candidateService: candidateService,
+      dispatchOrchestrator: dispatchOrchestrator,
+      offerIdFactory: () => uuid.v4(),
+      now: () => DateTime.now().toUtc(),
+    );
+
     final exhaustionService = AutomaticDispatchExhaustionService(
       bonusDecisionRepository: bonusDecisionRepository,
     );
@@ -632,6 +646,20 @@ void main(List<String> args) async {
       offerIdFactory: () => uuid.v4(),
       now: () => DateTime.now().toUtc(),
     );
+    Future<RideOffer?> continueDispatchOrWaitingBoard({
+      required String rideId,
+    }) async {
+      final ride = await rideRepository.findById(rideId);
+
+      if (ride?.status == RideRequestStatus.waitingForVehicle) {
+        final offers = await waitingBoardRedispatchService
+            ?.dispatchAvailableWaiters();
+        return offers == null || offers.isEmpty ? null : offers.first;
+      }
+
+      return continuationService.continueRide(rideId: rideId);
+    }
+
     driverDispatchPolicyService = DriverDispatchPolicyService(
       repository: dispatchStateRepository,
     );
@@ -647,7 +675,7 @@ void main(List<String> args) async {
       atomicOfferRepository: atomicOfferRepository,
       rideRepository: rideRepository,
       dispatchPolicyService: driverDispatchPolicyService,
-      continueRide: continuationService.continueRide,
+      continueRide: continueDispatchOrWaitingBoard,
     );
     customerBonusDecisionService = CustomerBonusDecisionService(
       bonusDecisionRepository: bonusDecisionRepository,
@@ -665,7 +693,7 @@ void main(List<String> args) async {
 
     rideOfferTimeoutProcessor = RideOfferTimeoutProcessor(
       expireDueOffers: expirationService.expireDueOffers,
-      continueRide: continuationService.continueRide,
+      continueRide: continueDispatchOrWaitingBoard,
       recordIgnoredOffer:
           ({required RideOffer offer, required DateTime now}) async {
             await ignoredOfferPenaltyService!.recordIgnoredOffer(
@@ -682,6 +710,9 @@ void main(List<String> args) async {
       exhaustionService: exhaustionService,
       offerIdFactory: () => uuid.v4(),
       now: () => DateTime.now().toUtc(),
+      redispatchWaitingRides: () async {
+        await waitingBoardRedispatchService?.dispatchAvailableWaiters();
+      },
     );
   }
 
@@ -940,6 +971,7 @@ void main(List<String> args) async {
         driverId: tokenPayload.driverId,
         startedAt: shift.startedAt,
       );
+      await waitingBoardRedispatchService?.dispatchAvailableWaiters();
 
       return Response.ok(
         jsonEncode({
@@ -2257,6 +2289,7 @@ void main(List<String> args) async {
       await driverDispatchPolicyService?.recordCompletedRide(
         driverId: tokenPayload.driverId,
       );
+      await waitingBoardRedispatchService?.dispatchAvailableWaiters();
 
       return Response.ok(
         jsonEncode(
@@ -2418,9 +2451,24 @@ void main(List<String> args) async {
 
   print('Server listening on port ${server.port}');
   final timeoutProcessor = rideOfferTimeoutProcessor;
+  final waitingBoardService = waitingBoardRedispatchService;
 
-  if (timeoutProcessor != null) {
+  if (waitingBoardService != null) {
+    try {
+      final offers = await waitingBoardService.dispatchAvailableWaiters();
+
+      if (offers.isNotEmpty) {
+        print('Recovered waiting-board offers: ${offers.length}');
+      }
+    } catch (error, stackTrace) {
+      print('Waiting-board recovery failed: $error');
+      print(stackTrace);
+    }
+  }
+
+  if (timeoutProcessor != null || waitingBoardService != null) {
     var scanRunning = false;
+    var lastWaitingBoardScanAt = DateTime.now().toUtc();
 
     Timer.periodic(const Duration(seconds: 1), (_) async {
       if (scanRunning) {
@@ -2430,21 +2478,29 @@ void main(List<String> args) async {
       scanRunning = true;
 
       try {
-        final expiredOffers = await timeoutProcessor.process(
-          now: DateTime.now().toUtc(),
-        );
+        final now = DateTime.now().toUtc();
+        final expiredOffers = timeoutProcessor == null
+            ? const <RideOffer>[]
+            : await timeoutProcessor.process(now: now);
 
         if (expiredOffers.isNotEmpty) {
           print('Expired ride offers processed: ${expiredOffers.length}');
         }
+
+        if (waitingBoardService != null &&
+            now.difference(lastWaitingBoardScanAt) >=
+                const Duration(seconds: 10)) {
+          lastWaitingBoardScanAt = now;
+          await waitingBoardService.dispatchAvailableWaiters(at: now);
+        }
       } catch (error, stackTrace) {
-        print('Ride offer timeout scan failed: $error');
+        print('Ride offer or waiting-board scan failed: $error');
         print(stackTrace);
       } finally {
         scanRunning = false;
       }
     });
 
-    print('Ride offer timeout scanner: started');
+    print('Ride offer and waiting-board scanners: started');
   }
 }

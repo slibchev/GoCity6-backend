@@ -6,6 +6,8 @@ import 'automatic_dispatch_orchestrator.dart';
 import 'ride_offer.dart';
 import 'ride_offer_history.dart';
 
+typedef RedispatchWaitingRides = Future<void> Function();
+
 class AutomaticRideSubmissionResult {
   final RideRequest ride;
   final RideOffer? offer;
@@ -23,6 +25,7 @@ class AutomaticRideSubmissionService {
   final AutomaticDispatchExhaustionService exhaustionService;
   final String Function() offerIdFactory;
   final DateTime Function() now;
+  final RedispatchWaitingRides? redispatchWaitingRides;
 
   const AutomaticRideSubmissionService({
     required this.lifecycleService,
@@ -31,10 +34,14 @@ class AutomaticRideSubmissionService {
     required this.exhaustionService,
     required this.offerIdFactory,
     required this.now,
+    this.redispatchWaitingRides,
   });
 
   Future<AutomaticRideSubmissionResult> submit(RideRequest request) async {
     final pendingRide = await lifecycleService.submitPendingRide(request);
+
+    // An older waiting-board ride gets the currently available vehicles first.
+    await redispatchWaitingRides?.call();
 
     final offer = await dispatchOrchestrator.createNextOffer(
       ride: pendingRide,

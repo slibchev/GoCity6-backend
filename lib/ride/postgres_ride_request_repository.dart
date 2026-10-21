@@ -188,6 +188,12 @@ class PostgresRideRequestRepository
         WHERE status = 'waitingForVehicle'
           AND assigned_driver_id IS NULL
           AND assigned_vehicle_id IS NULL
+          AND NOT EXISTS (
+            SELECT 1
+            FROM ride_offers ro
+            WHERE ro.ride_id = rides.id
+              AND ro.status = 'pending'
+          )
         ORDER BY requested_at ASC, id ASC
       '''),
     );

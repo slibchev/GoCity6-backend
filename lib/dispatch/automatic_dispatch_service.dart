@@ -52,6 +52,7 @@ class AutomaticDispatchService {
     required RideOfferHistory history,
     int dispatchRound = RideOffer.normalDispatchRound,
     int bonusMinor = RideOffer.noBonusMinor,
+    RideOfferSource source = RideOfferSource.automatic,
   }) {
     if (history.rideId != rideId) {
       throw ArgumentError('Offer history does not belong to ride $rideId.');
@@ -106,6 +107,7 @@ class AutomaticDispatchService {
       distanceMeters: selectedCandidate.distanceMeters,
       dispatchRound: dispatchRound,
       bonusMinor: bonusMinor,
+      source: source,
       offeredAt: now,
       timeout: policy.offerTimeout,
     );

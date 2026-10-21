@@ -101,7 +101,9 @@ void main() {
       routeEstimator: _FakeRouteEstimatorWithResult(),
     );
 
-    final atomicOfferRepository = _FakeAtomicRideOfferRepositoryWithCreate();
+    final events = <String>[];
+    final atomicOfferRepository = _FakeAtomicRideOfferRepositoryWithCreate()
+      ..onCreate = () => events.add('offer');
 
     final orchestrator = AutomaticDispatchOrchestrator(
       candidateService: candidateService,
@@ -120,6 +122,9 @@ void main() {
       ),
       offerIdFactory: () => 'offer-002',
       now: () => now,
+      redispatchWaitingRides: () async {
+        events.add('waiting-board');
+      },
     );
 
     final result = await service.submit(
@@ -136,6 +141,7 @@ void main() {
     expect(result.offer?.id, 'offer-002');
     expect(result.offer?.driverId, 'driver-001');
     expect(result.ride.status, RideRequestStatus.pending);
+    expect(events, ['waiting-board', 'offer']);
 
     final storedRide = await rideRepository.findById('ride-002');
 
@@ -439,9 +445,11 @@ class _FakeRouteEstimatorWithResult implements RouteEstimator {
 class _FakeAtomicRideOfferRepositoryWithCreate
     implements AtomicRideOfferRepository {
   RideOffer? createdOffer;
+  void Function()? onCreate;
 
   @override
   Future<RideOffer> createPendingOffer({required RideOffer offer}) async {
+    onCreate?.call();
     createdOffer = offer;
     return offer;
   }

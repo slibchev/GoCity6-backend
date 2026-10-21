@@ -1,5 +1,24 @@
 enum RideOfferStatus { pending, accepted, rejected, expired }
 
+enum RideOfferSource {
+  automatic('automatic'),
+  waitingBoard('waiting_board');
+
+  const RideOfferSource(this.databaseValue);
+
+  final String databaseValue;
+
+  static RideOfferSource fromDatabaseValue(String value) {
+    for (final source in values) {
+      if (source.databaseValue == value) {
+        return source;
+      }
+    }
+
+    throw ArgumentError.value(value, 'value', 'Unknown ride offer source.');
+  }
+}
+
 enum RideOfferConflict { notPending, alreadyExpired, notExpiredYet }
 
 class RideOfferConflictException implements Exception {
@@ -25,6 +44,7 @@ class RideOffer {
   final String rideId;
   final String driverId;
   final String vehicleId;
+  final RideOfferSource source;
 
   final int etaSeconds;
   final int distanceMeters;
@@ -44,6 +64,7 @@ class RideOffer {
     required this.rideId,
     required this.driverId,
     required this.vehicleId,
+    required this.source,
     required this.etaSeconds,
     required this.distanceMeters,
     required this.dispatchRound,
@@ -64,6 +85,7 @@ class RideOffer {
     required int distanceMeters,
     int dispatchRound = normalDispatchRound,
     int bonusMinor = noBonusMinor,
+    RideOfferSource source = RideOfferSource.automatic,
     required DateTime offeredAt,
     required Duration timeout,
   }) {
@@ -101,6 +123,7 @@ class RideOffer {
       rideId: rideId,
       driverId: driverId,
       vehicleId: vehicleId,
+      source: source,
       etaSeconds: etaSeconds,
       distanceMeters: distanceMeters,
       dispatchRound: dispatchRound,
@@ -122,6 +145,7 @@ class RideOffer {
     required int distanceMeters,
     int dispatchRound = normalDispatchRound,
     int bonusMinor = noBonusMinor,
+    RideOfferSource source = RideOfferSource.automatic,
     required DateTime offeredAt,
     required DateTime expiresAt,
     required RideOfferStatus status,
@@ -180,6 +204,7 @@ class RideOffer {
       rideId: rideId,
       driverId: driverId,
       vehicleId: vehicleId,
+      source: source,
       etaSeconds: etaSeconds,
       distanceMeters: distanceMeters,
       dispatchRound: dispatchRound,
@@ -243,6 +268,7 @@ class RideOffer {
       rideId: rideId,
       driverId: driverId,
       vehicleId: vehicleId,
+      source: source,
       etaSeconds: etaSeconds,
       distanceMeters: distanceMeters,
       dispatchRound: dispatchRound,

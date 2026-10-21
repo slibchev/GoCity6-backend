@@ -4,6 +4,8 @@ enum AtomicWaitingRideAcceptanceConflict {
   rideNotFound,
   rideNotWaitingForVehicle,
   rideAlreadyAssigned,
+  rideTooOld,
+  activeAutomaticOffer,
   activeShiftNotFound,
   driverNotAvailable,
   pendingOfferExists,
@@ -36,5 +38,6 @@ abstract interface class AtomicWaitingRideAcceptanceRepository {
   Future<RideRequest> acceptWaitingRide({
     required String rideId,
     required String driverId,
+    DateTime? now,
   });
 }

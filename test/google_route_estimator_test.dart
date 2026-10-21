@@ -223,4 +223,68 @@ void main() {
       throwsA(isA<StateError>()),
     );
   });
+
+  test(
+    'GoogleRouteEstimator batches route matrix requests for large fleets',
+    () async {
+      var matrixRequestCount = 0;
+      var geocodeRequestCount = 0;
+      final client = MockClient((request) async {
+        if (request.method == 'GET' &&
+            request.url.host == 'maps.googleapis.com') {
+          geocodeRequestCount++;
+          return http.Response(
+            jsonEncode({
+              'status': 'OK',
+              'results': [
+                {
+                  'geometry': {
+                    'location': {'lat': 42.7, 'lng': 23.3},
+                  },
+                },
+              ],
+            }),
+            200,
+          );
+        }
+
+        matrixRequestCount++;
+        final body = jsonDecode(request.body) as Map<String, dynamic>;
+        final origins = body['origins'] as List<dynamic>;
+        expect(origins.length, lessThanOrEqualTo(50));
+        final elements = List.generate(
+          origins.length,
+          (index) => {
+            'originIndex': index,
+            'destinationIndex': 0,
+            'condition': 'ROUTE_EXISTS',
+            'duration': '${100 + index}s',
+            'distanceMeters': 1000 + index,
+          },
+        );
+
+        return http.Response(jsonEncode(elements), 200);
+      });
+      final estimator = GoogleRouteEstimator(
+        apiKey: 'test-api-key',
+        client: client,
+      );
+      final origins = List.generate(
+        120,
+        (index) =>
+            RouteWaypoint(latitude: 42.0 + index / 10000, longitude: 23.0),
+      );
+
+      final estimates = await estimator.estimateMany(
+        origins: origins,
+        destination: RouteWaypoint(address: 'Waiting pickup'),
+      );
+
+      expect(estimates, hasLength(120));
+      expect(matrixRequestCount, 3);
+      expect(geocodeRequestCount, 1);
+      expect(estimates.first?.durationSeconds, 100);
+      expect(estimates[119]?.durationSeconds, 119);
+    },
+  );
 }

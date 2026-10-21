@@ -8,9 +8,7 @@ class PostgresAtomicRideReservationRepository
     implements AtomicRideReservationRepository {
   final SessionExecutor database;
 
-  PostgresAtomicRideReservationRepository({
-    required this.database,
-  });
+  PostgresAtomicRideReservationRepository({required this.database});
 
   @override
   Future<RideReservation> reserveWaitingRide({
@@ -48,14 +46,13 @@ class PostgresAtomicRideReservationRepository
           SELECT
             status,
             assigned_driver_id,
-            assigned_vehicle_id
+            assigned_vehicle_id,
+            requested_at
           FROM rides
           WHERE id = @rideId
           FOR UPDATE
         '''),
-        parameters: {
-          'rideId': rideId,
-        },
+        parameters: {'rideId': rideId},
       );
 
       if (rideResult.isEmpty) {
@@ -76,6 +73,38 @@ class PostgresAtomicRideReservationRepository
           rideRow['assigned_vehicle_id'] != null) {
         throw const AtomicRideReservationConflictException(
           AtomicRideReservationConflict.rideAlreadyAssigned,
+        );
+      }
+
+      final requestedAt = (rideRow['requested_at'] as DateTime).toUtc();
+      final databaseTimeResult = await transaction.execute(
+        Sql('SELECT clock_timestamp() AS database_now'),
+      );
+      final databaseNow =
+          (databaseTimeResult.single.toColumnMap()['database_now'] as DateTime)
+              .toUtc();
+      final cutoff = requestedAt.add(const Duration(minutes: 30));
+
+      if (!nowUtc.isBefore(cutoff) || !databaseNow.isBefore(cutoff)) {
+        throw const AtomicRideReservationConflictException(
+          AtomicRideReservationConflict.rideTooOld,
+        );
+      }
+
+      final activeOfferResult = await transaction.execute(
+        Sql.named('''
+          SELECT 1
+          FROM ride_offers
+          WHERE ride_id = @rideId
+            AND status = 'pending'
+          LIMIT 1
+        '''),
+        parameters: {'rideId': rideId},
+      );
+
+      if (activeOfferResult.isNotEmpty) {
+        throw const AtomicRideReservationConflictException(
+          AtomicRideReservationConflict.activeAutomaticOffer,
         );
       }
 
@@ -100,9 +129,7 @@ class PostgresAtomicRideReservationRepository
           LIMIT 1
           FOR UPDATE OF s, q
         '''),
-        parameters: {
-          'driverId': driverId,
-        },
+        parameters: {'driverId': driverId},
       );
 
       if (shiftResult.isEmpty) {
@@ -188,9 +215,7 @@ class PostgresAtomicRideReservationRepository
             LIMIT 1
             FOR UPDATE
           '''),
-          parameters: {
-            'driverId': driverId,
-          },
+          parameters: {'driverId': driverId},
         );
 
         if (sessionResult.isEmpty) {
@@ -202,8 +227,7 @@ class PostgresAtomicRideReservationRepository
         final sessionRow = sessionResult.single.toColumnMap();
         final distanceMeters = sessionRow['distance_meters'] as int;
 
-        if (distanceMeters <
-            ExternalRideSession.qualificationDistanceMeters) {
+        if (distanceMeters < ExternalRideSession.qualificationDistanceMeters) {
           throw const AtomicRideReservationConflictException(
             AtomicRideReservationConflict.externalRideNotQualified,
           );
@@ -237,13 +261,9 @@ class PostgresAtomicRideReservationRepository
       );
 
       if (reservationResult.isNotEmpty) {
-        final rows = reservationResult
-            .map((row) => row.toColumnMap())
-            .toList();
+        final rows = reservationResult.map((row) => row.toColumnMap()).toList();
 
-        final rideAlreadyReserved = rows.any(
-          (row) => row['ride_id'] == rideId,
-        );
+        final rideAlreadyReserved = rows.any((row) => row['ride_id'] == rideId);
 
         if (rideAlreadyReserved) {
           throw const AtomicRideReservationConflictException(
@@ -337,9 +357,7 @@ class PostgresAtomicRideReservationRepository
             AND assigned_vehicle_id IS NULL
           RETURNING id
         '''),
-        parameters: {
-          'rideId': rideId,
-        },
+        parameters: {'rideId': rideId},
       );
 
       if (rideUpdateResult.isEmpty) {
@@ -348,15 +366,11 @@ class PostgresAtomicRideReservationRepository
         );
       }
 
-      return _reservationFromRow(
-        insertResult.single.toColumnMap(),
-      );
+      return _reservationFromRow(insertResult.single.toColumnMap());
     });
   }
 
-  RideReservation _reservationFromRow(
-    Map<String, dynamic> row,
-  ) {
+  RideReservation _reservationFromRow(Map<String, dynamic> row) {
     return RideReservation.restore(
       id: row['id'] as String,
       rideId: row['ride_id'] as String,

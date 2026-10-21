@@ -4,12 +4,7 @@ class RouteWaypoint {
   final double? latitude;
   final double? longitude;
 
-  RouteWaypoint({
-    this.address,
-    this.placeId,
-    this.latitude,
-    this.longitude,
-  }) {
+  RouteWaypoint({this.address, this.placeId, this.latitude, this.longitude}) {
     final hasLatitude = latitude != null;
     final hasLongitude = longitude != null;
 
@@ -72,6 +67,13 @@ class RouteEstimate {
 abstract interface class RouteEstimator {
   Future<RouteEstimate> estimate({
     required RouteWaypoint origin,
+    required RouteWaypoint destination,
+  });
+}
+
+abstract interface class BatchRouteEstimator {
+  Future<List<RouteEstimate?>> estimateMany({
+    required List<RouteWaypoint> origins,
     required RouteWaypoint destination,
   });
 }
