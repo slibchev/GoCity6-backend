@@ -4,7 +4,9 @@ import 'package:postgres/postgres.dart';
 import 'package:test/test.dart';
 import 'package:uuid/uuid.dart';
 
+import 'package:gocity6_backend/dispatch/driver_dispatch_state.dart';
 import 'package:gocity6_backend/dispatch/postgres_ignored_offer_penalty_service.dart';
+import 'package:gocity6_backend/dispatch/postgres_driver_dispatch_state_repository.dart';
 
 void main() {
   test('ignored offer penalty is applied exactly once', () async {
@@ -178,6 +180,21 @@ void main() {
 
       expect(undisplayedResult, isFalse);
 
+      final afterUndisplayed = await db.execute(
+        Sql.named('''
+          SELECT consecutive_rejects, penalty_level,
+                 dispatch_blocked_until,
+                 requires_completed_ride_after_penalty
+          FROM driver_dispatch_states
+          WHERE driver_id = @driverId
+        '''),
+        parameters: {'driverId': driverId},
+      );
+      expect(afterUndisplayed.single[0], 2);
+      expect(afterUndisplayed.single[1], 0);
+      expect(afterUndisplayed.single[2], isNull);
+      expect(afterUndisplayed.single[3], isFalse);
+
       final firstRecovery = await service.recoverUnprocessedIgnoredOffers(
         now: now,
       );
@@ -202,7 +219,8 @@ void main() {
          SELECT
   consecutive_rejects,
   penalty_level,
-  dispatch_blocked_until
+  dispatch_blocked_until,
+  requires_completed_ride_after_penalty
 FROM driver_dispatch_states
           WHERE driver_id = @driverId
         '''),
@@ -211,6 +229,7 @@ FROM driver_dispatch_states
 
       expect(states.single[0], 0);
       expect(states.single[1], 1);
+      expect(states.single[3], isTrue);
       expect(
         (states.single[2] as DateTime).toUtc(),
         expiresAt.add(const Duration(minutes: 30)),
@@ -392,9 +411,10 @@ FROM driver_dispatch_states
             consecutive_rejects,
             penalty_level,
             dispatch_blocked_until,
-            penalty_reset_eligible_at
+            penalty_reset_eligible_at,
+            requires_completed_ride_after_penalty
           )
-          VALUES (@driverId, 2, 3, @blockedUntil, @resetEligibleAt)
+          VALUES (@driverId, 2, 3, @blockedUntil, @resetEligibleAt, FALSE)
         '''),
           parameters: {
             'driverId': driverId,
@@ -421,7 +441,8 @@ FROM driver_dispatch_states
             consecutive_rejects,
             penalty_level,
             dispatch_blocked_until,
-            penalty_reset_eligible_at
+            penalty_reset_eligible_at,
+            requires_completed_ride_after_penalty
           FROM driver_dispatch_states
           WHERE driver_id = @driverId
         '''),
@@ -438,6 +459,7 @@ FROM driver_dispatch_states
           (state['penalty_reset_eligible_at'] as DateTime).toUtc(),
           resetEligibleAt,
         );
+        expect(state['requires_completed_ride_after_penalty'], isFalse);
 
         final tracking = await db.execute(
           Sql.named('''
@@ -479,6 +501,182 @@ FROM driver_dispatch_states
             Sql.named('DELETE FROM drivers WHERE id = @id'),
             parameters: {'id': driverId},
           );
+        } finally {
+          await db.close();
+        }
+      }
+    },
+  );
+
+  test(
+    'expired eligible ignored offer escalates recovery exactly once',
+    () async {
+      final password = Platform.environment['CITY6_TEST_DB_PASSWORD'];
+      if (password == null || password.isEmpty) {
+        fail('CITY6_TEST_DB_PASSWORD is required.');
+      }
+
+      final db = await Connection.open(
+        Endpoint(
+          host: 'localhost',
+          port: 5432,
+          database: 'city6_test',
+          username: 'city6_app',
+          password: password,
+        ),
+        settings: const ConnectionSettings(sslMode: SslMode.disable),
+      );
+
+      final uuid = const Uuid();
+      final driverId = uuid.v4();
+      final vehicleId = uuid.v4();
+      final rideId = uuid.v4();
+      final offerId = uuid.v4();
+      final now = DateTime.now().toUtc();
+      final offeredAt = now.subtract(const Duration(seconds: 20));
+      final expiresAt = offeredAt.add(const Duration(seconds: 15));
+      final requestedAt = offeredAt.subtract(const Duration(minutes: 2));
+
+      try {
+        expect(
+          (await db.execute('SELECT current_database()')).single[0],
+          'city6_test',
+        );
+
+        await db.execute(
+          Sql.named('''
+          INSERT INTO drivers (
+            id, username, password_hash,
+            first_name, last_name, phone, created_at
+          )
+          VALUES (
+            @id, @username, 'test',
+            'Test', 'Recovery', '000', @now
+          )
+        '''),
+          parameters: {
+            'id': driverId,
+            'username': 'ignored-recovery-$driverId',
+            'now': now,
+          },
+        );
+        await db.execute(
+          Sql.named('''
+          INSERT INTO vehicles (id, plate_number, created_at)
+          VALUES (@id, @plate, @now)
+        '''),
+          parameters: {'id': vehicleId, 'plate': 'TEST-$vehicleId', 'now': now},
+        );
+        await db.execute(
+          Sql.named('''
+          INSERT INTO rides (
+            id, pickup, destination, passengers, requested_at, status
+          )
+          VALUES (
+            @id, 'Recovery pickup', 'Recovery destination', 1,
+            @requestedAt, 'pending'
+          )
+        '''),
+          parameters: {'id': rideId, 'requestedAt': requestedAt},
+        );
+        await db.execute(
+          Sql.named('''
+          INSERT INTO ride_offers (
+            id, ride_id, driver_id, vehicle_id,
+            eta_seconds, distance_meters, dispatch_round, bonus_minor,
+            offered_at, expires_at, status, resolved_at, displayed_at
+          )
+          VALUES (
+            @id, @rideId, @driverId, @vehicleId,
+            60, 500, 1, 0,
+            @offeredAt, @expiresAt, 'expired', @now, @displayedAt
+          )
+        '''),
+          parameters: {
+            'id': offerId,
+            'rideId': rideId,
+            'driverId': driverId,
+            'vehicleId': vehicleId,
+            'offeredAt': offeredAt,
+            'expiresAt': expiresAt,
+            'now': now,
+            'displayedAt': offeredAt.add(const Duration(seconds: 2)),
+          },
+        );
+        await PostgresDriverDispatchStateRepository(database: db).save(
+          DriverDispatchState(
+            driverId: driverId,
+            consecutiveRejects: 0,
+            penaltyLevel: 1,
+            dispatchBlockedUntil: expiresAt,
+            penaltyResetEligibleAt: null,
+            requiresCompletedRideAfterPenalty: true,
+          ),
+        );
+
+        final service = PostgresIgnoredOfferPenaltyService(database: db);
+        expect(
+          await service.recordIgnoredOffer(offerId: offerId, now: now),
+          isTrue,
+        );
+        final repeated = await service.recordIgnoredOffer(
+          offerId: offerId,
+          now: now.add(const Duration(seconds: 1)),
+        );
+        expect(repeated, isFalse);
+
+        final persisted = await PostgresDriverDispatchStateRepository(
+          database: db,
+        ).findByDriverId(driverId);
+        expect(persisted?.consecutiveRejects, 0);
+        expect(persisted?.penaltyLevel, 2);
+        expect(
+          persisted?.dispatchBlockedUntil,
+          expiresAt.add(const Duration(minutes: 60)),
+        );
+        expect(persisted?.requiresCompletedRideAfterPenalty, isTrue);
+
+        final tracking = await db.execute(
+          Sql.named('''
+          SELECT COUNT(*) FROM ignored_offer_penalty_tracking
+          WHERE offer_id = @offerId
+        '''),
+          parameters: {'offerId': offerId},
+        );
+        expect(tracking.single[0], 1);
+      } finally {
+        try {
+          await db.runTx((transaction) async {
+            await transaction.execute(
+              Sql.named('''
+              DELETE FROM ignored_offer_penalty_tracking
+              WHERE offer_id = @id
+            '''),
+              parameters: {'id': offerId},
+            );
+            await transaction.execute(
+              Sql.named('DELETE FROM ride_offers WHERE id = @id'),
+              parameters: {'id': offerId},
+            );
+            await transaction.execute(
+              Sql.named(
+                'DELETE FROM driver_dispatch_states WHERE driver_id = @id',
+              ),
+              parameters: {'id': driverId},
+            );
+            await transaction.execute(
+              Sql.named('DELETE FROM rides WHERE id = @id'),
+              parameters: {'id': rideId},
+            );
+            await transaction.execute(
+              Sql.named('DELETE FROM vehicles WHERE id = @id'),
+              parameters: {'id': vehicleId},
+            );
+            await transaction.execute(
+              Sql.named('DELETE FROM drivers WHERE id = @id'),
+              parameters: {'id': driverId},
+            );
+          });
         } finally {
           await db.close();
         }

@@ -42,6 +42,104 @@ void main() {
     expect(third.consecutiveRejects, 0);
     expect(third.penaltyLevel, 1);
     expect(third.dispatchBlockedUntil, now.add(const Duration(minutes: 30)));
+    expect(third.requiresCompletedRideAfterPenalty, isTrue);
+  });
+
+  test(
+    'first standard rejection at the sanction expiry directly escalates',
+    () async {
+      final repository = _FakeDriverDispatchStateRepository(
+        initialState: DriverDispatchState(
+          driverId: 'driver-001',
+          consecutiveRejects: 0,
+          penaltyLevel: 1,
+          dispatchBlockedUntil: now,
+          penaltyResetEligibleAt: null,
+          requiresCompletedRideAfterPenalty: true,
+        ),
+      );
+      final service = DriverDispatchPolicyService(repository: repository);
+
+      final result = await service.recordRejectedOffer(
+        driverId: 'driver-001',
+        now: now,
+      );
+
+      expect(result.consecutiveRejects, 0);
+      expect(result.penaltyLevel, 2);
+      expect(result.dispatchBlockedUntil, now.add(const Duration(minutes: 60)));
+      expect(result.requiresCompletedRideAfterPenalty, isTrue);
+    },
+  );
+
+  test(
+    'refusal before sanction expiry does not use recovery escalation',
+    () async {
+      final blockedUntil = now.add(const Duration(minutes: 1));
+      final repository = _FakeDriverDispatchStateRepository(
+        initialState: DriverDispatchState(
+          driverId: 'driver-001',
+          consecutiveRejects: 0,
+          penaltyLevel: 1,
+          dispatchBlockedUntil: blockedUntil,
+          penaltyResetEligibleAt: null,
+          requiresCompletedRideAfterPenalty: true,
+        ),
+      );
+      final service = DriverDispatchPolicyService(repository: repository);
+
+      final result = await service.recordRejectedOffer(
+        driverId: 'driver-001',
+        now: now,
+      );
+
+      expect(result.consecutiveRejects, 1);
+      expect(result.penaltyLevel, 1);
+      expect(result.dispatchBlockedUntil, blockedUntil);
+      expect(result.requiresCompletedRideAfterPenalty, isTrue);
+    },
+  );
+
+  test('ignored standard rejection uses the explicit rejection transition', () {
+    final current = DriverDispatchState(
+      driverId: 'driver-001',
+      consecutiveRejects: 0,
+      penaltyLevel: 2,
+      dispatchBlockedUntil: now.subtract(const Duration(seconds: 1)),
+      penaltyResetEligibleAt: null,
+      requiresCompletedRideAfterPenalty: true,
+    );
+
+    final result = DriverDispatchPolicyService.afterStandardOfferRejection(
+      current: current,
+      rejectedAt: now,
+    );
+
+    expect(result.consecutiveRejects, 0);
+    expect(result.penaltyLevel, 3);
+    expect(result.dispatchBlockedUntil, now.add(const Duration(minutes: 90)));
+    expect(result.requiresCompletedRideAfterPenalty, isTrue);
+  });
+
+  test('recovery rejection escalates a 90 minute sanction to 120 minutes', () {
+    final current = DriverDispatchState(
+      driverId: 'driver-001',
+      consecutiveRejects: 0,
+      penaltyLevel: 3,
+      dispatchBlockedUntil: now.subtract(const Duration(seconds: 1)),
+      penaltyResetEligibleAt: null,
+      requiresCompletedRideAfterPenalty: true,
+    );
+
+    final result = DriverDispatchPolicyService.afterStandardOfferRejection(
+      current: current,
+      rejectedAt: now,
+    );
+
+    expect(result.consecutiveRejects, 0);
+    expect(result.penaltyLevel, 4);
+    expect(result.dispatchBlockedUntil, now.add(const Duration(minutes: 120)));
+    expect(result.requiresCompletedRideAfterPenalty, isTrue);
   });
 
   test('completed ride resets consecutive rejects', () async {
@@ -52,6 +150,7 @@ void main() {
         penaltyLevel: 1,
         dispatchBlockedUntil: null,
         penaltyResetEligibleAt: null,
+        requiresCompletedRideAfterPenalty: true,
       ),
     );
 
@@ -61,6 +160,7 @@ void main() {
 
     expect(result.consecutiveRejects, 0);
     expect(result.penaltyLevel, 1);
+    expect(result.requiresCompletedRideAfterPenalty, isFalse);
   });
   test(
     'rejecting bonus offer blocks driver immediately for 30 minutes',
@@ -85,8 +185,33 @@ void main() {
       expect(result.consecutiveRejects, 0);
       expect(result.penaltyLevel, 1);
       expect(result.dispatchBlockedUntil, now.add(const Duration(minutes: 30)));
+      expect(result.requiresCompletedRideAfterPenalty, isFalse);
     },
   );
+
+  test('bonus rejection preserves an existing recovery requirement', () async {
+    final repository = _FakeDriverDispatchStateRepository(
+      initialState: DriverDispatchState(
+        driverId: 'driver-001',
+        consecutiveRejects: 0,
+        penaltyLevel: 2,
+        dispatchBlockedUntil: now.subtract(const Duration(minutes: 1)),
+        penaltyResetEligibleAt: null,
+        requiresCompletedRideAfterPenalty: true,
+      ),
+    );
+    final service = DriverDispatchPolicyService(repository: repository);
+
+    final result = await service.recordRejectedBonusOffer(
+      driverId: 'driver-001',
+      now: now,
+    );
+
+    expect(result.consecutiveRejects, 0);
+    expect(result.penaltyLevel, 2);
+    expect(result.dispatchBlockedUntil, now.add(const Duration(minutes: 30)));
+    expect(result.requiresCompletedRideAfterPenalty, isTrue);
+  });
   test('ending shift schedules penalty reset after 8 hours', () async {
     final repository = _FakeDriverDispatchStateRepository(
       initialState: const DriverDispatchState(
@@ -95,6 +220,7 @@ void main() {
         penaltyLevel: 3,
         dispatchBlockedUntil: null,
         penaltyResetEligibleAt: null,
+        requiresCompletedRideAfterPenalty: true,
       ),
     );
 
@@ -108,6 +234,7 @@ void main() {
     expect(result.consecutiveRejects, 2);
     expect(result.penaltyLevel, 3);
     expect(result.penaltyResetEligibleAt, now.add(const Duration(hours: 8)));
+    expect(result.requiresCompletedRideAfterPenalty, isTrue);
   });
   test('starting shift before 8 hours preserves penalty state', () async {
     final resetEligibleAt = now.add(const Duration(hours: 8));
@@ -119,6 +246,7 @@ void main() {
         penaltyLevel: 3,
         dispatchBlockedUntil: now.add(const Duration(minutes: 45)),
         penaltyResetEligibleAt: resetEligibleAt,
+        requiresCompletedRideAfterPenalty: true,
       ),
     );
 
@@ -133,6 +261,7 @@ void main() {
     expect(result.penaltyLevel, 3);
     expect(result.dispatchBlockedUntil, now.add(const Duration(minutes: 45)));
     expect(result.penaltyResetEligibleAt, isNull);
+    expect(result.requiresCompletedRideAfterPenalty, isTrue);
   });
   test('starting shift after 8 hours resets penalty state', () async {
     final resetEligibleAt = now.add(const Duration(hours: 8));
@@ -144,6 +273,7 @@ void main() {
         penaltyLevel: 3,
         dispatchBlockedUntil: now.add(const Duration(hours: 2)),
         penaltyResetEligibleAt: resetEligibleAt,
+        requiresCompletedRideAfterPenalty: true,
       ),
     );
 
@@ -158,6 +288,7 @@ void main() {
     expect(result.penaltyLevel, 0);
     expect(result.dispatchBlockedUntil, isNull);
     expect(result.penaltyResetEligibleAt, isNull);
+    expect(result.requiresCompletedRideAfterPenalty, isFalse);
   });
   test('next three rejects increase penalty to 60 minutes', () async {
     final repository = _FakeDriverDispatchStateRepository(

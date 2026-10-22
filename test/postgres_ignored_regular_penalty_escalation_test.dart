@@ -129,7 +129,8 @@ void main() {
           SELECT
             consecutive_rejects,
             penalty_level,
-            dispatch_blocked_until
+            dispatch_blocked_until,
+            requires_completed_ride_after_penalty
           FROM driver_dispatch_states
           WHERE driver_id = @driverId
         '''),
@@ -140,6 +141,7 @@ void main() {
 
       expect(state['consecutive_rejects'], 0);
       expect(state['penalty_level'], 1);
+      expect(state['requires_completed_ride_after_penalty'], isTrue);
 
       final thirdExpiresAt = now
           .subtract(const Duration(minutes: 1))

@@ -4,6 +4,7 @@ class DriverDispatchState {
   final int penaltyLevel;
   final DateTime? dispatchBlockedUntil;
   final DateTime? penaltyResetEligibleAt;
+  final bool requiresCompletedRideAfterPenalty;
 
   const DriverDispatchState({
     required this.driverId,
@@ -11,12 +12,12 @@ class DriverDispatchState {
     required this.penaltyLevel,
     required this.dispatchBlockedUntil,
     required this.penaltyResetEligibleAt,
+    this.requiresCompletedRideAfterPenalty = false,
   });
 
   bool isBlockedAt(DateTime now) {
     final blockedUntil = dispatchBlockedUntil;
 
-    return blockedUntil != null &&
-        now.toUtc().isBefore(blockedUntil.toUtc());
+    return blockedUntil != null && now.toUtc().isBefore(blockedUntil.toUtc());
   }
 }

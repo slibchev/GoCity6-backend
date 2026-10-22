@@ -30,7 +30,8 @@ class PostgresDriverDispatchStateRepository
             consecutive_rejects,
             penalty_level,
             dispatch_blocked_until,
-            penalty_reset_eligible_at
+            penalty_reset_eligible_at,
+            requires_completed_ride_after_penalty
           FROM driver_dispatch_states
           WHERE driver_id = @driverId
           FOR UPDATE
@@ -48,6 +49,8 @@ class PostgresDriverDispatchStateRepository
             ?.toUtc(),
         penaltyResetEligibleAt: (row['penalty_reset_eligible_at'] as DateTime?)
             ?.toUtc(),
+        requiresCompletedRideAfterPenalty:
+            row['requires_completed_ride_after_penalty'] as bool,
       );
 
       final next = transform(current);
@@ -64,6 +67,8 @@ class PostgresDriverDispatchStateRepository
             penalty_level = @level,
             dispatch_blocked_until = @blockedUntil,
             penalty_reset_eligible_at = @resetEligibleAt,
+            requires_completed_ride_after_penalty =
+              @requiresCompletedRideAfterPenalty,
             updated_at = NOW()
           WHERE driver_id = @driverId
         '''),
@@ -73,6 +78,8 @@ class PostgresDriverDispatchStateRepository
           'level': next.penaltyLevel,
           'blockedUntil': next.dispatchBlockedUntil,
           'resetEligibleAt': next.penaltyResetEligibleAt,
+          'requiresCompletedRideAfterPenalty':
+              next.requiresCompletedRideAfterPenalty,
         },
       );
 
@@ -90,7 +97,8 @@ class PostgresDriverDispatchStateRepository
             consecutive_rejects,
             penalty_level,
             dispatch_blocked_until,
-            penalty_reset_eligible_at
+            penalty_reset_eligible_at,
+            requires_completed_ride_after_penalty
           FROM driver_dispatch_states
           WHERE driver_id = @driverId
           LIMIT 1
@@ -112,6 +120,8 @@ class PostgresDriverDispatchStateRepository
             ?.toUtc(),
         penaltyResetEligibleAt: (row['penalty_reset_eligible_at'] as DateTime?)
             ?.toUtc(),
+        requiresCompletedRideAfterPenalty:
+            row['requires_completed_ride_after_penalty'] as bool,
       );
     });
   }
@@ -127,6 +137,7 @@ class PostgresDriverDispatchStateRepository
             penalty_level,
             dispatch_blocked_until,
             penalty_reset_eligible_at,
+            requires_completed_ride_after_penalty,
             updated_at
           )
           VALUES (
@@ -135,6 +146,7 @@ class PostgresDriverDispatchStateRepository
             @penaltyLevel,
             @dispatchBlockedUntil,
             @penaltyResetEligibleAt,
+            @requiresCompletedRideAfterPenalty,
             NOW()
           )
           ON CONFLICT (driver_id)
@@ -144,6 +156,8 @@ class PostgresDriverDispatchStateRepository
             dispatch_blocked_until = EXCLUDED.dispatch_blocked_until,
             penalty_reset_eligible_at =
               EXCLUDED.penalty_reset_eligible_at,
+            requires_completed_ride_after_penalty =
+              EXCLUDED.requires_completed_ride_after_penalty,
             updated_at = NOW()
         '''),
         parameters: {
@@ -152,6 +166,8 @@ class PostgresDriverDispatchStateRepository
           'penaltyLevel': state.penaltyLevel,
           'dispatchBlockedUntil': state.dispatchBlockedUntil?.toUtc(),
           'penaltyResetEligibleAt': state.penaltyResetEligibleAt?.toUtc(),
+          'requiresCompletedRideAfterPenalty':
+              state.requiresCompletedRideAfterPenalty,
         },
       );
 

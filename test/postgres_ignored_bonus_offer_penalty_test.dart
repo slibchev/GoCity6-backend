@@ -136,7 +136,8 @@ void main() {
 
       final rows = await db.execute(
         Sql.named('''
-          SELECT consecutive_rejects, penalty_level, dispatch_blocked_until
+          SELECT consecutive_rejects, penalty_level, dispatch_blocked_until,
+                 requires_completed_ride_after_penalty
           FROM driver_dispatch_states
           WHERE driver_id = @driverId
         '''),
@@ -147,6 +148,7 @@ void main() {
 
       expect(state['consecutive_rejects'], 0);
       expect(state['penalty_level'], 0);
+      expect(state['requires_completed_ride_after_penalty'], isFalse);
       expect(
         (state['dispatch_blocked_until'] as DateTime).toUtc(),
         expiresAt.add(const Duration(minutes: 30)),

@@ -62,13 +62,23 @@ void main() {
     final offer = buildOffer();
 
     final atomicRepository = _FakeAtomicRideOfferRepository(offer: offer);
+    final dispatchStateRepository = _FakeDriverDispatchStateRepository(
+      initialState: const DriverDispatchState(
+        driverId: 'driver-001',
+        consecutiveRejects: 0,
+        penaltyLevel: 1,
+        dispatchBlockedUntil: null,
+        penaltyResetEligibleAt: null,
+        requiresCompletedRideAfterPenalty: true,
+      ),
+    );
 
     final service = DriverRideOfferActionService(
       offerRepository: _FakeRideOfferRepository(offer: offer),
       atomicOfferRepository: atomicRepository,
       rideRepository: InMemoryRideRequestRepository([buildRide(offer)]),
       dispatchPolicyService: buildDispatchPolicyService(
-        _FakeDriverDispatchStateRepository(),
+        dispatchStateRepository,
       ),
       continueRide: ({required String rideId}) async => null,
     );
@@ -82,6 +92,11 @@ void main() {
     expect(result.status, RideOfferStatus.accepted);
     expect(atomicRepository.acceptCalls, 1);
     expect(atomicRepository.lastOfferId, 'offer-001');
+    expect(dispatchStateRepository.updateCalls, 0);
+    expect(
+      dispatchStateRepository.state?.requiresCompletedRideAfterPenalty,
+      isTrue,
+    );
   });
 
   test('rejects offer and continues automatic dispatch', () async {
@@ -140,6 +155,40 @@ void main() {
     expect(dispatchStateRepository.state?.penaltyLevel, 0);
     expect(dispatchStateRepository.state?.dispatchBlockedUntil, isNull);
   });
+
+  test(
+    'standard rejection after an expired sanction immediately escalates',
+    () async {
+      final offer = buildOffer();
+      final stateRepository = _FakeDriverDispatchStateRepository(
+        initialState: DriverDispatchState(
+          driverId: 'driver-001',
+          consecutiveRejects: 0,
+          penaltyLevel: 1,
+          dispatchBlockedUntil: now.subtract(const Duration(seconds: 1)),
+          penaltyResetEligibleAt: null,
+          requiresCompletedRideAfterPenalty: true,
+        ),
+      );
+      final service = DriverRideOfferActionService(
+        offerRepository: _FakeRideOfferRepository(offer: offer),
+        atomicOfferRepository: _FakeAtomicRideOfferRepository(offer: offer),
+        rideRepository: InMemoryRideRequestRepository([buildRide(offer)]),
+        dispatchPolicyService: buildDispatchPolicyService(stateRepository),
+        continueRide: ({required String rideId}) async => null,
+      );
+
+      await service.reject(driverId: 'driver-001', offerId: offer.id, now: now);
+
+      expect(stateRepository.state?.consecutiveRejects, 0);
+      expect(stateRepository.state?.penaltyLevel, 2);
+      expect(
+        stateRepository.state?.dispatchBlockedUntil,
+        now.add(const Duration(minutes: 60)),
+      );
+      expect(stateRepository.state?.requiresCompletedRideAfterPenalty, isTrue);
+    },
+  );
   test(
     'records bonus rejected offer with immediate 30 minute cooldown',
     () async {

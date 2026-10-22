@@ -1,5 +1,6 @@
 import 'package:postgres/postgres.dart';
 
+import 'driver_dispatch_state.dart';
 import 'driver_dispatch_policy_service.dart';
 
 class PostgresIgnoredOfferPenaltyService {
@@ -93,7 +94,8 @@ class PostgresIgnoredOfferPenaltyService {
             consecutive_rejects,
             penalty_level,
             dispatch_blocked_until,
-            penalty_reset_eligible_at
+            penalty_reset_eligible_at,
+            requires_completed_ride_after_penalty
           FROM driver_dispatch_states
           WHERE driver_id = @driverId
           FOR UPDATE
@@ -103,30 +105,29 @@ class PostgresIgnoredOfferPenaltyService {
 
       final state = states.single.toColumnMap();
 
-      var rejects = state['consecutive_rejects'] as int;
-      var level = state['penalty_level'] as int;
-      DateTime? blockedUntil = (state['dispatch_blocked_until'] as DateTime?)
-          ?.toUtc();
+      final current = DriverDispatchState(
+        driverId: driverId,
+        consecutiveRejects: state['consecutive_rejects'] as int,
+        penaltyLevel: state['penalty_level'] as int,
+        dispatchBlockedUntil: (state['dispatch_blocked_until'] as DateTime?)
+            ?.toUtc(),
+        penaltyResetEligibleAt:
+            (state['penalty_reset_eligible_at'] as DateTime?)?.toUtc(),
+        requiresCompletedRideAfterPenalty:
+            state['requires_completed_ride_after_penalty'] as bool,
+      );
 
-      if (dispatchRound == 2) {
-        // Bonus offer: immediate 30-minute block.
-        rejects = 0;
-        blockedUntil = expiredAt.add(DriverDispatchPolicyService.penaltyStep);
-      } else {
-        rejects++;
-
-        if (rejects >= DriverDispatchPolicyService.maxConsecutiveRejects) {
-          rejects = 0;
-          level++;
-
-          blockedUntil = expiredAt.add(
-            Duration(
-              minutes:
-                  DriverDispatchPolicyService.penaltyStep.inMinutes * level,
-            ),
-          );
-        }
-      }
+      // An ignored offer takes effect at expiry, matching an explicit decline
+      // at the time the driver could no longer accept it.
+      final next = dispatchRound == 2
+          ? DriverDispatchPolicyService.afterBonusOfferRejection(
+              current: current,
+              rejectedAt: expiredAt,
+            )
+          : DriverDispatchPolicyService.afterStandardOfferRejection(
+              current: current,
+              rejectedAt: expiredAt,
+            );
 
       await tx.execute(
         Sql.named('''
@@ -135,14 +136,20 @@ class PostgresIgnoredOfferPenaltyService {
             consecutive_rejects = @rejects,
             penalty_level = @level,
             dispatch_blocked_until = @blockedUntil,
+            penalty_reset_eligible_at = @resetEligibleAt,
+            requires_completed_ride_after_penalty =
+              @requiresCompletedRideAfterPenalty,
             updated_at = @now
           WHERE driver_id = @driverId
         '''),
         parameters: {
           'driverId': driverId,
-          'rejects': rejects,
-          'level': level,
-          'blockedUntil': blockedUntil,
+          'rejects': next.consecutiveRejects,
+          'level': next.penaltyLevel,
+          'blockedUntil': next.dispatchBlockedUntil,
+          'resetEligibleAt': next.penaltyResetEligibleAt,
+          'requiresCompletedRideAfterPenalty':
+              next.requiresCompletedRideAfterPenalty,
           'now': nowUtc,
         },
       );
