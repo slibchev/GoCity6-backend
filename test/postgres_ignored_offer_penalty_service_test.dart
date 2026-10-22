@@ -229,31 +229,38 @@ FROM driver_dispatch_states
     } finally {
       try {
         await db.execute(
-          Sql.named(
-            'DELETE FROM ignored_offer_penalty_tracking WHERE offer_id = @id',
-          ),
-          parameters: {'id': offerId},
+          Sql.named('''
+            DELETE FROM ignored_offer_penalty_tracking
+            WHERE offer_id IN (@offerId, @undisplayedOfferId)
+          '''),
+          parameters: {
+            'offerId': offerId,
+            'undisplayedOfferId': undisplayedOfferId,
+          },
         );
         await db.execute(
-          Sql.named('DELETE FROM ride_offers WHERE id = @id'),
-          parameters: {'id': undisplayedOfferId},
-        );
-
-        await db.execute(
-          Sql.named('DELETE FROM ride_offers WHERE id = @id'),
-          parameters: {'id': offerId},
+          Sql.named('''
+            DELETE FROM ride_offers
+            WHERE id IN (@offerId, @undisplayedOfferId)
+          '''),
+          parameters: {
+            'offerId': offerId,
+            'undisplayedOfferId': undisplayedOfferId,
+          },
         );
         await db.execute(
           Sql.named('DELETE FROM driver_dispatch_states WHERE driver_id = @id'),
           parameters: {'id': driverId},
         );
         await db.execute(
-          Sql.named('DELETE FROM ride_offers WHERE id = @id'),
-          parameters: {'id': offerId},
-        );
-        await db.execute(
-          Sql.named('DELETE FROM rides WHERE id = @id'),
-          parameters: {'id': rideId},
+          Sql.named('''
+            DELETE FROM rides
+            WHERE id IN (@rideId, @undisplayedRideId)
+          '''),
+          parameters: {
+            'rideId': rideId,
+            'undisplayedRideId': undisplayedRideId,
+          },
         );
         await db.execute(
           Sql.named('DELETE FROM vehicles WHERE id = @id'),

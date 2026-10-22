@@ -54,6 +54,8 @@ class RideRequest {
   final String? clientRequestId;
 
   final String pickup;
+  final double? pickupLatitude;
+  final double? pickupLongitude;
   final String destination;
 
   final int passengers;
@@ -81,6 +83,8 @@ class RideRequest {
     required this.id,
     this.clientRequestId,
     required this.pickup,
+    this.pickupLatitude,
+    this.pickupLongitude,
     required this.destination,
     required this.passengers,
     this.hasLuggage = false,
@@ -118,6 +122,8 @@ class RideRequest {
     String? id,
     String? clientRequestId,
     String? pickup,
+    Object? pickupLatitude = _notProvided,
+    Object? pickupLongitude = _notProvided,
     String? destination,
     int? passengers,
     bool? hasLuggage,
@@ -138,6 +144,12 @@ class RideRequest {
       id: id ?? this.id,
       clientRequestId: clientRequestId ?? this.clientRequestId,
       pickup: pickup ?? this.pickup,
+      pickupLatitude: identical(pickupLatitude, _notProvided)
+          ? this.pickupLatitude
+          : pickupLatitude as double?,
+      pickupLongitude: identical(pickupLongitude, _notProvided)
+          ? this.pickupLongitude
+          : pickupLongitude as double?,
       destination: destination ?? this.destination,
       passengers: passengers ?? this.passengers,
       hasLuggage: hasLuggage ?? this.hasLuggage,
@@ -178,6 +190,8 @@ class RideRequest {
       id: id,
       clientRequestId: clientRequestId,
       pickup: pickup,
+      pickupLatitude: pickupLatitude,
+      pickupLongitude: pickupLongitude,
       destination: destination,
       passengers: passengers,
       hasLuggage: hasLuggage,

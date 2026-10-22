@@ -7,6 +7,7 @@ import 'package:uuid/uuid.dart';
 import 'package:gocity6_backend/ride/postgres_ride_request_repository.dart';
 import 'package:gocity6_backend/ride/ride_request.dart';
 import 'package:gocity6_backend/ride/ride_request_status.dart';
+import 'package:gocity6_backend/ride/ride_submission_payload.dart';
 
 void main() {
   test('concurrent client requests create only one PostgreSQL ride', () async {
@@ -33,6 +34,8 @@ void main() {
     final clientId = uuid.v4();
     final firstId = uuid.v4();
     final secondId = uuid.v4();
+    const pickupLatitude = 42.6977123;
+    const pickupLongitude = 23.3219876;
 
     try {
       final databaseName = await firstDb.execute('SELECT current_database()');
@@ -49,6 +52,8 @@ void main() {
         id: id,
         clientRequestId: clientId,
         pickup: 'Test pickup',
+        pickupLatitude: pickupLatitude,
+        pickupLongitude: pickupLongitude,
         destination: 'Test destination',
         passengers: 2,
         requestedAt: DateTime.now().toUtc(),
@@ -78,6 +83,32 @@ void main() {
 
       expect(existing, isNotNull);
       expect(existing!.clientRequestId, clientId);
+      expect(existing.pickupLatitude, pickupLatitude);
+      expect(existing.pickupLongitude, pickupLongitude);
+      expect(
+        rideSubmissionMatchesExisting(
+          existing: existing,
+          pickup: 'Test pickup',
+          destination: 'Test destination',
+          passengers: 2,
+          hasLuggage: false,
+          pickupLatitude: pickupLatitude,
+          pickupLongitude: pickupLongitude,
+        ),
+        isTrue,
+      );
+      expect(
+        rideSubmissionMatchesExisting(
+          existing: existing,
+          pickup: 'Test pickup',
+          destination: 'Test destination',
+          passengers: 2,
+          hasLuggage: false,
+          pickupLatitude: pickupLatitude,
+          pickupLongitude: pickupLongitude + 0.001,
+        ),
+        isFalse,
+      );
 
       final updated = existing.transitionTo(
         RideRequestStatus.waitingForVehicle,
@@ -88,6 +119,8 @@ void main() {
       final reloaded = await secondRepository.findById(existing.id);
       expect(reloaded?.clientRequestId, clientId);
       expect(reloaded?.status, RideRequestStatus.waitingForVehicle);
+      expect(reloaded?.pickupLatitude, pickupLatitude);
+      expect(reloaded?.pickupLongitude, pickupLongitude);
 
       final count = await firstDb.execute(
         Sql.named('''

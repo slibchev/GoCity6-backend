@@ -4,6 +4,7 @@ import '../dispatch/driver_queue_state.dart';
 import '../dispatch/driver_shift_repository.dart';
 import '../routing/route_estimator.dart';
 import 'ride_request.dart';
+import 'ride_pickup_route_waypoint.dart';
 import 'ride_request_repository.dart';
 import 'ride_request_status.dart';
 
@@ -364,16 +365,17 @@ class RideDispatchService {
     );
 
     if (currentRide.status != RideRequestStatus.inProgress) {
+      final currentPickup = ridePickupRouteWaypoint(currentRide);
       final toCurrentPickup = await estimator.estimate(
         origin: origin,
-        destination: RouteWaypoint(address: currentRide.pickup),
+        destination: currentPickup,
       );
 
       totalSeconds += _requireFiniteDuration(toCurrentPickup);
 
       origin = _routeDestinationOrAddress(
         estimate: toCurrentPickup,
-        fallbackAddress: currentRide.pickup,
+        fallbackWaypoint: currentPickup,
       );
     }
 
@@ -386,12 +388,12 @@ class RideDispatchService {
 
     origin = _routeDestinationOrAddress(
       estimate: toCurrentDestination,
-      fallbackAddress: currentRide.destination,
+      fallbackWaypoint: RouteWaypoint(address: currentRide.destination),
     );
 
     final toNextPickup = await estimator.estimate(
       origin: origin,
-      destination: RouteWaypoint(address: nextRide.pickup),
+      destination: ridePickupRouteWaypoint(nextRide),
     );
 
     totalSeconds += _requireFiniteDuration(toNextPickup);
@@ -409,7 +411,7 @@ class RideDispatchService {
         latitude: driverLatitude,
         longitude: driverLongitude,
       ),
-      destination: RouteWaypoint(address: nextRide.pickup),
+      destination: ridePickupRouteWaypoint(nextRide),
     );
 
     return _requireFiniteDuration(estimate).ceil();
@@ -595,7 +597,7 @@ class RideDispatchService {
 
   RouteWaypoint _routeDestinationOrAddress({
     required RouteEstimate estimate,
-    required String fallbackAddress,
+    required RouteWaypoint fallbackWaypoint,
   }) {
     final latitude = estimate.destinationLatitude;
     final longitude = estimate.destinationLongitude;
@@ -604,7 +606,7 @@ class RideDispatchService {
       return RouteWaypoint(latitude: latitude, longitude: longitude);
     }
 
-    return RouteWaypoint(address: fallbackAddress);
+    return fallbackWaypoint;
   }
 
   double _requireFiniteDuration(RouteEstimate estimate) {

@@ -199,12 +199,16 @@ void main() {
     String? assignedDriverId,
     String? assignedVehicleId,
     String? pickup,
+    double? pickupLatitude,
+    double? pickupLongitude,
     String? destination,
     bool withFiveEuroBonus = false,
   }) {
     return RideRequest(
       id: id,
       pickup: pickup ?? 'Pickup $id',
+      pickupLatitude: pickupLatitude,
+      pickupLongitude: pickupLongitude,
       destination: destination ?? 'Destination $id',
       passengers: 1,
       requestedAt: now.subtract(const Duration(minutes: 5)),
@@ -307,6 +311,8 @@ void main() {
       id: 'ride-next',
       status: RideRequestStatus.waitingForVehicle,
       pickup: 'Next pickup',
+      pickupLatitude: 42.711,
+      pickupLongitude: 23.302,
       withFiveEuroBonus: true,
     );
 
@@ -351,7 +357,9 @@ void main() {
 
     expect(routeEstimator.calls.last.origin.latitude, 42.7001);
     expect(routeEstimator.calls.last.origin.longitude, 23.3001);
-    expect(routeEstimator.calls.last.destination.address, 'Next pickup');
+    expect(routeEstimator.calls.last.destination.latitude, 42.711);
+    expect(routeEstimator.calls.last.destination.longitude, 23.302);
+    expect(routeEstimator.calls.last.destination.address, isNull);
 
     expect(reservationRepository.callCount, 1);
     expect(reservationRepository.combinedEtaSeconds, 600);
@@ -372,6 +380,8 @@ void main() {
         assignedDriverId: 'driver-001',
         assignedVehicleId: 'vehicle-001',
         pickup: 'Current pickup',
+        pickupLatitude: 42.661,
+        pickupLongitude: 23.261,
         destination: 'Current destination',
       );
 
@@ -379,6 +389,8 @@ void main() {
         id: 'ride-next',
         status: RideRequestStatus.waitingForVehicle,
         pickup: 'Next pickup',
+        pickupLatitude: 42.671,
+        pickupLongitude: 23.271,
       );
 
       final routeEstimator = FakeRouteEstimator([
@@ -419,12 +431,16 @@ void main() {
       );
 
       expect(routeEstimator.calls, hasLength(3));
-      expect(routeEstimator.calls[0].destination.address, 'Current pickup');
+      expect(routeEstimator.calls[0].destination.latitude, 42.661);
+      expect(routeEstimator.calls[0].destination.longitude, 23.261);
+      expect(routeEstimator.calls[0].destination.address, isNull);
       expect(
         routeEstimator.calls[1].destination.address,
         'Current destination',
       );
-      expect(routeEstimator.calls[2].destination.address, 'Next pickup');
+      expect(routeEstimator.calls[2].destination.latitude, 42.671);
+      expect(routeEstimator.calls[2].destination.longitude, 23.271);
+      expect(routeEstimator.calls[2].destination.address, isNull);
 
       expect(reservationRepository.combinedEtaSeconds, 600);
     },

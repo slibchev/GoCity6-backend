@@ -85,6 +85,74 @@ void main() {
     expect(routeEstimator.lastOrigin?.longitude, 23.3219);
     expect(routeEstimator.lastDestination?.address, 'Sofia Center');
   });
+
+  test(
+    'automatic dispatch routes to pickup coordinates before its label',
+    () async {
+      final routeEstimator = _FakeRouteEstimator(
+        result: RouteEstimate(distanceMeters: 1200, durationSeconds: 240),
+      );
+      final service = DispatchCandidateService(
+        shiftRepository: _FakeDriverShiftRepository(shifts: [buildShift()]),
+        liveLocationRepository: _FakeDriverLiveLocationRepository(
+          locations: {
+            'driver-001': DriverLiveLocation(
+              driverId: 'driver-001',
+              latitude: 42.6977,
+              longitude: 23.3219,
+              updatedAt: now,
+            ),
+          },
+        ),
+        routeEstimator: routeEstimator,
+      );
+
+      await service.buildForRide(
+        ride: buildRide().copyWith(
+          pickup: 'My location',
+          pickupLatitude: 42.701,
+          pickupLongitude: 23.31,
+        ),
+        now: now,
+      );
+
+      expect(routeEstimator.lastDestination?.latitude, 42.701);
+      expect(routeEstimator.lastDestination?.longitude, 23.31);
+      expect(routeEstimator.lastDestination?.address, isNull);
+    },
+  );
+
+  test(
+    'legacy current-location pickup without GPS never reaches route estimator',
+    () async {
+      final routeEstimator = _FakeRouteEstimator(
+        result: RouteEstimate(distanceMeters: 1200, durationSeconds: 240),
+      );
+      final service = DispatchCandidateService(
+        shiftRepository: _FakeDriverShiftRepository(shifts: [buildShift()]),
+        liveLocationRepository: _FakeDriverLiveLocationRepository(
+          locations: {
+            'driver-001': DriverLiveLocation(
+              driverId: 'driver-001',
+              latitude: 42.6977,
+              longitude: 23.3219,
+              updatedAt: now,
+            ),
+          },
+        ),
+        routeEstimator: routeEstimator,
+      );
+
+      await expectLater(
+        service.buildForRide(
+          ride: buildRide().copyWith(pickup: 'Моето местоположение'),
+          now: now,
+        ),
+        throwsA(isA<RouteWaypointResolutionException>()),
+      );
+      expect(routeEstimator.calls, 0);
+    },
+  );
   test('builds candidate batch with matching driver state', () async {
     final shift = buildShift();
 

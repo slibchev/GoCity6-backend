@@ -4,6 +4,57 @@ import 'dart:io';
 import 'package:http/http.dart';
 import 'package:test/test.dart';
 
+bool _jsonContainsPickupCoordinates(
+  Object? value, {
+  required double latitude,
+  required double longitude,
+}) {
+  if (value is Map) {
+    for (final entry in value.entries) {
+      final key = entry.key.toString().toLowerCase();
+      if (const {
+        'pickuplatitude',
+        'pickuplongitude',
+        'latitude',
+        'longitude',
+        'lat',
+        'lng',
+      }.contains(key)) {
+        return true;
+      }
+      if (_jsonContainsPickupCoordinates(
+        entry.value,
+        latitude: latitude,
+        longitude: longitude,
+      )) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  if (value is Iterable) {
+    return value.any(
+      (item) => _jsonContainsPickupCoordinates(
+        item,
+        latitude: latitude,
+        longitude: longitude,
+      ),
+    );
+  }
+
+  if (value is num) {
+    return value.toDouble() == latitude || value.toDouble() == longitude;
+  }
+
+  if (value is String) {
+    return value.contains(latitude.toString()) ||
+        value.contains(longitude.toString());
+  }
+
+  return false;
+}
+
 void main() {
   const port = '8081';
   const host = 'http://127.0.0.1:$port';
@@ -103,6 +154,88 @@ void main() {
     expect(body['currency'], 'EUR');
   });
 
+  test('POST rides accepts current location without echoing GPS', () async {
+    final response = await post(
+      Uri.parse('$host/rides'),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode({
+        'pickup': 'Моето местоположение',
+        'pickupLatitude': 42.6977,
+        'pickupLongitude': 23.3219,
+        'destination': 'Sofia Airport',
+        'passengers': 1,
+      }),
+    );
+
+    expect(response.statusCode, 201);
+    final body = jsonDecode(response.body) as Map<String, dynamic>;
+    expect(body['pickup'], 'Моето местоположение');
+    expect(body.containsKey('pickupLatitude'), isFalse);
+    expect(body.containsKey('pickupLongitude'), isFalse);
+  });
+
+  test('POST rides rejects invalid or missing pickup coordinates', () async {
+    final url = Uri.parse('$host/rides');
+    final headers = {'Content-Type': 'application/json'};
+    final base = {
+      'pickup': 'Regular address',
+      'destination': 'Sofia Airport',
+      'passengers': 1,
+    };
+
+    for (final invalidFields in <Map<String, Object?>>[
+      {'pickupLatitude': 42.7},
+      {'pickupLatitude': '42.7', 'pickupLongitude': 23.3},
+      {'pickupLatitude': 91, 'pickupLongitude': 23.3},
+    ]) {
+      final response = await post(
+        url,
+        headers: headers,
+        body: jsonEncode({...base, ...invalidFields}),
+      );
+      expect(response.statusCode, 400);
+    }
+
+    for (final label in ['Моето местоположение', 'My location']) {
+      final response = await post(
+        url,
+        headers: headers,
+        body: jsonEncode({...base, 'pickup': label}),
+      );
+      expect(response.statusCode, 400);
+    }
+  });
+
+  test('POST rides idempotency includes pickup coordinates', () async {
+    const clientRequestId = '11111111-2222-4333-8444-555555555555';
+    final url = Uri.parse('$host/rides');
+    final headers = {'Content-Type': 'application/json'};
+    final payload = {
+      'clientRequestId': clientRequestId,
+      'pickup': 'My location',
+      'pickupLatitude': 42.6977,
+      'pickupLongitude': 23.3219,
+      'destination': 'Sofia Airport',
+      'passengers': 1,
+    };
+
+    final first = await post(url, headers: headers, body: jsonEncode(payload));
+    final repeat = await post(url, headers: headers, body: jsonEncode(payload));
+    final differentCoordinates = await post(
+      url,
+      headers: headers,
+      body: jsonEncode({...payload, 'pickupLongitude': 23.322}),
+    );
+
+    expect(first.statusCode, 201);
+    expect(repeat.statusCode, 201);
+    expect(
+      (jsonDecode(repeat.body) as Map<String, dynamic>)['id'],
+      (jsonDecode(first.body) as Map<String, dynamic>)['id'],
+    );
+    expect(differentCoordinates.statusCode, 409);
+  });
+
   test('GET rides returns previously created ride', () async {
     final createResponse = await post(
       Uri.parse('$host/rides'),
@@ -132,6 +265,39 @@ void main() {
     expect(body['passengers'], 1);
     expect(body['hasLuggage'], isFalse);
     expect(body['status'], 'waitingForVehicle');
+  });
+
+  test('GET ride does not expose pickup GPS coordinates', () async {
+    const latitude = 42.6977123;
+    const longitude = 23.3219876;
+    final createResponse = await post(
+      Uri.parse('$host/rides'),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode({
+        'pickup': 'My location',
+        'pickupLatitude': latitude,
+        'pickupLongitude': longitude,
+        'destination': 'Sofia Airport',
+        'passengers': 1,
+      }),
+    );
+
+    expect(createResponse.statusCode, 201);
+    final createdBody = jsonDecode(createResponse.body) as Map<String, dynamic>;
+    final rideId = createdBody['id'] as String;
+
+    final response = await get(Uri.parse('$host/rides/$rideId'));
+
+    expect(response.statusCode, 200);
+    final body = jsonDecode(response.body);
+    expect(
+      _jsonContainsPickupCoordinates(
+        body,
+        latitude: latitude,
+        longitude: longitude,
+      ),
+      isFalse,
+    );
   });
 
   test('GET rides returns 404 for missing ride', () async {

@@ -21,6 +21,8 @@ import 'package:gocity6_backend/ride/ride_lifecycle_service.dart';
 
 import 'package:gocity6_backend/ride/ride_request.dart';
 import 'package:gocity6_backend/ride/ride_request_status.dart';
+import 'package:gocity6_backend/ride/ride_pickup_coordinates.dart';
+import 'package:gocity6_backend/ride/ride_submission_payload.dart';
 
 import 'package:gocity6_backend/ride/ride_dispatch_service.dart';
 
@@ -1104,6 +1106,19 @@ void main(List<String> args) async {
 
       final clientRequestId = decodedBody['clientRequestId'];
 
+      late final RidePickupCoordinates? pickupCoordinates;
+      try {
+        pickupCoordinates = RidePickupCoordinates.parseJson(decodedBody);
+      } on InvalidRidePickupCoordinatesException {
+        return Response(
+          400,
+          body: jsonEncode({
+            'error': 'pickupLatitude and pickupLongitude must be a valid WGS84 pair.',
+          }),
+          headers: {'Content-Type': 'application/json'},
+        );
+      }
+
       if (pickup is! String ||
           pickup.trim().isEmpty ||
           destination is! String ||
@@ -1113,6 +1128,18 @@ void main(List<String> args) async {
 
           body: jsonEncode({'error': 'Pickup and destination are required.'}),
 
+          headers: {'Content-Type': 'application/json'},
+        );
+      }
+
+      if (pickupCoordinates == null &&
+          isCurrentLocationPickupLabel(pickup.trim())) {
+        return Response(
+          400,
+          body: jsonEncode({
+            'error':
+                'GPS coordinates are required for current-location pickup.',
+          }),
           headers: {'Content-Type': 'application/json'},
         );
       }
@@ -1155,10 +1182,15 @@ void main(List<String> args) async {
         );
 
         if (existing != null) {
-          if (existing.pickup != pickup.trim() ||
-              existing.destination != destination.trim() ||
-              existing.passengers != passengers ||
-              existing.hasLuggage != (hasLuggage ?? false)) {
+          if (!rideSubmissionMatchesExisting(
+            existing: existing,
+            pickup: pickup.trim(),
+            destination: destination.trim(),
+            passengers: passengers,
+            hasLuggage: hasLuggage ?? false,
+            pickupLatitude: pickupCoordinates?.latitude,
+            pickupLongitude: pickupCoordinates?.longitude,
+          )) {
             return Response(
               409,
               body: jsonEncode({
@@ -1186,6 +1218,10 @@ void main(List<String> args) async {
         clientRequestId: clientRequestId as String?,
 
         pickup: pickup.trim(),
+
+        pickupLatitude: pickupCoordinates?.latitude,
+
+        pickupLongitude: pickupCoordinates?.longitude,
 
         destination: destination.trim(),
 
@@ -1218,10 +1254,15 @@ void main(List<String> args) async {
           rethrow;
         }
 
-        if (existing.pickup != ride.pickup ||
-            existing.destination != ride.destination ||
-            existing.passengers != ride.passengers ||
-            existing.hasLuggage != ride.hasLuggage) {
+        if (!rideSubmissionMatchesExisting(
+          existing: existing,
+          pickup: ride.pickup,
+          destination: ride.destination,
+          passengers: ride.passengers,
+          hasLuggage: ride.hasLuggage,
+          pickupLatitude: ride.pickupLatitude,
+          pickupLongitude: ride.pickupLongitude,
+        )) {
           return Response(
             409,
             body: jsonEncode({

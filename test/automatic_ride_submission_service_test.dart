@@ -237,7 +237,8 @@ void main() {
         ),
       );
 
-      expect(routeEstimator.invalidPickupAttempts, 1);
+      expect(routeEstimator.invalidPickupAttempts, 0);
+      expect(routeEstimator.requestedPickupAddresses, ['Valid new pickup']);
       expect(result.offer, isNotNull);
       expect(result.offer?.rideId, 'new-ride');
       expect(result.offer?.id, 'new-ride-offer');
@@ -572,12 +573,14 @@ class _FakeRouteEstimatorWithResult implements RouteEstimator {
 
 class _WaitingBoardFailureRouteEstimator implements RouteEstimator {
   int invalidPickupAttempts = 0;
+  final List<String?> requestedPickupAddresses = [];
 
   @override
   Future<RouteEstimate> estimate({
     required RouteWaypoint origin,
     required RouteWaypoint destination,
   }) async {
+    requestedPickupAddresses.add(destination.address);
     if (destination.address == 'My location') {
       invalidPickupAttempts++;
       throw const RouteWaypointResolutionException(

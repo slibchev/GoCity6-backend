@@ -10,6 +10,8 @@ void main() {
     id: 'ride-test-001',
     clientRequestId: clientId,
     pickup: 'Sofia Center',
+    pickupLatitude: 42.6977,
+    pickupLongitude: 23.3219,
     destination: 'Sofia Airport',
     passengers: 2,
     requestedAt: DateTime.utc(2026, 10, 18),
@@ -21,7 +23,25 @@ void main() {
     final updated = ride.transitionTo(RideRequestStatus.waitingForVehicle);
 
     expect(updated.clientRequestId, clientId);
+    expect(updated.pickupLatitude, 42.6977);
+    expect(updated.pickupLongitude, 23.3219);
     expect(updated.status, RideRequestStatus.waitingForVehicle);
+  });
+
+  test('copyWith preserves and can clear pickup coordinates', () {
+    final ride = createRide();
+
+    expect(ride.copyWith().pickupLatitude, 42.6977);
+    expect(
+      ride.copyWith(pickupLatitude: null, pickupLongitude: null).pickupLatitude,
+      isNull,
+    );
+    expect(
+      ride
+          .copyWith(pickupLatitude: null, pickupLongitude: null)
+          .pickupLongitude,
+      isNull,
+    );
   });
 
   test('existing ride can be found by client request ID', () async {

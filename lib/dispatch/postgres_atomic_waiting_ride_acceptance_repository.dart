@@ -24,6 +24,8 @@ class PostgresAtomicWaitingRideAcceptanceRepository
           SELECT
             id,
             pickup,
+            pickup_latitude,
+            pickup_longitude,
             destination,
             passengers,
             has_luggage,
@@ -156,6 +158,8 @@ class PostgresAtomicWaitingRideAcceptanceRepository
           RETURNING
             id,
             pickup,
+            pickup_latitude,
+            pickup_longitude,
             destination,
             passengers,
             has_luggage,
@@ -215,6 +219,8 @@ class PostgresAtomicWaitingRideAcceptanceRepository
     return RideRequest(
       id: row['id'] as String,
       pickup: row['pickup'] as String,
+      pickupLatitude: (row['pickup_latitude'] as num?)?.toDouble(),
+      pickupLongitude: (row['pickup_longitude'] as num?)?.toDouble(),
       destination: row['destination'] as String,
       passengers: row['passengers'] as int,
       hasLuggage: row['has_luggage'] as bool,

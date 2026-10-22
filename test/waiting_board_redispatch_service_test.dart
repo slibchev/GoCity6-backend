@@ -170,6 +170,31 @@ void main() {
     },
   );
 
+  test(
+    'skips legacy current-location labels and continues to later rides',
+    () async {
+      final legacyRide = _ride(
+        id: 'ride-legacy-location',
+        pickup: 'My location',
+        requestedAt: now.subtract(const Duration(minutes: 8)),
+      );
+      final validRide = _ride(
+        id: 'ride-valid-after-legacy',
+        pickup: 'Valid pickup',
+        requestedAt: now.subtract(const Duration(minutes: 7)),
+      );
+      final service = _service(
+        now: now,
+        rides: [legacyRide, validRide],
+        drivers: [_driver('driver-1', now)],
+      );
+
+      final offers = await service.dispatchAvailableWaiters();
+
+      expect(offers.map((offer) => offer.rideId), [validRide.id]);
+    },
+  );
+
   test('does not hide unexpected route-estimator StateError', () async {
     final ride = _ride(
       id: 'ride-program-error',

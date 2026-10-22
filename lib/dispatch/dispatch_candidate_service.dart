@@ -1,4 +1,5 @@
 import '../ride/ride_request.dart';
+import '../ride/ride_pickup_route_waypoint.dart';
 import '../routing/route_estimator.dart';
 import 'active_driver_shift.dart';
 import 'dispatch_candidate.dart';
@@ -88,7 +89,7 @@ class DispatchCandidateService {
 
     final estimates = await _estimateRoutes(
       entries: eligiblePool.entries,
-      destination: RouteWaypoint(address: ride.pickup),
+      destination: ridePickupRouteWaypoint(ride),
     );
     final candidates = <DispatchCandidate>[];
     final driverStates = <String, DriverQueueState>{};
