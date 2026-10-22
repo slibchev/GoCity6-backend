@@ -154,6 +154,32 @@ void main() {
     expect(routeEstimator.calls, 0);
   });
 
+  test('skips driver with non-finite GPS coordinates before routing', () async {
+    final routeEstimator = _FakeRouteEstimator(
+      result: RouteEstimate(distanceMeters: 1000, durationSeconds: 200),
+    );
+
+    final service = DispatchCandidateService(
+      shiftRepository: _FakeDriverShiftRepository(shifts: [buildShift()]),
+      liveLocationRepository: _FakeDriverLiveLocationRepository(
+        locations: {
+          'driver-001': DriverLiveLocation(
+            driverId: 'driver-001',
+            latitude: double.nan,
+            longitude: 23.3219,
+            updatedAt: now,
+          ),
+        },
+      ),
+      routeEstimator: routeEstimator,
+    );
+
+    final result = await service.buildForRide(ride: buildRide(), now: now);
+
+    expect(result, isEmpty);
+    expect(routeEstimator.calls, 0);
+  });
+
   test('skips unavailable driver before loading location', () async {
     final locationRepository = _FakeDriverLiveLocationRepository(
       locations: {

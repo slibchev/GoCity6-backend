@@ -208,6 +208,12 @@ class GoogleRouteEstimator implements RouteEstimator, BatchRouteEstimator {
     final longitude = waypoint.longitude;
 
     if (latitude != null && longitude != null) {
+      if (!_isValidCoordinate(latitude, longitude)) {
+        throw const RouteWaypointResolutionException(
+          RouteWaypointFailureReason.invalidCoordinates,
+        );
+      }
+
       return {
         'location': {
           'latLng': {'latitude': latitude, 'longitude': longitude},
@@ -253,10 +259,16 @@ class GoogleRouteEstimator implements RouteEstimator, BatchRouteEstimator {
 
     final data = jsonDecode(response.body) as Map<String, dynamic>;
 
-    if (data['status'] != 'OK') {
-      throw StateError(
-        'Google Geocoding failed with status ${data['status']}.',
+    final status = data['status'];
+
+    if (status == 'ZERO_RESULTS') {
+      throw const RouteWaypointResolutionException(
+        RouteWaypointFailureReason.geocodingNoResults,
       );
+    }
+
+    if (status != 'OK') {
+      throw StateError('Google Geocoding failed with status $status.');
     }
 
     final results = data['results'] as List<dynamic>? ?? const [];
@@ -276,7 +288,22 @@ class GoogleRouteEstimator implements RouteEstimator, BatchRouteEstimator {
       throw StateError('Google Geocoding response is missing coordinates.');
     }
 
+    if (!_isValidCoordinate(latitude, longitude)) {
+      throw const RouteWaypointResolutionException(
+        RouteWaypointFailureReason.invalidCoordinates,
+      );
+    }
+
     return (latitude, longitude);
+  }
+
+  bool _isValidCoordinate(double latitude, double longitude) {
+    return latitude.isFinite &&
+        longitude.isFinite &&
+        latitude >= -90 &&
+        latitude <= 90 &&
+        longitude >= -180 &&
+        longitude <= 180;
   }
 
   double _parseDurationSeconds(String durationText) {

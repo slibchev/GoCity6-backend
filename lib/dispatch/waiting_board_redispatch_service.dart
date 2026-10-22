@@ -1,4 +1,5 @@
 import '../ride/ride_request.dart';
+import '../routing/route_estimator.dart';
 import 'atomic_ride_offer_repository.dart';
 import 'automatic_dispatch_orchestrator.dart';
 import 'dispatch_candidate_service.dart';
@@ -33,6 +34,7 @@ class WaitingBoardRedispatchService {
 
     final notBefore = nowUtc.subtract(maximumRideAge);
     final createdOffers = <RideOffer>[];
+    final ridesWithInvalidRouteInput = <String>{};
 
     // Each committed offer removes its driver from this snapshot. The loop
     // therefore ends after at most one offer per initially eligible driver.
@@ -58,6 +60,10 @@ class WaitingBoardRedispatchService {
             continue;
           }
 
+          if (ridesWithInvalidRouteInput.contains(ride.id)) {
+            continue;
+          }
+
           try {
             final offer = await dispatchOrchestrator
                 .createNextWaitingBoardOfferFromPool(
@@ -76,6 +82,13 @@ class WaitingBoardRedispatchService {
             pool = pool.withoutDriver(offer.driverId);
             createdOfferForPool = true;
             break;
+          } on RouteWaypointResolutionException catch (error) {
+            ridesWithInvalidRouteInput.add(ride.id);
+            print(
+              'Waiting-board ride skipped: '
+              'rideId=${ride.id}; reason=${error.reason.name}.',
+            );
+            continue;
           } on AtomicRideOfferConflictException catch (error) {
             switch (error.conflict) {
               case AtomicRideOfferConflict.rideNotFound:

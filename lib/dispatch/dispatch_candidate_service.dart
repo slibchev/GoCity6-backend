@@ -161,6 +161,10 @@ class DispatchCandidateService {
           continue;
         }
 
+        if (!_hasValidCoordinates(location)) {
+          continue;
+        }
+
         final locationAge = nowUtc.difference(location.updatedAt.toUtc());
 
         if (locationAge.isNegative || locationAge > maxLocationAge) {
@@ -215,6 +219,8 @@ class DispatchCandidateService {
           origins: origins,
           destination: destination,
         );
+      } on RouteWaypointResolutionException {
+        rethrow;
       } on Exception {
         return List<RouteEstimate?>.filled(entries.length, null);
       }
@@ -236,6 +242,8 @@ class DispatchCandidateService {
             origin: origins[index],
             destination: destination,
           );
+        } on RouteWaypointResolutionException {
+          rethrow;
         } on Exception {
           // A failed route estimate excludes only that driver.
         }
@@ -247,5 +255,14 @@ class DispatchCandidateService {
     );
 
     return estimates;
+  }
+
+  bool _hasValidCoordinates(DriverLiveLocation location) {
+    return location.latitude.isFinite &&
+        location.longitude.isFinite &&
+        location.latitude >= -90 &&
+        location.latitude <= 90 &&
+        location.longitude >= -180 &&
+        location.longitude <= 180;
   }
 }

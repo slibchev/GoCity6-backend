@@ -1,3 +1,18 @@
+enum RouteWaypointFailureReason { invalidCoordinates, geocodingNoResults }
+
+/// A route waypoint could not be resolved from expected input data.
+///
+/// The reason is safe to log; this exception deliberately carries no address,
+/// coordinates, API response body, or credential data.
+class RouteWaypointResolutionException implements Exception {
+  const RouteWaypointResolutionException(this.reason);
+
+  final RouteWaypointFailureReason reason;
+
+  @override
+  String toString() => 'Route waypoint resolution failed: ${reason.name}.';
+}
+
 class RouteWaypoint {
   final String? address;
   final String? placeId;

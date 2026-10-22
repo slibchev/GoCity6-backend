@@ -162,6 +162,104 @@ void main() {
     expect(estimate.durationSeconds, 120);
   });
 
+  test(
+    'classifies geocoding ZERO_RESULTS without requesting a route',
+    () async {
+      var routeMatrixRequested = false;
+      final client = MockClient((request) async {
+        if (request.method == 'GET' &&
+            request.url.host == 'maps.googleapis.com') {
+          return http.Response(
+            jsonEncode({'status': 'ZERO_RESULTS', 'results': <Object>[]}),
+            200,
+          );
+        }
+
+        routeMatrixRequested = true;
+        return http.Response('unexpected route request', 500);
+      });
+
+      final estimator = GoogleRouteEstimator(
+        apiKey: 'test-api-key',
+        client: client,
+      );
+
+      await expectLater(
+        estimator.estimateMany(
+          origins: [RouteWaypoint(latitude: 42.7, longitude: 23.3)],
+          destination: RouteWaypoint(address: 'Private pickup address'),
+        ),
+        throwsA(
+          isA<RouteWaypointResolutionException>().having(
+            (error) => error.reason,
+            'reason',
+            RouteWaypointFailureReason.geocodingNoResults,
+          ),
+        ),
+      );
+
+      expect(routeMatrixRequested, isFalse);
+    },
+  );
+
+  test('keeps unexpected geocoding statuses as StateError', () async {
+    final client = MockClient((request) async {
+      if (request.method == 'GET') {
+        return http.Response(
+          jsonEncode({'status': 'OVER_QUERY_LIMIT', 'results': <Object>[]}),
+          200,
+        );
+      }
+
+      return http.Response('unexpected route request', 500);
+    });
+
+    final estimator = GoogleRouteEstimator(
+      apiKey: 'test-api-key',
+      client: client,
+    );
+
+    await expectLater(
+      estimator.estimate(
+        origin: RouteWaypoint(latitude: 42.7, longitude: 23.3),
+        destination: RouteWaypoint(address: 'Some pickup'),
+      ),
+      throwsA(isA<StateError>()),
+    );
+  });
+
+  test(
+    'classifies invalid coordinates without sending a Google request',
+    () async {
+      var requestCount = 0;
+      final client = MockClient((request) async {
+        requestCount++;
+        return http.Response('unexpected request', 500);
+      });
+
+      final estimator = GoogleRouteEstimator(
+        apiKey: 'test-api-key',
+        client: client,
+      );
+
+      await expectLater(
+        estimator.estimate(
+          origin: RouteWaypoint(latitude: 91, longitude: 23.3),
+          destination: RouteWaypoint(latitude: 42.7, longitude: 23.3),
+        ),
+        throwsA(
+          isA<RouteWaypointResolutionException>().having(
+            (error) => error.reason,
+            'reason',
+            RouteWaypointFailureReason.invalidCoordinates,
+          ),
+        ),
+      );
+
+      expect(requestCount, 0);
+    },
+  );
+
   test('GoogleRouteEstimator treats missing distanceMeters as zero for zero-distance route', () async {
     final client = MockClient((request) async {
       return http.Response(

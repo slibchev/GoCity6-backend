@@ -1,3 +1,6 @@
+import 'dart:async';
+import 'dart:convert';
+
 import 'package:gocity6_backend/dispatch/active_driver_shift.dart';
 import 'package:gocity6_backend/dispatch/atomic_ride_offer_repository.dart';
 import 'package:gocity6_backend/dispatch/automatic_dispatch_orchestrator.dart';
@@ -12,7 +15,10 @@ import 'package:gocity6_backend/dispatch/waiting_board_redispatch_service.dart';
 import 'package:gocity6_backend/dispatch/waiting_ride_redispatch_repository.dart';
 import 'package:gocity6_backend/ride/ride_request.dart';
 import 'package:gocity6_backend/ride/ride_request_status.dart';
+import 'package:gocity6_backend/routing/google_route_estimator.dart';
 import 'package:gocity6_backend/routing/route_estimator.dart';
+import 'package:http/http.dart' as http;
+import 'package:http/testing.dart';
 import 'package:test/test.dart';
 
 void main() {
@@ -56,6 +62,132 @@ void main() {
       expect(bonusRide.bonusDecision, RideBonusDecision.accepted);
     },
   );
+
+  test(
+    'skips one unresolvable ride once and continues through later waiters',
+    () async {
+      final invalidAddress = 'Private pickup address';
+      final invalidRide = _ride(
+        id: 'ride-unresolvable',
+        pickup: invalidAddress,
+        requestedAt: now.subtract(const Duration(minutes: 9)),
+      );
+      final firstValidRide = _ride(
+        id: 'ride-valid-1',
+        pickup: 'Valid pickup one',
+        requestedAt: now.subtract(const Duration(minutes: 8)),
+      );
+      final secondValidRide = _ride(
+        id: 'ride-valid-2',
+        pickup: 'Valid pickup two',
+        requestedAt: now.subtract(const Duration(minutes: 7)),
+      );
+      final geocodeCalls = <String, int>{};
+      final routeEstimator = GoogleRouteEstimator(
+        apiKey: 'test-api-key',
+        client: MockClient((request) async {
+          if (request.method == 'GET' &&
+              request.url.host == 'maps.googleapis.com') {
+            final address = request.url.queryParameters['address']!;
+            geocodeCalls.update(
+              address,
+              (count) => count + 1,
+              ifAbsent: () => 1,
+            );
+
+            if (address == invalidAddress) {
+              return http.Response(
+                jsonEncode({'status': 'ZERO_RESULTS', 'results': <Object>[]}),
+                200,
+              );
+            }
+
+            return http.Response(
+              jsonEncode({
+                'status': 'OK',
+                'results': [
+                  {
+                    'geometry': {
+                      'location': {'lat': 42.7, 'lng': 23.3},
+                    },
+                  },
+                ],
+              }),
+              200,
+            );
+          }
+
+          final requestBody = jsonDecode(request.body) as Map<String, dynamic>;
+          final origins = requestBody['origins'] as List<dynamic>;
+          final elements = List.generate(
+            origins.length,
+            (index) => {
+              'originIndex': index,
+              'destinationIndex': 0,
+              'condition': 'ROUTE_EXISTS',
+              'duration': '120s',
+              'distanceMeters': 1000,
+            },
+          );
+          return http.Response(jsonEncode(elements), 200);
+        }),
+      );
+      final offersRepository = _FakeRideOfferRepository();
+      final service = _service(
+        now: now,
+        rides: [invalidRide, firstValidRide, secondValidRide],
+        drivers: [_driver('driver-1', now), _driver('driver-2', now)],
+        offerRepository: offersRepository,
+        routeEstimator: routeEstimator,
+      );
+      final logMessages = <String>[];
+
+      final offers = await runZoned(
+        () => service.dispatchAvailableWaiters(),
+        zoneSpecification: ZoneSpecification(
+          print: (self, parent, zone, line) => logMessages.add(line),
+        ),
+      );
+
+      expect(offers.map((offer) => offer.rideId), [
+        firstValidRide.id,
+        secondValidRide.id,
+      ]);
+      expect(geocodeCalls[invalidAddress], 1);
+      expect(
+        logMessages,
+        contains(
+          'Waiting-board ride skipped: '
+          'rideId=${invalidRide.id}; '
+          'reason=${RouteWaypointFailureReason.geocodingNoResults.name}.',
+        ),
+      );
+      expect(logMessages.join('\n'), isNot(contains(invalidAddress)));
+      expect(
+        offersRepository.offers.map((offer) => offer.rideId),
+        isNot(contains(invalidRide.id)),
+      );
+    },
+  );
+
+  test('does not hide unexpected route-estimator StateError', () async {
+    final ride = _ride(
+      id: 'ride-program-error',
+      pickup: 'Valid pickup',
+      requestedAt: now.subtract(const Duration(minutes: 5)),
+    );
+    final service = _service(
+      now: now,
+      rides: [ride],
+      drivers: [_driver('driver-1', now)],
+      routeEstimator: _StateErrorRouteEstimator(),
+    );
+
+    await expectLater(
+      service.dispatchAvailableWaiters(),
+      throwsA(isA<StateError>()),
+    );
+  });
 
   test('does not create offers at or after the 30-minute boundary', () async {
     final oldRide = _ride(
@@ -163,6 +295,7 @@ WaitingBoardRedispatchService _service({
   required List<RideRequest> rides,
   required List<ActiveDriverShift> drivers,
   _FakeRideOfferRepository? offerRepository,
+  RouteEstimator? routeEstimator,
 }) {
   final shiftRepository = _FakeShiftRepository(drivers);
   final locationRepository = _FakeLocationRepository(
@@ -179,7 +312,7 @@ WaitingBoardRedispatchService _service({
   final candidates = DispatchCandidateService(
     shiftRepository: shiftRepository,
     liveLocationRepository: locationRepository,
-    routeEstimator: _FakeRouteEstimator(),
+    routeEstimator: routeEstimator ?? _FakeRouteEstimator(),
   );
   final atomicOffers = _FakeAtomicOfferRepository(offers);
   final orchestrator = AutomaticDispatchOrchestrator(
@@ -296,6 +429,16 @@ class _FakeRouteEstimator implements RouteEstimator {
       distanceMeters: tooFar ? 20000 : 500,
       durationSeconds: tooFar ? 700 : 120,
     );
+  }
+}
+
+class _StateErrorRouteEstimator implements RouteEstimator {
+  @override
+  Future<RouteEstimate> estimate({
+    required RouteWaypoint origin,
+    required RouteWaypoint destination,
+  }) async {
+    throw StateError('Unexpected route-estimator failure.');
   }
 }
 

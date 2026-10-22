@@ -11,6 +11,8 @@ import 'package:gocity6_backend/dispatch/driver_queue_state.dart';
 import 'package:gocity6_backend/dispatch/driver_shift_repository.dart';
 import 'package:gocity6_backend/dispatch/ride_offer.dart';
 import 'package:gocity6_backend/dispatch/ride_offer_repository.dart';
+import 'package:gocity6_backend/dispatch/waiting_board_redispatch_service.dart';
+import 'package:gocity6_backend/dispatch/waiting_ride_redispatch_repository.dart';
 import 'package:gocity6_backend/ride/ride_lifecycle_service.dart';
 import 'package:gocity6_backend/ride/ride_request.dart';
 import 'package:gocity6_backend/ride/ride_request_repository.dart';
@@ -148,6 +150,132 @@ void main() {
     expect(storedRide?.status, RideRequestStatus.pending);
     expect(atomicOfferRepository.createdOffer?.id, 'offer-002');
   });
+
+  test(
+    'an unresolvable waiting ride does not block a new ride offer',
+    () async {
+      final now = DateTime.utc(2026, 10, 7, 20);
+      final rideRepository = _FakeRideRequestRepository();
+      final invalidWaitingRide = RideRequest(
+        id: 'waiting-unresolvable',
+        pickup: 'My location',
+        destination: 'Old destination',
+        passengers: 1,
+        requestedAt: now.subtract(const Duration(minutes: 4)),
+        status: RideRequestStatus.waitingForVehicle,
+      );
+      await rideRepository.save(invalidWaitingRide);
+
+      final shift = ActiveDriverShift.restore(
+        id: 'shift-003',
+        driverId: 'driver-003',
+        vehicleId: 'vehicle-003',
+        startedAt: now.subtract(const Duration(minutes: 10)),
+        queueState: DriverQueueState.restore(
+          driverId: 'driver-003',
+          queuePrioritySince: now.subtract(const Duration(minutes: 10)),
+          availability: DriverQueueAvailability.available,
+          shortBreaksUsed: 0,
+          breakStartedAt: null,
+          hasPendingOffer: false,
+        ),
+      );
+      final routeEstimator = _WaitingBoardFailureRouteEstimator();
+      final candidateService = DispatchCandidateService(
+        shiftRepository: _FakeDriverShiftRepositoryWithShift(shift),
+        liveLocationRepository: _FakeDriverLiveLocationRepositoryWithLocation(
+          DriverLiveLocation(
+            driverId: 'driver-003',
+            latitude: 42.6977,
+            longitude: 23.3219,
+            updatedAt: now.subtract(const Duration(seconds: 5)),
+          ),
+        ),
+        routeEstimator: routeEstimator,
+      );
+      final waitingBoardOrchestrator = AutomaticDispatchOrchestrator(
+        candidateService: candidateService,
+        offerRepository: _FakeRideOfferRepository(),
+        atomicOfferRepository: _FakeAtomicRideOfferRepository(),
+      );
+      final waitingBoardService = WaitingBoardRedispatchService(
+        rideRepository: _FakeWaitingRideRepository([invalidWaitingRide]),
+        candidateService: candidateService,
+        dispatchOrchestrator: waitingBoardOrchestrator,
+        offerIdFactory: () => 'waiting-offer',
+        now: () => now,
+      );
+      final newRideAtomicRepository =
+          _FakeAtomicRideOfferRepositoryWithCreate();
+      final newRideOrchestrator = AutomaticDispatchOrchestrator(
+        candidateService: candidateService,
+        offerRepository: _FakeRideOfferRepository(),
+        atomicOfferRepository: newRideAtomicRepository,
+      );
+      final bonusRepository = _FakeBonusDecisionRepository(rideRepository);
+      final service = AutomaticRideSubmissionService(
+        lifecycleService: RideLifecycleService(repository: rideRepository),
+        rideRepository: rideRepository,
+        dispatchOrchestrator: newRideOrchestrator,
+        exhaustionService: AutomaticDispatchExhaustionService(
+          bonusDecisionRepository: bonusRepository,
+        ),
+        offerIdFactory: () => 'new-ride-offer',
+        now: () => now,
+        redispatchWaitingRides: () async {
+          await waitingBoardService.dispatchAvailableWaiters();
+        },
+      );
+
+      final result = await service.submit(
+        RideRequest(
+          id: 'new-ride',
+          pickup: 'Valid new pickup',
+          destination: 'New destination',
+          passengers: 1,
+          requestedAt: now,
+        ),
+      );
+
+      expect(routeEstimator.invalidPickupAttempts, 1);
+      expect(result.offer, isNotNull);
+      expect(result.offer?.rideId, 'new-ride');
+      expect(result.offer?.id, 'new-ride-offer');
+    },
+  );
+}
+
+class _FakeWaitingRideRepository implements WaitingRideRedispatchRepository {
+  _FakeWaitingRideRepository(this.rides);
+
+  final List<RideRequest> rides;
+
+  @override
+  Future<List<RideRequest>> findOldestPage({
+    required DateTime notBefore,
+    DateTime? afterRequestedAt,
+    String? afterRideId,
+    int limit = 50,
+  }) async {
+    final eligible =
+        rides.where((ride) {
+          if (ride.status != RideRequestStatus.waitingForVehicle ||
+              !ride.requestedAt.isAfter(notBefore)) {
+            return false;
+          }
+
+          if (afterRequestedAt == null) return true;
+
+          return ride.requestedAt.isAfter(afterRequestedAt) ||
+              (ride.requestedAt.isAtSameMomentAs(afterRequestedAt) &&
+                  ride.id.compareTo(afterRideId!) > 0);
+        }).toList()..sort((a, b) {
+          final byRequestedAt = a.requestedAt.compareTo(b.requestedAt);
+          return byRequestedAt == 0 ? a.id.compareTo(b.id) : byRequestedAt;
+        });
+
+    return eligible.take(limit).toList(growable: false);
+  }
 }
 
 class _FakeRideRequestRepository implements RideRequestRepository {
@@ -438,6 +566,25 @@ class _FakeRouteEstimatorWithResult implements RouteEstimator {
     required RouteWaypoint origin,
     required RouteWaypoint destination,
   }) async {
+    return RouteEstimate(distanceMeters: 1200, durationSeconds: 240);
+  }
+}
+
+class _WaitingBoardFailureRouteEstimator implements RouteEstimator {
+  int invalidPickupAttempts = 0;
+
+  @override
+  Future<RouteEstimate> estimate({
+    required RouteWaypoint origin,
+    required RouteWaypoint destination,
+  }) async {
+    if (destination.address == 'My location') {
+      invalidPickupAttempts++;
+      throw const RouteWaypointResolutionException(
+        RouteWaypointFailureReason.geocodingNoResults,
+      );
+    }
+
     return RouteEstimate(distanceMeters: 1200, durationSeconds: 240);
   }
 }
