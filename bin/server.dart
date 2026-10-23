@@ -61,6 +61,8 @@ import 'package:gocity6_backend/dispatch/driver_work_state_repository.dart';
 import 'package:gocity6_backend/dispatch/postgres_driver_work_state_repository.dart';
 import 'package:gocity6_backend/dispatch/atomic_ride_offer_repository.dart';
 import 'package:gocity6_backend/dispatch/driver_ride_offer_action_service.dart';
+import 'package:gocity6_backend/dispatch/driver_offer_status_route.dart';
+import 'package:gocity6_backend/dispatch/driver_offer_status_service.dart';
 import 'package:gocity6_backend/dispatch/postgres_atomic_ride_offer_repository.dart';
 import 'package:gocity6_backend/dispatch/postgres_ride_offer_repository.dart';
 import 'package:gocity6_backend/dispatch/ride_offer_repository.dart';
@@ -457,6 +459,7 @@ void main(List<String> args) async {
   RideOfferTimeoutProcessor? rideOfferTimeoutProcessor;
   WaitingBoardRedispatchService? waitingBoardRedispatchService;
   DriverRideOfferActionService? driverRideOfferActionService;
+  DriverOfferStatusService? driverOfferStatusService;
   DriverLiveLocationRepository? driverLiveLocationRepository;
   DriverDispatchStateRepository? driverDispatchStateRepository;
   DriverDispatchPolicyService? driverDispatchPolicyService;
@@ -522,7 +525,13 @@ void main(List<String> args) async {
     driverDispatchStateRepository = PostgresDriverDispatchStateRepository(
       database: databasePool,
     );
-    rideOfferRepository = PostgresRideOfferRepository(database: databasePool);
+    final postgresRideOfferRepository = PostgresRideOfferRepository(
+      database: databasePool,
+    );
+    rideOfferRepository = postgresRideOfferRepository;
+    driverOfferStatusService = DriverOfferStatusService(
+      repository: postgresRideOfferRepository,
+    );
 
     atomicRideOfferRepository = PostgresAtomicRideOfferRepository(
       database: databasePool,
@@ -2472,6 +2481,12 @@ void main(List<String> args) async {
       );
     }
   });
+
+  registerDriverOfferStatusRoute(
+    router,
+    tokenService: driverTokenService,
+    statusService: driverOfferStatusService,
+  );
 
   final handler = Pipeline()
       .addMiddleware(logRequests())

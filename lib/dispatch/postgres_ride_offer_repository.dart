@@ -1,12 +1,53 @@
 import 'package:postgres/postgres.dart';
 
+import 'driver_offer_status_repository.dart';
 import 'ride_offer.dart';
 import 'ride_offer_repository.dart';
 
-class PostgresRideOfferRepository implements RideOfferRepository {
+class PostgresRideOfferRepository
+    implements RideOfferRepository, DriverOfferStatusRepository {
   final Session database;
 
   PostgresRideOfferRepository({required this.database});
+
+  @override
+  Future<DriverOfferStatusRecord?> findForDriver({
+    required String offerId,
+    required String driverId,
+  }) async {
+    final result = await database.execute(
+      Sql.named('''
+        SELECT
+          id,
+          ride_id,
+          offered_at,
+          expires_at,
+          status,
+          resolved_at,
+          displayed_at
+        FROM ride_offers
+        WHERE id = @offerId
+          AND driver_id = @driverId
+        LIMIT 1
+      '''),
+      parameters: {'offerId': offerId, 'driverId': driverId},
+    );
+
+    if (result.isEmpty) {
+      return null;
+    }
+
+    final row = result.single.toColumnMap();
+    return DriverOfferStatusRecord(
+      offerId: row['id'] as String,
+      rideId: row['ride_id'] as String,
+      offeredAt: (row['offered_at'] as DateTime).toUtc(),
+      expiresAt: (row['expires_at'] as DateTime).toUtc(),
+      status: RideOfferStatus.values.byName(row['status'] as String),
+      resolvedAt: (row['resolved_at'] as DateTime?)?.toUtc(),
+      displayedAt: (row['displayed_at'] as DateTime?)?.toUtc(),
+    );
+  }
 
   @override
   Future<RideOffer?> findById(String id) async {
