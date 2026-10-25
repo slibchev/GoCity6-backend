@@ -89,26 +89,36 @@ class PostgresDriverOfferActionOutboxRepository
       }
     }
 
+    // An action_id collision is distinct from an offer conflict. Read the
+    // existing request identity so a true retry using the same action_id can
+    // still be classified as AlreadyExists, while a different request cannot.
+    final actionIdRows = await transaction.execute(
+      Sql.named('''
+        SELECT $_columns
+        FROM driver_offer_action_outbox
+        WHERE action_id = @actionId
+        LIMIT 2
+      '''),
+      parameters: {'actionId': record.actionId},
+    );
+    final existingByActionId = _optionalSingleRecord(actionIdRows);
+    if (existingByActionId != null) {
+      if (existingByActionId.hasSameRequestAs(record)) {
+        return DriverOfferActionAlreadyExists(record: existingByActionId);
+      }
+      throw const DriverOfferActionIdConflictException();
+    }
+
     final existingForOwner = await findForDriver(
       session: transaction,
       offerId: record.offerId,
       driverId: record.driverId,
     );
     if (existingForOwner != null) {
-      return DriverOfferActionAlreadyExists(record: existingForOwner);
-    }
-
-    final actionIdRows = await transaction.execute(
-      Sql.named('''
-        SELECT action_id
-        FROM driver_offer_action_outbox
-        WHERE action_id = @actionId
-        LIMIT 1
-      '''),
-      parameters: {'actionId': record.actionId},
-    );
-    if (actionIdRows.isNotEmpty) {
-      throw const DriverOfferActionIdConflictException();
+      if (existingForOwner.hasSameRequestAs(record)) {
+        return DriverOfferActionAlreadyExists(record: existingForOwner);
+      }
+      return const DriverOfferActionOfferConflict();
     }
 
     // Do not reveal a foreign driver's row. The boolean probe only classifies
@@ -123,7 +133,7 @@ class PostgresDriverOfferActionOutboxRepository
       parameters: {'offerId': record.offerId},
     );
     if (offerExists.isNotEmpty) {
-      return const DriverOfferActionAlreadyExists();
+      return const DriverOfferActionOfferConflict();
     }
 
     // For example, a concurrent write may be invisible to a repeatable-read

@@ -13,18 +13,33 @@ class PostgresDriverDispatchStateRepository
     required String driverId,
     required DriverDispatchState Function(DriverDispatchState) transform,
   }) {
-    return database.runTx((tx) async {
-      await tx.execute(
-        Sql.named('''
+    return database.runTx(
+      (tx) => updateAtomicallyInTransaction(
+        transaction: tx,
+        driverId: driverId,
+        transform: transform,
+      ),
+    );
+  }
+
+  /// Applies the existing policy transformation using the caller's transaction.
+  /// This method never starts, commits, or rolls back a transaction itself.
+  Future<DriverDispatchState> updateAtomicallyInTransaction({
+    required TxSession transaction,
+    required String driverId,
+    required DriverDispatchState Function(DriverDispatchState) transform,
+  }) async {
+    await transaction.execute(
+      Sql.named('''
           INSERT INTO driver_dispatch_states (driver_id)
           VALUES (@driverId)
           ON CONFLICT (driver_id) DO NOTHING
         '''),
-        parameters: {'driverId': driverId},
-      );
+      parameters: {'driverId': driverId},
+    );
 
-      final rows = await tx.execute(
-        Sql.named('''
+    final rows = await transaction.execute(
+      Sql.named('''
           SELECT
             driver_id,
             consecutive_rejects,
@@ -36,31 +51,31 @@ class PostgresDriverDispatchStateRepository
           WHERE driver_id = @driverId
           FOR UPDATE
         '''),
-        parameters: {'driverId': driverId},
-      );
+      parameters: {'driverId': driverId},
+    );
 
-      final row = rows.single.toColumnMap();
+    final row = rows.single.toColumnMap();
 
-      final current = DriverDispatchState(
-        driverId: row['driver_id'] as String,
-        consecutiveRejects: row['consecutive_rejects'] as int,
-        penaltyLevel: row['penalty_level'] as int,
-        dispatchBlockedUntil: (row['dispatch_blocked_until'] as DateTime?)
-            ?.toUtc(),
-        penaltyResetEligibleAt: (row['penalty_reset_eligible_at'] as DateTime?)
-            ?.toUtc(),
-        requiresCompletedRideAfterPenalty:
-            row['requires_completed_ride_after_penalty'] as bool,
-      );
+    final current = DriverDispatchState(
+      driverId: row['driver_id'] as String,
+      consecutiveRejects: row['consecutive_rejects'] as int,
+      penaltyLevel: row['penalty_level'] as int,
+      dispatchBlockedUntil: (row['dispatch_blocked_until'] as DateTime?)
+          ?.toUtc(),
+      penaltyResetEligibleAt: (row['penalty_reset_eligible_at'] as DateTime?)
+          ?.toUtc(),
+      requiresCompletedRideAfterPenalty:
+          row['requires_completed_ride_after_penalty'] as bool,
+    );
 
-      final next = transform(current);
+    final next = transform(current);
 
-      if (next.driverId != driverId) {
-        throw StateError('Driver ID cannot be changed.');
-      }
+    if (next.driverId != driverId) {
+      throw StateError('Driver ID cannot be changed.');
+    }
 
-      await tx.execute(
-        Sql.named('''
+    await transaction.execute(
+      Sql.named('''
           UPDATE driver_dispatch_states
           SET
             consecutive_rejects = @rejects,
@@ -72,19 +87,18 @@ class PostgresDriverDispatchStateRepository
             updated_at = NOW()
           WHERE driver_id = @driverId
         '''),
-        parameters: {
-          'driverId': driverId,
-          'rejects': next.consecutiveRejects,
-          'level': next.penaltyLevel,
-          'blockedUntil': next.dispatchBlockedUntil,
-          'resetEligibleAt': next.penaltyResetEligibleAt,
-          'requiresCompletedRideAfterPenalty':
-              next.requiresCompletedRideAfterPenalty,
-        },
-      );
+      parameters: {
+        'driverId': driverId,
+        'rejects': next.consecutiveRejects,
+        'level': next.penaltyLevel,
+        'blockedUntil': next.dispatchBlockedUntil,
+        'resetEligibleAt': next.penaltyResetEligibleAt,
+        'requiresCompletedRideAfterPenalty':
+            next.requiresCompletedRideAfterPenalty,
+      },
+    );
 
-      return next;
-    });
+    return next;
   }
 
   @override

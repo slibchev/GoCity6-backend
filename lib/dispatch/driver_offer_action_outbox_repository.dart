@@ -328,6 +328,9 @@ class DriverOfferActionOutboxRecord {
 /// accepts the caller's PostgreSQL transaction session and never opens or
 /// commits a transaction itself.
 abstract interface class DriverOfferActionOutboxRepository {
+  /// The transaction-aware caller MUST validate that [record]'s driver owns
+  /// the referenced `ride_offers` row before calling [insert]. This repository
+  /// only journals actions; it is not an offer-ownership boundary.
   Future<DriverOfferActionInsertResult> insert({
     required TxSession transaction,
     required DriverOfferActionOutboxRecord record,
@@ -358,13 +361,21 @@ final class DriverOfferActionInserted extends DriverOfferActionInsertResult {
   final DriverOfferActionOutboxRecord record;
 }
 
-/// An action already occupies this offer. [record] is null when disclosing its
-/// details would cross the caller's driver ownership boundary.
+/// The exact same request was already recorded. Implementations must compare
+/// driverId, offerId, action, requestHash, and idempotencyKey (including NULL)
+/// before returning this result.
 final class DriverOfferActionAlreadyExists
     extends DriverOfferActionInsertResult {
-  const DriverOfferActionAlreadyExists({this.record});
+  const DriverOfferActionAlreadyExists({required this.record});
 
-  final DriverOfferActionOutboxRecord? record;
+  final DriverOfferActionOutboxRecord record;
+}
+
+/// The offer already has a different action, or is associated with another
+/// driver's action. This result deliberately exposes no stored row or owner.
+final class DriverOfferActionOfferConflict
+    extends DriverOfferActionInsertResult {
+  const DriverOfferActionOfferConflict();
 }
 
 final class DriverOfferActionIdempotencyConflict

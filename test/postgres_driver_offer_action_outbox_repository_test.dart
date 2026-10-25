@@ -147,6 +147,42 @@ Future<void> _insertRideAndOffer(
   );
 }
 
+DriverOfferActionOutboxRecord _testAction({
+  required String actionId,
+  required String offerId,
+  required String driverId,
+  required DriverOfferAction action,
+  required String? idempotencyKey,
+  required String requestHash,
+  required DateTime now,
+}) {
+  final createdAt = now.subtract(const Duration(milliseconds: 1));
+  return DriverOfferActionOutboxRecord(
+    actionId: actionId,
+    offerId: offerId,
+    driverId: driverId,
+    action: action,
+    idempotencyKey: idempotencyKey,
+    requestHash: requestHash,
+    policyOutcome: action == DriverOfferAction.reject ? 'penalty_exempt' : null,
+    redispatchStatus: action == DriverOfferAction.reject
+        ? DriverOfferRedispatchStatus.queued
+        : DriverOfferRedispatchStatus.notRequired,
+    attemptCount: 0,
+    availableAt: now,
+    leaseToken: null,
+    leaseUntil: null,
+    lastErrorCode: null,
+    redispatchResult: action == DriverOfferAction.reject
+        ? {'result': 'queued'}
+        : null,
+    createdAt: createdAt,
+    settledAt: now,
+    updatedAt: now,
+    redispatchCompletedAt: null,
+  );
+}
+
 class _RollbackAfterAssertions implements Exception {
   const _RollbackAfterAssertions();
 }
@@ -157,10 +193,17 @@ void main() {
     Map<String, String>? before;
     Object? transactionFailure;
     StackTrace? transactionFailureStack;
+    Object? postflightFailure;
+    StackTrace? postflightFailureStack;
     var rollbackSentinelReached = false;
 
     try {
       before = await _tableFingerprints(database);
+      expect(
+        before['driver_offer_action_outbox']?.split(':').first,
+        '0',
+        reason: 'The outbox table must be empty before this isolated test.',
+      );
       try {
         await database.runTx((transaction) async {
           final columns = await transaction.execute('''
@@ -204,25 +247,14 @@ void main() {
           );
 
           final repository = PostgresDriverOfferActionOutboxRepository();
-          final action = DriverOfferActionOutboxRecord(
+          final action = _testAction(
             actionId: actionId,
             offerId: offerId,
             driverId: driverId,
             action: DriverOfferAction.reject,
             idempotencyKey: 'integration-${ids.v4()}',
             requestHash: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
-            policyOutcome: 'penalty_exempt',
-            redispatchStatus: DriverOfferRedispatchStatus.queued,
-            attemptCount: 0,
-            availableAt: now,
-            leaseToken: null,
-            leaseUntil: null,
-            lastErrorCode: null,
-            redispatchResult: {'result': 'queued'},
-            createdAt: createdAt,
-            settledAt: now,
-            updatedAt: now,
-            redispatchCompletedAt: null,
+            now: now,
           );
 
           final insertResult = await repository.insert(
@@ -262,30 +294,128 @@ void main() {
           );
           expect(repeated, isA<DriverOfferActionAlreadyExists>());
 
+          final acceptAgainstReject = await repository.insert(
+            transaction: transaction,
+            record: _testAction(
+              actionId: ids.v4(),
+              offerId: offerId,
+              driverId: driverId,
+              action: DriverOfferAction.accept,
+              idempotencyKey: null,
+              requestHash: action.requestHash,
+              now: now,
+            ),
+          );
+          expect(acceptAgainstReject, isA<DriverOfferActionOfferConflict>());
+
+          final changedHash = await repository.insert(
+            transaction: transaction,
+            record: _testAction(
+              actionId: ids.v4(),
+              offerId: offerId,
+              driverId: driverId,
+              action: DriverOfferAction.reject,
+              idempotencyKey: 'different-hash-${ids.v4()}',
+              requestHash: 'b' * 64,
+              now: now,
+            ),
+          );
+          expect(changedHash, isA<DriverOfferActionOfferConflict>());
+
+          final changedKey = await repository.insert(
+            transaction: transaction,
+            record: _testAction(
+              actionId: ids.v4(),
+              offerId: offerId,
+              driverId: driverId,
+              action: DriverOfferAction.reject,
+              idempotencyKey: 'different-key-${ids.v4()}',
+              requestHash: action.requestHash,
+              now: now,
+            ),
+          );
+          expect(changedKey, isA<DriverOfferActionOfferConflict>());
+
+          final nullKeyConflict = await repository.insert(
+            transaction: transaction,
+            record: _testAction(
+              actionId: ids.v4(),
+              offerId: offerId,
+              driverId: driverId,
+              action: DriverOfferAction.reject,
+              idempotencyKey: null,
+              requestHash: action.requestHash,
+              now: now,
+            ),
+          );
+          expect(nullKeyConflict, isA<DriverOfferActionOfferConflict>());
+
+          final nullKeyAction = _testAction(
+            actionId: ids.v4(),
+            offerId: secondOfferId,
+            driverId: driverId,
+            action: DriverOfferAction.reject,
+            idempotencyKey: null,
+            requestHash: action.requestHash,
+            now: now,
+          );
+          final nullKeyInserted = await repository.insert(
+            transaction: transaction,
+            record: nullKeyAction,
+          );
+          expect(nullKeyInserted, isA<DriverOfferActionInserted>());
+
+          final nullKeyRepeated = await repository.insert(
+            transaction: transaction,
+            record: nullKeyAction,
+          );
+          expect(nullKeyRepeated, isA<DriverOfferActionAlreadyExists>());
+
+          final nonNullAgainstNull = await repository.insert(
+            transaction: transaction,
+            record: _testAction(
+              actionId: ids.v4(),
+              offerId: secondOfferId,
+              driverId: driverId,
+              action: DriverOfferAction.reject,
+              idempotencyKey: 'added-key-${ids.v4()}',
+              requestHash: action.requestHash,
+              now: now,
+            ),
+          );
+          expect(nonNullAgainstNull, isA<DriverOfferActionOfferConflict>());
+
           final keyConflict = await repository.insert(
             transaction: transaction,
-            record: DriverOfferActionOutboxRecord(
+            record: _testAction(
               actionId: ids.v4(),
               offerId: secondOfferId,
               driverId: driverId,
               action: DriverOfferAction.reject,
               idempotencyKey: action.idempotencyKey,
               requestHash: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
-              policyOutcome: 'penalty_exempt',
-              redispatchStatus: DriverOfferRedispatchStatus.queued,
-              attemptCount: 0,
-              availableAt: now,
-              leaseToken: null,
-              leaseUntil: null,
-              lastErrorCode: null,
-              redispatchResult: null,
-              createdAt: createdAt,
-              settledAt: now,
-              updatedAt: now,
-              redispatchCompletedAt: null,
+              now: now,
             ),
           );
           expect(keyConflict, isA<DriverOfferActionIdempotencyConflict>());
+
+          final foreignDriverConflict = await repository.insert(
+            transaction: transaction,
+            record: _testAction(
+              actionId: ids.v4(),
+              offerId: offerId,
+              driverId: otherDriverId,
+              action: DriverOfferAction.reject,
+              idempotencyKey: null,
+              requestHash: action.requestHash,
+              now: now,
+            ),
+          );
+          expect(foreignDriverConflict, isA<DriverOfferActionOfferConflict>());
+          expect(
+            foreignDriverConflict,
+            isNot(isA<DriverOfferActionAlreadyExists>()),
+          );
 
           throw const _RollbackAfterAssertions();
         });
@@ -296,11 +426,25 @@ void main() {
         transactionFailureStack = stackTrace;
       }
 
-      expect(rollbackSentinelReached, isTrue);
-      expect(await _tableFingerprints(database), before);
+      Map<String, String>? after;
+      try {
+        after = await _tableFingerprints(database);
+      } catch (error, stackTrace) {
+        postflightFailure = error;
+        postflightFailureStack = stackTrace;
+      }
       if (transactionFailure != null) {
         Error.throwWithStackTrace(transactionFailure, transactionFailureStack!);
       }
+      if (postflightFailure != null) {
+        Error.throwWithStackTrace(postflightFailure, postflightFailureStack!);
+      }
+      expect(
+        after,
+        before,
+        reason: 'Test transaction did not roll back cleanly.',
+      );
+      expect(rollbackSentinelReached, isTrue);
     } finally {
       await database.close();
     }

@@ -261,7 +261,7 @@ void main() {
 
         expect(result, isA<DriverOfferActionAlreadyExists>());
         expect(
-          (result as DriverOfferActionAlreadyExists).record?.actionId,
+          (result as DriverOfferActionAlreadyExists).record.actionId,
           'action-001',
         );
         expect(session.calls, hasLength(2));
@@ -269,6 +269,133 @@ void main() {
           'driverId': 'driver-001',
           'idempotencyKey': 'request-001',
         });
+      },
+    );
+
+    test('recognizes an identical retry with a null idempotency key', () async {
+      final existing = record(idempotencyKey: null);
+      final session = _FakeSession([
+        _result([]),
+        _result([]),
+        _result([rowOf(existing)]),
+      ]);
+
+      final result = await repository.insert(
+        transaction: session,
+        record: record(actionId: 'new-action-id', idempotencyKey: null),
+      );
+
+      expect(result, isA<DriverOfferActionAlreadyExists>());
+      expect(
+        (result as DriverOfferActionAlreadyExists).record.actionId,
+        'action-001',
+      );
+      expect(session.calls, hasLength(3));
+    });
+
+    test(
+      'accept versus reject for the same offer is an offer conflict',
+      () async {
+        final session = _FakeSession([
+          _result([]),
+          _result([]),
+          _result([rowOf(record())]),
+        ]);
+
+        final result = await repository.insert(
+          transaction: session,
+          record: record(
+            actionId: 'new-action-id',
+            action: DriverOfferAction.accept,
+            idempotencyKey: null,
+          ),
+        );
+
+        expect(result, isA<DriverOfferActionOfferConflict>());
+        expect(result, isNot(isA<DriverOfferActionAlreadyExists>()));
+      },
+    );
+
+    test(
+      'same action with a different request hash is an offer conflict',
+      () async {
+        final session = _FakeSession([
+          _result([]),
+          _result([]),
+          _result([]),
+          _result([rowOf(record())]),
+        ]);
+
+        final result = await repository.insert(
+          transaction: session,
+          record: record(
+            actionId: 'new-action-id',
+            idempotencyKey: 'different-key',
+            requestHash: 'b' * 64,
+          ),
+        );
+
+        expect(result, isA<DriverOfferActionOfferConflict>());
+        expect(result, isNot(isA<DriverOfferActionAlreadyExists>()));
+      },
+    );
+
+    test(
+      'same action and hash with a different key is an offer conflict',
+      () async {
+        final session = _FakeSession([
+          _result([]),
+          _result([]),
+          _result([]),
+          _result([rowOf(record())]),
+        ]);
+
+        final result = await repository.insert(
+          transaction: session,
+          record: record(
+            actionId: 'new-action-id',
+            idempotencyKey: 'other-key',
+          ),
+        );
+
+        expect(result, isA<DriverOfferActionOfferConflict>());
+        expect(result, isNot(isA<DriverOfferActionAlreadyExists>()));
+      },
+    );
+
+    test(
+      'null and non-null idempotency keys are not identical requests',
+      () async {
+        final existingWithoutKey = record(idempotencyKey: null);
+        final sessionWithKey = _FakeSession([
+          _result([]),
+          _result([]),
+          _result([]),
+          _result([rowOf(existingWithoutKey)]),
+        ]);
+
+        final withKey = await repository.insert(
+          transaction: sessionWithKey,
+          record: record(actionId: 'new-action-id', idempotencyKey: 'new-key'),
+        );
+
+        expect(withKey, isA<DriverOfferActionOfferConflict>());
+        expect(withKey, isNot(isA<DriverOfferActionAlreadyExists>()));
+
+        final existingWithKey = record(idempotencyKey: 'request-001');
+        final sessionWithoutKey = _FakeSession([
+          _result([]),
+          _result([]),
+          _result([rowOf(existingWithKey)]),
+        ]);
+
+        final withoutKey = await repository.insert(
+          transaction: sessionWithoutKey,
+          record: record(actionId: 'new-action-id', idempotencyKey: null),
+        );
+
+        expect(withoutKey, isA<DriverOfferActionOfferConflict>());
+        expect(withoutKey, isNot(isA<DriverOfferActionAlreadyExists>()));
       },
     );
 
@@ -292,7 +419,7 @@ void main() {
     );
 
     test(
-      'returns opaque already-exists for an action owned by another driver',
+      'returns an opaque offer conflict for an action owned by another driver',
       () async {
         final session = _FakeSession([
           _result([]),
@@ -308,9 +435,10 @@ void main() {
           record: record(idempotencyKey: null),
         );
 
-        expect(result, isA<DriverOfferActionAlreadyExists>());
-        expect((result as DriverOfferActionAlreadyExists).record, isNull);
+        expect(result, isA<DriverOfferActionOfferConflict>());
+        expect(result, isNot(isA<DriverOfferActionAlreadyExists>()));
         expect(session.calls, hasLength(4));
+        expect(session.calls.last.parameters, {'offerId': 'offer-001'});
       },
     );
 
@@ -336,10 +464,7 @@ void main() {
     test('does not treat an action primary-key collision as success', () async {
       final session = _FakeSession([
         _result([]),
-        _result([]),
-        _result([
-          {'action_id': 'action-001'},
-        ]),
+        _result([rowOf(record())]),
       ]);
 
       await expectLater(
