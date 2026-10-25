@@ -1,7 +1,8 @@
 [CmdletBinding()]
 param(
     [ValidateRange(1024, 65535)]
-    [int]$Port = 8765
+    [int]$Port = 8765,
+    [switch]$City6SofiaMap
 )
 
 $ErrorActionPreference = 'Stop'
@@ -11,6 +12,14 @@ if (-not (Test-Path -LiteralPath $mapPath -PathType Leaf)) {
 }
 
 $mapBytes = [System.IO.File]::ReadAllBytes($mapPath)
+$city6SofiaMapIndexBytes = $null
+if ($City6SofiaMap) {
+    $city6SofiaMapIndexPath = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\tools\City6_Sofia_Map\index.html'))
+    if (-not (Test-Path -LiteralPath $city6SofiaMapIndexPath -PathType Leaf)) {
+        throw "City6_Sofia_Map start page was not found: $city6SofiaMapIndexPath"
+    }
+    $city6SofiaMapIndexBytes = [System.IO.File]::ReadAllBytes($city6SofiaMapIndexPath)
+}
 $listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, $Port)
 try {
     $listener.Start()
@@ -19,7 +28,11 @@ try {
 }
 
 $url = "http://127.0.0.1:$Port/"
-Write-Host "City6 SofiaPlan map: $url"
+if ($City6SofiaMap) {
+    Write-Host "City6_Sofia_Map: $url"
+} else {
+    Write-Host "City6 SofiaPlan map: $url"
+}
 Write-Host 'The server listens only on this computer. Press Ctrl+C here to stop it.'
 
 $edgeCandidates = [System.Collections.Generic.List[string]]::new()
@@ -59,7 +72,11 @@ try {
             $contentType = 'text/plain; charset=utf-8'
             $body = [System.Text.Encoding]::UTF8.GetBytes('Not found')
 
-            if ($requestPath -in @('/', '/districts_map.html') -and $method -in @('GET', 'HEAD')) {
+            if ($requestPath -eq '/' -and $method -in @('GET', 'HEAD')) {
+                $status = '200 OK'
+                $contentType = 'text/html; charset=utf-8'
+                $body = if ($City6SofiaMap) { $city6SofiaMapIndexBytes } else { $mapBytes }
+            } elseif ($requestPath -eq '/districts_map.html' -and $method -in @('GET', 'HEAD')) {
                 $status = '200 OK'
                 $contentType = 'text/html; charset=utf-8'
                 $body = $mapBytes

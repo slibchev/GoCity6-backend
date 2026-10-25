@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>Квартали на Столична община</title>
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet-draw@1.0.4/dist/leaflet.draw.css">
   <style>
     * { box-sizing: border-box; }
     html, body { margin: 0; width: 100%; height: 100%; font-family: system-ui, "Segoe UI", sans-serif; color: #17212b; }
@@ -13,10 +14,19 @@
     h1 { margin: 0; font-size: 18px; font-weight: 650; }
     .toolbar { display: flex; flex: 1 1 640px; flex-wrap: wrap; align-items: center; gap: 8px; }
     input[type="search"] { width: min(340px, 72vw); padding: 8px 10px; border: 1px solid #aab8c1; border-radius: 5px; font: inherit; }
+    input[type="text"] { width: min(270px, 72vw); padding: 8px 10px; border: 1px solid #aab8c1; border-radius: 5px; font: inherit; }
     button, .file-label { border: 1px solid #8fa3af; border-radius: 5px; background: #f8fafb; padding: 8px 11px; color: #17212b; font: inherit; cursor: pointer; }
     button:hover, .file-label:hover { background: #edf3f6; }
+    button:disabled { opacity: .55; cursor: not-allowed; }
     .file-label input { position: absolute; width: 1px; height: 1px; clip: rect(0, 0, 0, 0); overflow: hidden; }
     .check { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+    .editor-toolbar { display: flex; flex: 1 1 100%; flex-wrap: wrap; align-items: center; gap: 8px; padding-top: 8px; border-top: 1px solid #e2e8eb; }
+    #editor-status { flex: 1 1 100%; min-height: 1.25em; color: #52636e; font-size: 12px; }
+    .proposal-district { color: #9d2369; fill: #c52e83; fill-opacity: .27; stroke-width: 3; }
+    .proposal-separator { color: #d04b2d; stroke-width: 4; stroke-dasharray: 8 6; }
+    .proposal-draft { color: #692d91; fill: #8c4eb0; fill-opacity: .2; stroke-width: 3; stroke-dasharray: 6 4; }
+    .proposal-vertex { color: #542476; fill: #fff; fill-opacity: 1; stroke-width: 2; }
+    .proposal-label { color: #6d1749; font-size: 12px; font-weight: 700; text-shadow: 0 0 3px #fff, 0 0 5px #fff; }
     #source-note { flex: 1 1 100%; color: #52636e; font-size: 12px; }
     #map { position: relative; flex: 1 1 auto; min-height: 400px; }
     .district-label { color: #15232c; font-size: 11px; font-weight: 650; line-height: 1.2; white-space: nowrap; text-shadow: 0 0 3px #fff, 0 0 5px #fff, 1px 1px 1px #fff; pointer-events: none; }
@@ -30,12 +40,15 @@
     .swatch { display: inline-block; width: 13px; height: 10px; margin-right: 6px; border: 1px solid #52636e; vertical-align: middle; }
     .settlement-swatch { background: #f0a64a; }
     .neighborhood-swatch { background: #4b9fc3; }
+    .proposal-district-swatch { background: rgba(197,46,131,.27); border: 2px solid #9d2369; }
+    .proposal-separator-swatch { height: 0; border: 0; border-top: 3px dashed #d04b2d; }
     #load-status { font-size: 12px; color: #52636e; }
     @media (max-width: 640px) {
       header { padding: 10px; }
       h1 { flex-basis: 100%; }
       #map { min-height: 360px; }
       #source-note { font-size: 11px; }
+      input[type="text"] { width: min(100%, 340px); }
     }
   </style>
 </head>
@@ -50,6 +63,17 @@
       <label class="check"><input id="labels-toggle" type="checkbox" checked> Имена (при близък мащаб)</label>
       <label class="file-label">Зареди работно GeoJSON<input id="geojson-file" type="file" accept=".geojson,.json,application/geo+json,application/json"></label>
       <span id="load-status" aria-live="polite"></span>
+    </div>
+    <div class="editor-toolbar" aria-label="Инструменти за предложения за райониране">
+      <input id="proposal-name" type="text" maxlength="120" placeholder="Име на района на кирилица" aria-label="Име на новия район">
+      <button id="draw-district-button" type="button">Нов район</button>
+      <button id="draw-separator-button" type="button">Разделителна линия</button>
+      <button id="undo-point-button" type="button" disabled>Отмени последната точка</button>
+      <button id="finish-drawing-button" type="button" disabled>Завърши чертането</button>
+      <button id="cancel-drawing-button" type="button" disabled>Откажи чертането</button>
+      <label class="file-label">Импортирай предложения<input id="proposals-file" type="file" accept=".geojson,.json,application/geo+json,application/json"></label>
+      <button id="export-proposals-button" type="button">Експортирай GeoJSON</button>
+      <span id="editor-status" role="status" aria-live="polite">Редактирайте само предложенията. Използвайте иконите върху картата за редакция на върхове или изтриване.</span>
     </div>
     <div id="source-note">310 обекта · Данни към 01.01.2019 г. · Източник: <a href="https://urbandata.sofia.bg/dataset/districts" target="_blank" rel="noopener">Софияплан</a> · Лиценз не е зададен в портала.</div>
   </header>
@@ -146,6 +170,10 @@
           const properties = feature.properties || {};
           layer.bindPopup(escapeHtml(displayName(properties)));
           layer.on('click', event => {
+            if (window.city6DistrictDrawingMode) {
+              if (window.city6DistrictMapClick) window.city6DistrictMapClick(event);
+              return;
+            }
             if (selectedLayer && selectedLayer.setStyle) selectedLayer.setStyle(styleFeature(selectedLayer.feature));
             selectedLayer = event.target;
             if (selectedLayer.setStyle) selectedLayer.setStyle({ color: '#b52d68', weight: 3, fillOpacity: 0.32 });
@@ -217,9 +245,342 @@
 
     renderData(INITIAL_DATA, '');
   </script>
+  <script src="https://cdn.jsdelivr.net/npm/leaflet-draw@1.0.4/dist/leaflet.draw.js"></script>
+  <script>
+    (() => {
+      const editorLayer = new L.FeatureGroup().addTo(map);
+      const editorStatus = document.getElementById('editor-status');
+      const nameInput = document.getElementById('proposal-name');
+      const undoButton = document.getElementById('undo-point-button');
+      const finishButton = document.getElementById('finish-drawing-button');
+      const cancelButton = document.getElementById('cancel-drawing-button');
+      const createDistrictButton = document.getElementById('draw-district-button');
+      const createSeparatorButton = document.getElementById('draw-separator-button');
+      const exportButton = document.getElementById('export-proposals-button');
+      const fileInput = document.getElementById('proposals-file');
+
+      let drawingType = null;
+      let draftPoints = [];
+      let draftLayers = L.layerGroup().addTo(map);
+      let dirty = false;
+      let editing = false;
+      let drawingSequence = 0;
+      const handledDrawingClicks = new WeakSet();
+
+      L.drawLocal.edit.toolbar.buttons.edit = 'Редактирай върховете на предложенията';
+      L.drawLocal.edit.toolbar.buttons.editDisabled = 'Няма предложения за редактиране';
+      L.drawLocal.edit.toolbar.buttons.remove = 'Изтрий предложения';
+      L.drawLocal.edit.toolbar.buttons.removeDisabled = 'Няма предложения за изтриване';
+      L.drawLocal.edit.toolbar.actions.save.title = 'Запази редакцията';
+      L.drawLocal.edit.toolbar.actions.save.text = 'Запази';
+      L.drawLocal.edit.toolbar.actions.cancel.title = 'Откажи редакцията';
+      L.drawLocal.edit.toolbar.actions.cancel.text = 'Откажи';
+      L.drawLocal.edit.handlers.edit.tooltip.text = 'Премествайте точките, за да редактирате очертанието.';
+      L.drawLocal.edit.handlers.edit.tooltip.subtext = 'Запазете или откажете промените.';
+      L.drawLocal.edit.handlers.remove.tooltip.text = 'Изберете предложение, за да го изтриете.';
+
+      const editControl = new L.Control.Draw({
+        draw: false,
+        edit: {
+          featureGroup: editorLayer,
+          edit: { selectedPathOptions: { maintainColor: true, opacity: 0.9 } },
+          remove: {}
+        }
+      }).addTo(map);
+
+      function setStatus(message, isError = false) {
+        editorStatus.textContent = message;
+        editorStatus.style.color = isError ? '#a21e2b' : '#52636e';
+      }
+
+      function setDirty(value) {
+        dirty = value;
+        if (dirty) {
+          setStatus('Има незапазени промени. Експортирайте GeoJSON, за да ги запазите във файл.');
+        }
+      }
+
+      function updateControls() {
+        const activeDrawing = drawingType !== null;
+        undoButton.disabled = !activeDrawing || draftPoints.length === 0;
+        finishButton.disabled = !activeDrawing || draftPoints.length < (drawingType === 'district' ? 3 : 2);
+        cancelButton.disabled = !activeDrawing;
+        createDistrictButton.disabled = activeDrawing || editing;
+        createSeparatorButton.disabled = activeDrawing || editing;
+        exportButton.disabled = activeDrawing || editorLayer.getLayers().length === 0;
+        fileInput.disabled = activeDrawing || editing;
+      }
+
+      function newId() {
+        if (window.crypto && typeof window.crypto.randomUUID === 'function') return window.crypto.randomUUID();
+        return 'proposal-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2);
+      }
+
+      function proposalStyle(type) {
+        return type === 'district'
+          ? { color: '#9d2369', fillColor: '#c52e83', fillOpacity: 0.27, opacity: 0.96, weight: 3 }
+          : { color: '#d04b2d', opacity: 0.98, weight: 4, dashArray: '8 6' };
+      }
+
+      function attachProposalMetadata(layer, feature) {
+        layer.feature = feature;
+        layer.setStyle(proposalStyle(feature.properties.proposalType));
+        if (feature.properties.name) {
+          const label = document.createElement('span');
+          label.textContent = feature.properties.name;
+          layer.bindTooltip(label, { sticky: true, className: 'proposal-label' });
+        }
+        editorLayer.addLayer(layer);
+      }
+
+      function renderDraft() {
+        draftLayers.clearLayers();
+        if (draftPoints.length >= 2) {
+          const preview = drawingType === 'district' && draftPoints.length >= 3
+            ? L.polygon(draftPoints, { color: '#692d91', fillColor: '#8c4eb0', fillOpacity: 0.2, weight: 3, dashArray: '6 4', interactive: false })
+            : L.polyline(draftPoints, { color: '#692d91', weight: 3, dashArray: '6 4', interactive: false });
+          draftLayers.addLayer(preview);
+        }
+        for (const point of draftPoints) {
+          draftLayers.addLayer(L.circleMarker(point, {
+            radius: 5, color: '#542476', fillColor: '#fff', fillOpacity: 1, weight: 2, interactive: false
+          }));
+        }
+        undoButton.disabled = !drawingType || draftPoints.length === 0;
+        finishButton.disabled = !drawingType || draftPoints.length < (drawingType === 'district' ? 3 : 2);
+      }
+
+      function startDrawing(type) {
+        if (editing || drawingType) return;
+        drawingType = type;
+        draftPoints = [];
+        window.city6DistrictDrawingMode = true;
+        map.getContainer().classList.add('leaflet-crosshair');
+        setStatus(type === 'district'
+          ? 'Кликвайте последователно по границата. Нужни са поне 3 точки; името се задава преди завършване.'
+          : 'Кликвайте последователно по разделителната линия. Нужни са поне 2 точки.');
+        updateControls();
+        renderDraft();
+      }
+
+      function cancelDrawing() {
+        drawingType = null;
+        draftPoints = [];
+        draftLayers.clearLayers();
+        window.city6DistrictDrawingMode = false;
+        map.getContainer().classList.remove('leaflet-crosshair');
+        updateControls();
+        setStatus('Чертането е отказано.');
+      }
+
+      function hasCyrillic(text) {
+        return /\p{Script=Cyrillic}/u.test(text);
+      }
+
+      function finishDrawing() {
+        if (!drawingType) return;
+        const type = drawingType;
+        const name = nameInput.value.trim();
+        if (type === 'district' && (!name || !hasCyrillic(name))) {
+          setStatus('Въведете име на района с поне една буква на кирилица.', true);
+          nameInput.focus();
+          return;
+        }
+        drawingSequence += 1;
+        const proposalName = name || `Разделителна линия ${drawingSequence}`;
+        const feature = {
+          type: 'Feature',
+          id: newId(),
+          properties: { name: proposalName, proposalType: type, proposalId: null },
+          geometry: null
+        };
+        feature.properties.proposalId = feature.id;
+        const layer = type === 'district'
+          ? L.polygon(draftPoints, proposalStyle(type))
+          : L.polyline(draftPoints, proposalStyle(type));
+        attachProposalMetadata(layer, feature);
+        draftPoints = [];
+        draftLayers.clearLayers();
+        drawingType = null;
+        window.city6DistrictDrawingMode = false;
+        map.getContainer().classList.remove('leaflet-crosshair');
+        if (name) nameInput.value = '';
+        setDirty(true);
+        updateControls();
+        setStatus(`Добавено е предложение: ${proposalName}.`);
+      }
+
+      function onMapClick(event) {
+        if (!drawingType) return;
+        if (event.originalEvent) {
+          if (handledDrawingClicks.has(event.originalEvent)) return;
+          handledDrawingClicks.add(event.originalEvent);
+        }
+        draftPoints.push(L.latLng(event.latlng.lat, event.latlng.lng));
+        map.closePopup();
+        renderDraft();
+        setStatus(`Поставени точки: ${draftPoints.length}. Backspace отменя последната точка; Escape отказва чертането.`);
+      }
+
+      window.city6DistrictMapClick = onMapClick;
+      function isPosition(position) {
+        return Array.isArray(position) && position.length >= 2 &&
+          Number.isFinite(position[0]) && Number.isFinite(position[1]) &&
+          position[0] >= -180 && position[0] <= 180 && position[1] >= -90 && position[1] <= 90;
+      }
+
+      function validateImportedFeature(feature, index) {
+        if (!feature || feature.type !== 'Feature' || !feature.geometry) {
+          throw new Error(`Обект ${index + 1} няма валидна GeoJSON геометрия.`);
+        }
+        const geometry = feature.geometry;
+        let type;
+        if (geometry.type === 'Polygon') {
+          type = 'district';
+          const rings = geometry.coordinates;
+          if (!Array.isArray(rings) || rings.length === 0 || rings.some(ring =>
+            !Array.isArray(ring) || ring.length < 4 || ring.some(point => !isPosition(point)) ||
+            ring[0][0] !== ring[ring.length - 1][0] || ring[0][1] !== ring[ring.length - 1][1])) {
+            throw new Error(`Полигонът на обект ${index + 1} е невалиден или незатворен.`);
+          }
+        } else if (geometry.type === 'LineString') {
+          type = 'separator';
+          if (!Array.isArray(geometry.coordinates) || geometry.coordinates.length < 2 || geometry.coordinates.some(point => !isPosition(point))) {
+            throw new Error(`Разделителната линия на обект ${index + 1} е невалидна.`);
+          }
+        } else {
+          throw new Error(`Обект ${index + 1} трябва да е Polygon или LineString.`);
+        }
+
+        const sourceProperties = feature.properties && typeof feature.properties === 'object' ? feature.properties : {};
+        const name = typeof sourceProperties.name === 'string' ? sourceProperties.name.trim() : '';
+        if (type === 'district' && (!name || !hasCyrillic(name))) {
+          throw new Error(`Районът на обект ${index + 1} трябва да има име на кирилица.`);
+        }
+        const id = feature.id == null ? newId() : String(feature.id);
+        return {
+          type: 'Feature',
+          id,
+          properties: {
+            name: name || `Разделителна линия ${index + 1}`,
+            proposalType: type,
+            proposalId: typeof sourceProperties.proposalId === 'string' ? sourceProperties.proposalId : id
+          },
+          geometry
+        };
+      }
+
+      async function importProposals(file) {
+        if (editing || drawingType) throw new Error('Първо приключете текущото редактиране или чертане.');
+        const parsed = JSON.parse(await file.text());
+        if (!parsed || parsed.type !== 'FeatureCollection' || !Array.isArray(parsed.features)) {
+          throw new Error('Файлът трябва да е GeoJSON FeatureCollection.');
+        }
+        const features = parsed.features.map(validateImportedFeature);
+        if (dirty && !window.confirm('Има незапазени промени. Замяната ще ги изтрие от страницата. Продължавате ли?')) return;
+        const convertedLayers = [];
+        for (const feature of features) {
+          const converted = L.geoJSON(feature, { style: proposalStyle(feature.properties.proposalType) });
+          converted.eachLayer(layer => convertedLayers.push({ layer, feature }));
+        }
+        editorLayer.clearLayers();
+        for (const item of convertedLayers) attachProposalMetadata(item.layer, item.feature);
+        setDirty(false);
+        updateControls();
+        setStatus(`Заредени са ${features.length} предложения. Координатите са в GeoJSON ред: дължина, ширина.`);
+      }
+
+      function exportProposals() {
+        if (drawingType || editorLayer.getLayers().length === 0) return;
+        const features = [];
+        editorLayer.eachLayer(layer => {
+          const feature = layer.toGeoJSON(false);
+          feature.id = layer.feature.id;
+          feature.properties = { ...layer.feature.properties };
+          features.push(feature);
+        });
+        const collection = { type: 'FeatureCollection', features };
+        const blob = new Blob([JSON.stringify(collection, null, 2)], { type: 'application/geo+json;charset=utf-8' });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = 'city6_district_proposals.geojson';
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+        setDirty(false);
+        setStatus(`Експортирани са ${features.length} предложения в city6_district_proposals.geojson.`);
+      }
+
+      map.on('click', onMapClick);
+      map.on('draw:editstart draw:deletestart', () => { editing = true; updateControls(); });
+      map.on('draw:editstop draw:deletestop', () => { editing = false; updateControls(); });
+      map.on('draw:edited', event => {
+        if (event.layers.getLayers().length > 0) setDirty(true);
+        setStatus('Редактираните върхове са запазени в текущата сесия. Експортирайте GeoJSON, за да ги запазите във файл.');
+      });
+      map.on('draw:deleted', event => {
+        if (event.layers.getLayers().length > 0) setDirty(true);
+        updateControls();
+        setStatus('Изтритите предложения са премахнати от текущата сесия.');
+      });
+
+      createDistrictButton.addEventListener('click', () => startDrawing('district'));
+      createSeparatorButton.addEventListener('click', () => startDrawing('separator'));
+      undoButton.addEventListener('click', () => {
+        if (!drawingType || draftPoints.length === 0) return;
+        draftPoints.pop();
+        renderDraft();
+        setStatus(`Последната точка е отменена. Остават ${draftPoints.length}.`);
+      });
+      finishButton.addEventListener('click', finishDrawing);
+      cancelButton.addEventListener('click', cancelDrawing);
+      exportButton.addEventListener('click', exportProposals);
+      fileInput.addEventListener('change', async event => {
+        const file = event.target.files && event.target.files[0];
+        if (!file) return;
+        try {
+          await importProposals(file);
+        } catch (error) {
+          setStatus(`Импортът не бе изпълнен: ${error.message}`, true);
+        } finally {
+          event.target.value = '';
+        }
+      });
+      document.addEventListener('keydown', event => {
+        if (!drawingType || event.ctrlKey || event.altKey || event.metaKey) return;
+        const target = event.target;
+        const typing = target && (target.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName));
+        if (typing) return;
+        if (event.key === 'Backspace') {
+          event.preventDefault();
+          if (draftPoints.length > 0) {
+            draftPoints.pop();
+            renderDraft();
+            setStatus(`Последната точка е отменена. Остават ${draftPoints.length}.`);
+          }
+        } else if (event.key === 'Escape') {
+          cancelDrawing();
+        }
+      });
+      window.addEventListener('beforeunload', event => {
+        if (!dirty) return;
+        event.preventDefault();
+        event.returnValue = '';
+      });
+      updateControls();
+      const editButton = map.getContainer().querySelector('.leaflet-draw-edit-edit');
+      const deleteButton = map.getContainer().querySelector('.leaflet-draw-edit-remove');
+      if (editButton) editButton.setAttribute('aria-label', 'Редактирай върховете на предложенията');
+      if (deleteButton) deleteButton.setAttribute('aria-label', 'Изтрий предложения');
+    })();
+  </script>
   <div class="map-legend" style="position:absolute;bottom:16px;left:12px;z-index:450">
     <div><span class="swatch neighborhood-swatch"></span>Други квартали и територии</div>
     <div><span class="swatch settlement-swatch"></span>Населени места с префикс „С.“</div>
+    <div><span class="swatch proposal-district-swatch"></span>Предложен район</div>
+    <div><span class="swatch proposal-separator-swatch"></span>Разделителна линия</div>
   </div>
 </body>
 </html>

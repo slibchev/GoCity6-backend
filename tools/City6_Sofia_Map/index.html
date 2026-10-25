@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="bg">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>City6_Sofia_Map</title>
+  <style>
+    * { box-sizing: border-box; }
+    html, body { width: 100%; height: 100%; margin: 0; }
+    body { display: flex; flex-direction: column; color: #17212b; font-family: system-ui, "Segoe UI", sans-serif; background: #f4f7f8; }
+    header { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 16px; padding: 9px 16px; border-bottom: 1px solid #d7dfe3; background: #fff; }
+    h1 { margin: 0; font-size: 17px; }
+    p { margin: 0; color: #52636e; font-size: 13px; }
+    main { flex: 1 1 auto; min-width: 0; min-height: 0; }
+    iframe { display: block; width: 100%; height: 100%; border: 0; background: #e8eef0; }
+    @media (max-width: 640px) { header { padding: 8px 10px; } }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>City6_Sofia_Map</h1>
+    <p>Редактор на предложения за райониране на София</p>
+  </header>
+  <!-- Future map modes can be hosted in this tool view. The district editor is the only mode in this version. -->
+  <main id="city6-sofia-map-view" data-active-mode="district-editor">
+    <iframe title="Редактор на районите на София" src="/districts_map.html"></iframe>
+  </main>
+</body>
+</html>
