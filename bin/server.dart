@@ -86,6 +86,90 @@ import 'package:gocity6_backend/dispatch/postgres_driver_dispatch_state_reposito
 import 'package:gocity6_backend/dispatch/driver_dispatch_policy_service.dart';
 import 'package:gocity6_backend/dispatch/postgres_waiting_ride_redispatch_repository.dart';
 import 'package:gocity6_backend/dispatch/waiting_board_redispatch_service.dart';
+import 'package:gocity6_backend/dispatch/driver_live_location.dart';
+import 'package:gocity6_backend/geography/district_matcher.dart';
+
+late final DistrictMatcher _districtMatcher;
+
+Map<String, dynamic> _districtMatchJson({
+  required String status,
+  DistrictMatch? match,
+  DateTime? gpsUpdatedAt,
+}) {
+  return {
+    'status': status,
+    'objectId': match?.district.objectId,
+    'name': match?.district.name,
+    'resolution': match?.resolution.name,
+    'candidateObjectIds': match?.candidateObjectIds ?? const <int>[],
+    if (gpsUpdatedAt != null)
+      'gpsUpdatedAt': gpsUpdatedAt.toUtc().toIso8601String(),
+  };
+}
+
+Map<String, dynamic> _pickupDistrictJson(RideRequest ride) {
+  final latitude = ride.pickupLatitude;
+  final longitude = ride.pickupLongitude;
+  if (latitude == null && longitude == null) {
+    return _districtMatchJson(status: 'coordinates_unavailable');
+  }
+  if (latitude == null || longitude == null) {
+    return _districtMatchJson(status: 'invalid_coordinates');
+  }
+
+  try {
+    final match = _districtMatcher.match(
+      latitude: latitude,
+      longitude: longitude,
+    );
+    if (match == null) {
+      return _districtMatchJson(status: 'outside_coverage');
+    }
+    return _districtMatchJson(status: 'matched', match: match);
+  } on ArgumentError {
+    return _districtMatchJson(status: 'invalid_coordinates');
+  }
+}
+
+Map<String, dynamic> _currentDriverDistrictJson({
+  required DriverLiveLocation? location,
+  required DateTime now,
+}) {
+  if (location == null) {
+    return _districtMatchJson(status: 'gps_unavailable');
+  }
+
+  final age = now.toUtc().difference(location.updatedAt.toUtc());
+  if (age.isNegative || age > DispatchCandidateService.defaultMaxLocationAge) {
+    return _districtMatchJson(
+      status: 'gps_stale',
+      gpsUpdatedAt: location.updatedAt,
+    );
+  }
+
+  try {
+    final match = _districtMatcher.match(
+      latitude: location.latitude,
+      longitude: location.longitude,
+    );
+    if (match == null) {
+      return _districtMatchJson(
+        status: 'outside_coverage',
+        gpsUpdatedAt: location.updatedAt,
+      );
+    }
+    return _districtMatchJson(
+      status: 'matched',
+      match: match,
+      gpsUpdatedAt: location.updatedAt,
+    );
+  } on ArgumentError {
+    return _districtMatchJson(
+      status: 'invalid_coordinates',
+      gpsUpdatedAt: location.updatedAt,
+    );
+  }
+}
 
 Future<Map<String, double>> geocodeAddress(
   String address,
@@ -303,6 +387,8 @@ Future<Map<String, dynamic>> rideRequestToJson(
 
     'pickup': ride.pickup,
 
+    'pickupDistrict': _pickupDistrictJson(ride),
+
     'destination': ride.destination,
 
     'passengers': ride.passengers,
@@ -438,6 +524,8 @@ void main(List<String> args) async {
 
     exit(1);
   }
+
+  _districtMatcher = await DistrictMatcher.loadApproved();
 
   final router = Router();
 
@@ -1380,11 +1468,12 @@ void main(List<String> args) async {
         );
       }
 
+      final locationUpdatedAt = DateTime.now().toUtc();
       final location = await locationService.update(
         driverId: tokenPayload.driverId,
         latitude: latitude.toDouble(),
         longitude: longitude.toDouble(),
-        now: DateTime.now().toUtc(),
+        now: locationUpdatedAt,
       );
 
       return Response.ok(
@@ -1392,6 +1481,10 @@ void main(List<String> args) async {
           'latitude': location.latitude,
           'longitude': location.longitude,
           'updatedAt': location.updatedAt.toUtc().toIso8601String(),
+          'currentDistrict': _currentDriverDistrictJson(
+            location: location,
+            now: locationUpdatedAt,
+          ),
         }),
         headers: {'Content-Type': 'application/json'},
       );
@@ -1548,10 +1641,18 @@ void main(List<String> args) async {
       final pendingOffer = state.pendingOffer;
       final currentRide = state.currentRide;
       final reservedRide = state.reservedRide;
+      final currentLocation = await driverLiveLocationService?.get(
+        driverId: tokenPayload.driverId,
+      );
+      final now = DateTime.now().toUtc();
 
       return Response.ok(
         jsonEncode({
           'isWorking': state.isWorking,
+          'currentDistrict': _currentDriverDistrictJson(
+            location: currentLocation,
+            now: now,
+          ),
           'dispatchState': {
             'consecutiveRejects': dispatchState?.consecutiveRejects ?? 0,
             'penaltyLevel': dispatchState?.penaltyLevel ?? 0,

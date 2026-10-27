@@ -38,7 +38,16 @@ final class AutomaticDispatchRedispatchNoEligibleDriver
 /// Candidate and route calculation finishes before the atomic offer
 /// transaction begins. It does not resolve exhausted rounds or waiting-board
 /// rides.
-final class AutomaticDispatchRedispatchService {
+abstract interface class AutomaticDispatchRedispatcher {
+  Future<AutomaticDispatchRedispatchResult> redispatch({
+    required String rideId,
+    required String actionId,
+    required String leaseToken,
+  });
+}
+
+final class AutomaticDispatchRedispatchService
+    implements AutomaticDispatchRedispatcher {
   AutomaticDispatchRedispatchService({
     required this.rideRepository,
     required this.dispatchOrchestrator,
@@ -53,6 +62,7 @@ final class AutomaticDispatchRedispatchService {
   final String Function() offerIdFactory;
   final DateTime Function() now;
 
+  @override
   Future<AutomaticDispatchRedispatchResult> redispatch({
     required String rideId,
     required String actionId,

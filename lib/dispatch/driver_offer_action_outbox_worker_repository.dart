@@ -7,7 +7,9 @@ import 'driver_offer_action_outbox_repository.dart';
 enum DriverOfferActionOutboxErrorCode {
   transientFailure('transient_failure'),
   dependencyUnavailable('dependency_unavailable'),
+  noEligibleDriver('no_eligible_driver'),
   permanentFailure('permanent_failure'),
+  unsupportedOfferSource('unsupported_offer_source'),
   outcomeUnknown('outcome_unknown'),
   unexpectedFailure('unexpected_failure'),
   attemptsExhausted('attempts_exhausted');
