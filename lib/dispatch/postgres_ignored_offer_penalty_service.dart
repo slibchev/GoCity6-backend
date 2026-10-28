@@ -16,8 +16,66 @@ class PostgresIgnoredOfferPenaltyService {
     final nowUtc = now.toUtc();
 
     return database.runTx((tx) async {
-      // Claim only a confirmed displayed, expired offer.
-      // The primary key prevents duplicate processing.
+      // Use the same offer -> ride lock order as offer acceptance and the
+      // system-expiration transaction. This prevents a timeout callback from
+      // applying an ignored-offer penalty after its waiting-board ride has
+      // been cancelled or has crossed the 30-minute expiry boundary.
+      final offerRows = await tx.execute(
+        Sql.named('''
+          SELECT
+            id,
+            ride_id,
+            driver_id,
+            dispatch_round,
+            expires_at,
+            offered_at,
+            displayed_at
+          FROM ride_offers
+          WHERE id = @offerId
+            AND status = 'expired'
+            AND displayed_at IS NOT NULL
+            AND displayed_at < expires_at
+          FOR UPDATE
+        '''),
+        parameters: {'offerId': offerId},
+      );
+
+      if (offerRows.isEmpty) {
+        return false;
+      }
+
+      final offerRow = offerRows.single.toColumnMap();
+      final rideRows = await tx.execute(
+        Sql.named('''
+          SELECT status, requested_at
+          FROM rides
+          WHERE id = @rideId
+          FOR UPDATE
+        '''),
+        parameters: {'rideId': offerRow['ride_id']},
+      );
+      if (rideRows.isEmpty) {
+        return false;
+      }
+      final rideRow = rideRows.single.toColumnMap();
+
+      final databaseTimeResult = await tx.execute(
+        Sql('SELECT clock_timestamp() AS database_now'),
+      );
+      final databaseNow =
+          (databaseTimeResult.single.toColumnMap()['database_now'] as DateTime)
+              .toUtc();
+      final requestedAt = (rideRow['requested_at'] as DateTime).toUtc();
+      if (rideRow['status'] == 'cancelled' ||
+          (rideRow['status'] == 'waitingForVehicle' &&
+              !databaseNow.isBefore(
+                requestedAt.add(const Duration(minutes: 30)),
+              ))) {
+        return false;
+      }
+
+      // Record the processed event only after confirming that it was not
+      // resolved by system cancellation. The primary key makes retries safe.
       final claimed = await tx.execute(
         Sql.named('''
           INSERT INTO ignored_offer_penalty_tracking (
@@ -25,49 +83,25 @@ class PostgresIgnoredOfferPenaltyService {
             driver_id,
             dispatch_round,
             processed_at
+          ) VALUES (
+            @offerId, @driverId, @dispatchRound, @now
           )
-          SELECT
-            o.id,
-            o.driver_id,
-            o.dispatch_round,
-            @now
-          FROM ride_offers o
-          JOIN rides r ON r.id = o.ride_id
-          WHERE o.id = @offerId
-            AND o.status = 'expired'
-            AND o.displayed_at IS NOT NULL
-            AND o.displayed_at < o.expires_at
           ON CONFLICT (offer_id) DO NOTHING
           RETURNING offer_id
         '''),
-        parameters: {'offerId': offerId, 'now': nowUtc},
+        parameters: {
+          'offerId': offerId,
+          'driverId': offerRow['driver_id'],
+          'dispatchRound': offerRow['dispatch_round'],
+          'now': nowUtc,
+        },
       );
+      if (claimed.isEmpty) return false;
 
-      if (claimed.isEmpty) {
-        return false;
-      }
-
-      final claimedOfferId = claimed.first[0] as String;
-      final offerRows = await tx.execute(
-        Sql.named('''
-          SELECT
-            o.driver_id,
-            o.dispatch_round,
-            o.expires_at,
-            o.offered_at,
-            r.requested_at
-          FROM ride_offers o
-          JOIN rides r ON r.id = o.ride_id
-          WHERE o.id = @offerId
-        '''),
-        parameters: {'offerId': claimedOfferId},
-      );
-      final offerRow = offerRows.single.toColumnMap();
       final driverId = offerRow['driver_id'] as String;
       final dispatchRound = offerRow['dispatch_round'] as int;
       final expiredAt = (offerRow['expires_at'] as DateTime).toUtc();
       final offeredAt = (offerRow['offered_at'] as DateTime).toUtc();
-      final requestedAt = (offerRow['requested_at'] as DateTime).toUtc();
 
       if (!DriverDispatchPolicyService.isOfferPenaltyEligible(
         requestedAt: requestedAt,
@@ -166,12 +200,18 @@ class PostgresIgnoredOfferPenaltyService {
         Sql.named('''
       SELECT o.id
       FROM ride_offers o
+      JOIN rides r ON r.id = o.ride_id
       LEFT JOIN ignored_offer_penalty_tracking t
         ON t.offer_id = o.id
       WHERE o.status = 'expired'
         AND o.displayed_at IS NOT NULL
         AND o.displayed_at < o.expires_at
         AND t.offer_id IS NULL
+        AND r.status <> 'cancelled'
+        AND NOT (
+          r.status = 'waitingForVehicle'
+          AND r.requested_at <= clock_timestamp() - INTERVAL '30 minutes'
+        )
       ORDER BY o.expires_at ASC
     '''),
       );

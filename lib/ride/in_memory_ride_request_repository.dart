@@ -4,10 +4,20 @@ import 'ride_request_status.dart';
 
 class InMemoryRideRequestRepository implements RideRequestRepository {
   final Map<String, RideRequest> _rides = {};
+  final DateTime Function() clock;
 
   InMemoryRideRequestRepository([
     Iterable<RideRequest> initialRides = const <RideRequest>[],
-  ]) {
+  ]) : clock = DateTime.now {
+    for (final ride in initialRides) {
+      _rides[ride.id] = ride;
+    }
+  }
+
+  InMemoryRideRequestRepository.withClock({
+    Iterable<RideRequest> initialRides = const <RideRequest>[],
+    required this.clock,
+  }) {
     for (final ride in initialRides) {
       _rides[ride.id] = ride;
     }
@@ -42,12 +52,14 @@ class InMemoryRideRequestRepository implements RideRequestRepository {
 
   @override
   Future<List<RideRequest>> findWaitingForVehicle() async {
+    final cutoff = clock().toUtc().subtract(const Duration(minutes: 30));
     final waiting = _rides.values
         .where(
           (ride) =>
               ride.status == RideRequestStatus.waitingForVehicle &&
               ride.assignedDriverId == null &&
-              ride.assignedVehicleId == null,
+              ride.assignedVehicleId == null &&
+              ride.requestedAt.toUtc().isAfter(cutoff),
         )
         .toList();
 

@@ -512,6 +512,7 @@ class PostgresAtomicRideOfferRepository
             status,
             assigned_driver_id,
             assigned_vehicle_id,
+            requested_at,
             dispatch_round,
             driver_bonus_minor,
             bonus_decision
@@ -545,6 +546,24 @@ class PostgresAtomicRideOfferRepository
         throw const AtomicRideOfferConflictException(
           AtomicRideOfferConflict.rideAlreadyAssigned,
         );
+      }
+
+      if (offer.source == RideOfferSource.waitingBoard) {
+        final databaseTimeResult = await transaction.execute(
+          Sql('SELECT clock_timestamp() AS database_now'),
+        );
+        final databaseNow =
+            (databaseTimeResult.single.toColumnMap()['database_now']
+                    as DateTime)
+                .toUtc();
+        final requestedAt = (rideRow['requested_at'] as DateTime).toUtc();
+        if (!databaseNow.isBefore(
+          requestedAt.add(const Duration(minutes: 30)),
+        )) {
+          throw const AtomicRideOfferConflictException(
+            AtomicRideOfferConflict.rideTooOld,
+          );
+        }
       }
 
       if (!_rideMatchesOfferDispatchState(rideRow, offer)) {

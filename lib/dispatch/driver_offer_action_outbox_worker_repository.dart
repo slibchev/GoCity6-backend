@@ -12,7 +12,8 @@ enum DriverOfferActionOutboxErrorCode {
   unsupportedOfferSource('unsupported_offer_source'),
   outcomeUnknown('outcome_unknown'),
   unexpectedFailure('unexpected_failure'),
-  attemptsExhausted('attempts_exhausted');
+  attemptsExhausted('attempts_exhausted'),
+  rideCancelled('ride_cancelled');
 
   const DriverOfferActionOutboxErrorCode(this.databaseValue);
 

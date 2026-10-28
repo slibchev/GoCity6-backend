@@ -33,7 +33,13 @@ void main() {
       final dbName = await db.execute('SELECT current_database()');
       expect(dbName.first[0], 'city6_test');
 
-      final time = DateTime.utc(2026, 10, 1, 10);
+      final dbTimeResult = await db.execute(
+        Sql('SELECT clock_timestamp() AS database_now'),
+      );
+      final databaseNow =
+          (dbTimeResult.single.toColumnMap()['database_now'] as DateTime)
+              .toUtc();
+      final time = databaseNow.subtract(const Duration(minutes: 2));
 
       for (final id in ids) {
         await db.execute(

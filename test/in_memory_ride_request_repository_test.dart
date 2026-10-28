@@ -111,13 +111,13 @@ void main() {
     'findWaitingForVehicle returns only free waiting rides in order',
     () async {
       final oldest = createRide(id: 'ride-b')
-          .copyWith(requestedAt: DateTime.utc(2026, 10, 1, 9));
+          .copyWith(requestedAt: DateTime.utc(2026, 10, 1, 10));
 
       final newerA = createRide(id: 'ride-a')
-          .copyWith(requestedAt: DateTime.utc(2026, 10, 1, 10));
+          .copyWith(requestedAt: DateTime.utc(2026, 10, 1, 10, 20));
 
       final newerC = createRide(id: 'ride-c')
-          .copyWith(requestedAt: DateTime.utc(2026, 10, 1, 10));
+          .copyWith(requestedAt: DateTime.utc(2026, 10, 1, 10, 20));
 
       final assigned = createRide(
         id: 'ride-assigned',
@@ -130,13 +130,10 @@ void main() {
         status: RideRequestStatus.accepted,
       );
 
-      final repository = InMemoryRideRequestRepository([
-        newerC,
-        assigned,
-        accepted,
-        oldest,
-        newerA,
-      ]);
+      final repository = InMemoryRideRequestRepository.withClock(
+        initialRides: [newerC, assigned, accepted, oldest, newerA],
+        clock: () => DateTime.utc(2026, 10, 1, 10, 25),
+      );
 
       final result = await repository.findWaitingForVehicle();
 
@@ -145,6 +142,37 @@ void main() {
         'ride-a',
         'ride-c',
       ]);
+    },
+  );
+
+  test(
+    'findWaitingForVehicle excludes rides aged 30 minutes or more',
+    () async {
+      final now = DateTime.utc(2026, 10, 1, 11);
+      final justUnderThirtyMinutes = createRide(id: 'ride-under-cutoff')
+          .copyWith(
+            requestedAt: now.subtract(
+              const Duration(minutes: 30) - const Duration(microseconds: 1),
+            ),
+          );
+      final exactlyThirtyMinutes = createRide(id: 'ride-at-cutoff')
+          .copyWith(requestedAt: now.subtract(const Duration(minutes: 30)));
+      final overThirtyMinutes = createRide(id: 'ride-over-cutoff').copyWith(
+        requestedAt: now.subtract(const Duration(minutes: 30, microseconds: 1)),
+      );
+
+      final repository = InMemoryRideRequestRepository.withClock(
+        initialRides: [
+          justUnderThirtyMinutes,
+          exactlyThirtyMinutes,
+          overThirtyMinutes,
+        ],
+        clock: () => now,
+      );
+
+      final waiting = await repository.findWaitingForVehicle();
+
+      expect(waiting.map((ride) => ride.id), ['ride-under-cutoff']);
     },
   );
 }

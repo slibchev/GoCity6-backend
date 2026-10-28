@@ -29,6 +29,8 @@ import 'package:gocity6_backend/ride/ride_dispatch_service.dart';
 import 'package:postgres/postgres.dart';
 
 import 'package:gocity6_backend/ride/postgres_ride_request_repository.dart';
+import 'package:gocity6_backend/ride/postgres_waiting_ride_expiration_repository.dart';
+import 'package:gocity6_backend/ride/waiting_ride_expiration_service.dart';
 
 import 'package:gocity6_backend/ride/ride_request_repository.dart';
 
@@ -551,6 +553,7 @@ void main(List<String> args) async {
   AutomaticRideSubmissionService? automaticRideSubmissionService;
   CustomerBonusDecisionService? customerBonusDecisionService;
   RideOfferTimeoutProcessor? rideOfferTimeoutProcessor;
+  WaitingRideExpirationService? waitingRideExpirationService;
   WaitingBoardRedispatchService? waitingBoardRedispatchService;
   DriverRideOfferActionService? driverRideOfferActionService;
   DriverOfferStatusService? driverOfferStatusService;
@@ -599,6 +602,12 @@ void main(List<String> args) async {
     ], settings: PoolSettings(sslMode: SslMode.disable, maxConnectionCount: 5));
 
     await databasePool.execute('SELECT 1');
+
+    waitingRideExpirationService = WaitingRideExpirationService(
+      repository: PostgresWaitingRideExpirationRepository(
+        database: databasePool,
+      ),
+    );
 
     rideRepository = PostgresRideRequestRepository(database: databasePool);
 
@@ -2664,6 +2673,23 @@ void main(List<String> args) async {
   print('Server listening on port ${server.port}');
   final timeoutProcessor = rideOfferTimeoutProcessor;
   final waitingBoardService = waitingBoardRedispatchService;
+  final rideExpirationService = waitingRideExpirationService;
+
+  if (rideExpirationService != null) {
+    try {
+      final result = await rideExpirationService.processDueRides();
+      if (result.didWork) {
+        print(
+          'Waiting rides expired: ${result.cancelledRideCount}; '
+          'pending offers invalidated: ${result.expiredOfferCount}; '
+          'outbox jobs moved to review: ${result.settledOutboxCount}.',
+        );
+      }
+    } catch (error, stackTrace) {
+      print('Waiting-ride expiration recovery failed: $error');
+      print(stackTrace);
+    }
+  }
 
   if (waitingBoardService != null) {
     try {
@@ -2678,7 +2704,9 @@ void main(List<String> args) async {
     }
   }
 
-  if (timeoutProcessor != null || waitingBoardService != null) {
+  if (timeoutProcessor != null ||
+      waitingBoardService != null ||
+      rideExpirationService != null) {
     var scanRunning = false;
     var lastWaitingBoardScanAt = DateTime.now().toUtc();
 
@@ -2691,10 +2719,25 @@ void main(List<String> args) async {
 
       try {
         final now = DateTime.now().toUtc();
+        if (rideExpirationService != null) {
+          try {
+            final result = await rideExpirationService.processDueRides();
+            if (result.didWork) {
+              print(
+                'Waiting rides expired: ${result.cancelledRideCount}; '
+                'pending offers invalidated: ${result.expiredOfferCount}; '
+                'outbox jobs moved to review: ${result.settledOutboxCount}.',
+              );
+            }
+          } catch (error, stackTrace) {
+            print('Waiting-ride expiration scan failed: $error');
+            print(stackTrace);
+          }
+        }
+
         final expiredOffers = timeoutProcessor == null
             ? const <RideOffer>[]
             : await timeoutProcessor.process(now: now);
-
         if (expiredOffers.isNotEmpty) {
           print('Expired ride offers processed: ${expiredOffers.length}');
         }

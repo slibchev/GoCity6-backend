@@ -198,6 +198,7 @@ class PostgresRideRequestRepository
         WHERE status = 'waitingForVehicle'
           AND assigned_driver_id IS NULL
           AND assigned_vehicle_id IS NULL
+          AND requested_at > clock_timestamp() - INTERVAL '30 minutes'
           AND NOT EXISTS (
             SELECT 1
             FROM ride_offers ro
