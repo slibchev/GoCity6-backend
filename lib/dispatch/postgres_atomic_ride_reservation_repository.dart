@@ -120,7 +120,8 @@ class PostgresAtomicRideReservationRepository
             s.id AS shift_id,
             s.vehicle_id,
             q.availability,
-            q.has_pending_offer
+            q.has_pending_offer,
+            q.pending_break_request_id
           FROM driver_shifts s
           JOIN driver_queue_states q
             ON q.shift_id = s.id
@@ -144,6 +145,12 @@ class PostgresAtomicRideReservationRepository
       final vehicleId = shiftRow['vehicle_id'] as String;
       final availability = shiftRow['availability'] as String;
       final hasPendingOffer = shiftRow['has_pending_offer'] as bool;
+
+      if (shiftRow['pending_break_request_id'] != null) {
+        throw const AtomicRideReservationConflictException(
+          AtomicRideReservationConflict.driverBreakScheduled,
+        );
+      }
 
       if (availability != 'busy' && availability != 'externalRide') {
         throw const AtomicRideReservationConflictException(

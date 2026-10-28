@@ -1,9 +1,7 @@
 import 'driver_dispatch_policy_service.dart';
 import 'driver_shift_repository.dart';
 
-enum DriverShiftEndFailure {
-  noActiveShift,
-}
+enum DriverShiftEndFailure { noActiveShift, pendingBreakScheduled }
 
 class DriverShiftEndException implements Exception {
   final DriverShiftEndFailure failure;
@@ -27,23 +25,25 @@ class DriverShiftEndService {
     required this.now,
   });
 
-  Future<DateTime> end({
-    required String driverId,
-  }) async {
+  Future<DateTime> end({required String driverId}) async {
     final shift = await shiftRepository.findActiveByDriverId(driverId);
 
     if (shift == null) {
-      throw const DriverShiftEndException(
-        DriverShiftEndFailure.noActiveShift,
-      );
+      throw const DriverShiftEndException(DriverShiftEndFailure.noActiveShift);
     }
 
     final endedAt = now().toUtc();
 
-    await shiftRepository.endShift(
-      shiftId: shift.id,
-      endedAt: endedAt,
-    );
+    try {
+      await shiftRepository.endShift(shiftId: shift.id, endedAt: endedAt);
+    } on DriverShiftEndConflictException catch (error) {
+      if (error.conflict == DriverShiftEndConflict.pendingBreakScheduled) {
+        throw const DriverShiftEndException(
+          DriverShiftEndFailure.pendingBreakScheduled,
+        );
+      }
+      rethrow;
+    }
 
     await dispatchPolicyService.recordShiftEnded(
       driverId: driverId,

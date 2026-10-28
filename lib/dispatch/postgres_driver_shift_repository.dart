@@ -3,6 +3,7 @@ import 'package:postgres/postgres.dart';
 import 'active_driver_shift.dart';
 import 'driver_queue_state.dart';
 import 'driver_shift_repository.dart';
+import 'postgres_short_break_expiry.dart';
 
 class PostgresDriverShiftRepository implements DriverShiftRepository {
   final SessionExecutor database;
@@ -11,7 +12,8 @@ class PostgresDriverShiftRepository implements DriverShiftRepository {
 
   @override
   Future<ActiveDriverShift?> findActiveByDriverId(String driverId) {
-    return database.run((session) async {
+    return database.runTx((session) async {
+      await materializeExpiredShortBreaks(session, driverId: driverId);
       final result = await session.execute(
         Sql.named('''
           SELECT
@@ -44,7 +46,8 @@ class PostgresDriverShiftRepository implements DriverShiftRepository {
 
   @override
   Future<List<ActiveDriverShift>> findAllActive() {
-    return database.run((session) async {
+    return database.runTx((session) async {
+      await materializeExpiredShortBreaks(session);
       final result = await session.execute(
         Sql.named('''
           SELECT
@@ -236,7 +239,9 @@ class PostgresDriverShiftRepository implements DriverShiftRepository {
         Sql.named('''
           SELECT
             s.started_at,
-            q.has_pending_offer
+            q.has_pending_offer,
+            q.pending_break_request_id,
+            q.active_break_request_id
           FROM driver_shifts s
           JOIN driver_queue_states q
             ON q.shift_id = s.id
@@ -265,6 +270,31 @@ class PostgresDriverShiftRepository implements DriverShiftRepository {
 
       if (current['has_pending_offer'] as bool) {
         throw StateError('Shift cannot end while an offer is pending.');
+      }
+
+      if (current['pending_break_request_id'] != null) {
+        throw const DriverShiftEndConflictException(
+          DriverShiftEndConflict.pendingBreakScheduled,
+        );
+      }
+
+      final activeBreakRequestId =
+          current['active_break_request_id'] as String?;
+      if (activeBreakRequestId != null) {
+        final breakRequestResult = await transaction.execute(
+          Sql.named('''
+            UPDATE driver_break_requests
+            SET status = 'completed',
+                ended_at = GREATEST(clock_timestamp(), activated_at)
+            WHERE request_id = @requestId
+              AND status = 'active'
+            RETURNING request_id
+          '''),
+          parameters: {'requestId': activeBreakRequestId},
+        );
+        if (breakRequestResult.isEmpty) {
+          throw StateError('Active break request is missing or inconsistent.');
+        }
       }
 
       await transaction.execute(

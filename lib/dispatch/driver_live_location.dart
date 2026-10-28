@@ -4,11 +4,17 @@ class DriverLiveLocation {
   final double longitude;
   final DateTime updatedAt;
 
+  /// Timestamp reported for the actual device GPS fix, if available.
+  /// [updatedAt] remains the Backend receipt time used by existing freshness
+  /// and display behavior.
+  final DateTime? gpsFixAt;
+
   DriverLiveLocation({
     required this.driverId,
     required this.latitude,
     required this.longitude,
     required this.updatedAt,
+    this.gpsFixAt,
   }) {
     if (driverId.trim().isEmpty) {
       throw ArgumentError.value(

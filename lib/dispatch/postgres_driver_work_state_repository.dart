@@ -5,6 +5,7 @@ import '../ride/ride_request_status.dart';
 import 'active_driver_shift.dart';
 import 'driver_queue_state.dart';
 import 'driver_work_state_repository.dart';
+import 'postgres_short_break_expiry.dart';
 import 'ride_offer.dart';
 
 class PostgresDriverWorkStateRepository implements DriverWorkStateRepository {
@@ -14,7 +15,8 @@ class PostgresDriverWorkStateRepository implements DriverWorkStateRepository {
 
   @override
   Future<DriverWorkStateSnapshot> loadByDriverId(String driverId) {
-    return database.run((session) async {
+    return database.runTx((session) async {
+      await materializeExpiredShortBreaks(session, driverId: driverId);
       final shiftResult = await session.execute(
         Sql.named('''
           SELECT
@@ -26,10 +28,16 @@ class PostgresDriverWorkStateRepository implements DriverWorkStateRepository {
             q.availability,
             q.queue_priority_since,
             q.break_started_at,
-            q.has_pending_offer
+            q.has_pending_offer,
+            q.pending_break_kind,
+            q.pending_break_request_id,
+            pending_break.requested_at AS pending_break_requested_at
           FROM driver_shifts s
           JOIN driver_queue_states q
             ON q.shift_id = s.id
+          LEFT JOIN driver_break_requests pending_break
+            ON pending_break.request_id = q.pending_break_request_id
+           AND pending_break.status = 'pending'
           WHERE s.driver_id = @driverId
             AND s.ended_at IS NULL
           LIMIT 2
@@ -207,6 +215,15 @@ class PostgresDriverWorkStateRepository implements DriverWorkStateRepository {
         pendingOffer: pendingOffer,
         currentRide: currentRide,
         reservedRide: reservedRide,
+        pendingBreakKind:
+            shiftResult.single.toColumnMap()['pending_break_kind'] as String?,
+        pendingBreakRequestId:
+            shiftResult.single.toColumnMap()['pending_break_request_id']
+                as String?,
+        pendingBreakRequestedAt:
+            (shiftResult.single.toColumnMap()['pending_break_requested_at']
+                    as DateTime?)
+                ?.toUtc(),
       );
     });
   }

@@ -22,6 +22,9 @@ void main() {
           pendingOffer: null,
           currentRide: null,
           reservedRide: null,
+          pendingBreakKind: 'long',
+          pendingBreakRequestId: 'c6cbb0dd-67b8-4e0a-9066-62f8c4cba3be',
+          pendingBreakRequestedAt: startedAt,
         ),
       ),
     );
@@ -32,6 +35,12 @@ void main() {
     expect(state.activeShift, isNotNull);
     expect(state.activeShift!.id, 'shift-001');
     expect(state.activeShift!.vehicleId, 'vehicle-001');
+    expect(state.snapshot.pendingBreakKind, 'long');
+    expect(
+      state.snapshot.pendingBreakRequestId,
+      'c6cbb0dd-67b8-4e0a-9066-62f8c4cba3be',
+    );
+    expect(state.snapshot.pendingBreakRequestedAt, startedAt);
     expect(
       state.activeShift!.queueState.availability,
       DriverQueueAvailability.available,

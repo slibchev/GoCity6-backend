@@ -536,7 +536,9 @@ class PostgresRideRequestRepository
           s.id AS shift_id,
           s.vehicle_id,
           q.availability,
-          q.has_pending_offer
+          q.has_pending_offer,
+          q.pending_break_kind,
+          q.pending_break_request_id
         FROM driver_shifts s
         JOIN driver_queue_states q
           ON q.shift_id = s.id
@@ -697,6 +699,43 @@ class PostgresRideRequestRepository
         }
       }
 
+      final pendingBreakKind = shiftRow['pending_break_kind'] as String?;
+      final pendingBreakRequestId =
+          shiftRow['pending_break_request_id'] as String?;
+      if ((pendingBreakKind == null) != (pendingBreakRequestId == null)) {
+        throw const AtomicRideCancellationConflictException(
+          AtomicRideCancellationConflict.queueStateMismatch,
+        );
+      }
+      if (pendingBreakRequestId != null && reservationRow != null) {
+        throw const AtomicRideCancellationConflictException(
+          AtomicRideCancellationConflict.queueStateMismatch,
+        );
+      }
+      if (pendingBreakRequestId != null) {
+        final pendingBreakResult = await transaction.execute(
+          Sql.named('''
+            SELECT request_id
+            FROM driver_break_requests
+            WHERE request_id = @requestId
+              AND shift_id = @shiftId
+              AND break_kind = @kind
+              AND status = 'pending'
+            FOR UPDATE
+          '''),
+          parameters: {
+            'requestId': pendingBreakRequestId,
+            'shiftId': shiftId,
+            'kind': pendingBreakKind,
+          },
+        );
+        if (pendingBreakResult.isEmpty) {
+          throw const AtomicRideCancellationConflictException(
+            AtomicRideCancellationConflict.queueStateMismatch,
+          );
+        }
+      }
+
       final cancelledRideResult = await transaction.execute(
         Sql.named('''
         UPDATE rides
@@ -811,6 +850,27 @@ class PostgresRideRequestRepository
           );
         }
       } else {
+        if (pendingBreakRequestId != null) {
+          final cancelledBreakResult = await transaction.execute(
+            Sql.named('''
+              UPDATE driver_break_requests
+              SET status = 'cancelled', ended_at = clock_timestamp()
+              WHERE request_id = @requestId
+                AND shift_id = @shiftId
+                AND status = 'pending'
+              RETURNING request_id
+            '''),
+            parameters: {
+              'requestId': pendingBreakRequestId,
+              'shiftId': shiftId,
+            },
+          );
+          if (cancelledBreakResult.isEmpty) {
+            throw const AtomicRideCancellationConflictException(
+              AtomicRideCancellationConflict.queueStateMismatch,
+            );
+          }
+        }
         final queueUpdateResult = await transaction.execute(
           Sql.named('''
           UPDATE driver_queue_states
@@ -818,7 +878,9 @@ class PostgresRideRequestRepository
             availability = 'available',
             queue_priority_since = @queuePrioritySince,
             break_started_at = NULL,
-            has_pending_offer = FALSE
+            has_pending_offer = FALSE,
+            pending_break_kind = NULL,
+            pending_break_request_id = NULL
           WHERE shift_id = @shiftId
             AND availability = 'busy'
             AND has_pending_offer = FALSE
@@ -1195,9 +1257,15 @@ class PostgresRideRequestRepository
 
             s.vehicle_id,
 
+            s.protected_breaks_used,
+
             q.availability,
 
-            q.has_pending_offer
+            q.has_pending_offer,
+
+            q.pending_break_kind,
+
+            q.pending_break_request_id
 
           FROM driver_shifts s
 
@@ -1234,6 +1302,13 @@ class PostgresRideRequestRepository
 
       final hasPendingOffer = shiftRow['has_pending_offer'] as bool;
 
+      final pendingBreakKind = shiftRow['pending_break_kind'] as String?;
+
+      final pendingBreakRequestId =
+          shiftRow['pending_break_request_id'] as String?;
+
+      final shortBreaksUsed = shiftRow['protected_breaks_used'] as int;
+
       if (shiftVehicleId != vehicleId) {
         throw const AtomicRideCompletionConflictException(
           AtomicRideCompletionConflict.currentRideAssignmentMismatch,
@@ -1241,6 +1316,12 @@ class PostgresRideRequestRepository
       }
 
       if (availability != 'busy' || hasPendingOffer) {
+        throw const AtomicRideCompletionConflictException(
+          AtomicRideCompletionConflict.queueStateMismatch,
+        );
+      }
+
+      if ((pendingBreakKind == null) != (pendingBreakRequestId == null)) {
         throw const AtomicRideCompletionConflictException(
           AtomicRideCompletionConflict.queueStateMismatch,
         );
@@ -1400,6 +1481,37 @@ class PostgresRideRequestRepository
             reservedRideRow['assigned_vehicle_id'] != null) {
           throw const AtomicRideCompletionConflictException(
             AtomicRideCompletionConflict.reservedRideStateMismatch,
+          );
+        }
+      }
+
+      if (pendingBreakRequestId != null && reservationRow != null) {
+        throw const AtomicRideCompletionConflictException(
+          AtomicRideCompletionConflict.queueStateMismatch,
+        );
+      }
+
+      if (pendingBreakRequestId != null) {
+        final requestResult = await transaction.execute(
+          Sql.named('''
+            SELECT request_id
+            FROM driver_break_requests
+            WHERE request_id = @requestId
+              AND shift_id = @shiftId
+              AND break_kind = @kind
+              AND status = 'pending'
+            FOR UPDATE
+          '''),
+          parameters: {
+            'requestId': pendingBreakRequestId,
+            'shiftId': shiftId,
+            'kind': pendingBreakKind,
+          },
+        );
+        if (requestResult.isEmpty ||
+            (pendingBreakKind == 'short' && shortBreaksUsed >= 3)) {
+          throw const AtomicRideCompletionConflictException(
+            AtomicRideCompletionConflict.queueStateMismatch,
           );
         }
       }
@@ -1602,6 +1714,58 @@ class PostgresRideRequestRepository
           );
         }
       } else {
+        DateTime? activatedAt;
+        if (pendingBreakRequestId != null) {
+          final activationResult = await transaction.execute(
+            Sql('SELECT clock_timestamp() AS activation_time'),
+          );
+          activatedAt =
+              (activationResult.single.toColumnMap()['activation_time']
+                      as DateTime)
+                  .toUtc();
+
+          final requestUpdateResult = await transaction.execute(
+            Sql.named('''
+              UPDATE driver_break_requests
+              SET status = 'active', activated_at = @activatedAt
+              WHERE request_id = @requestId
+                AND shift_id = @shiftId
+                AND break_kind = @kind
+                AND status = 'pending'
+              RETURNING request_id
+            '''),
+            parameters: {
+              'activatedAt': activatedAt,
+              'requestId': pendingBreakRequestId,
+              'shiftId': shiftId,
+              'kind': pendingBreakKind,
+            },
+          );
+          if (requestUpdateResult.isEmpty) {
+            throw const AtomicRideCompletionConflictException(
+              AtomicRideCompletionConflict.queueStateMismatch,
+            );
+          }
+
+          if (pendingBreakKind == 'short') {
+            final shortBreakCountResult = await transaction.execute(
+              Sql.named('''
+                UPDATE driver_shifts
+                SET protected_breaks_used = protected_breaks_used + 1
+                WHERE id = @shiftId
+                  AND protected_breaks_used < 3
+                RETURNING id
+              '''),
+              parameters: {'shiftId': shiftId},
+            );
+            if (shortBreakCountResult.isEmpty) {
+              throw const AtomicRideCompletionConflictException(
+                AtomicRideCompletionConflict.queueStateMismatch,
+              );
+            }
+          }
+        }
+
         final queueUpdateResult = await transaction.execute(
           Sql.named('''
 
@@ -1609,13 +1773,23 @@ class PostgresRideRequestRepository
 
             SET
 
-              availability = 'available',
+              availability = CASE @pendingBreakKind::text
+                WHEN 'short' THEN 'shortBreak'
+                WHEN 'long' THEN 'longBreak'
+                ELSE 'available'
+              END,
 
               queue_priority_since = @queuePrioritySince,
 
-              break_started_at = NULL,
+              break_started_at = @breakStartedAt,
 
-              has_pending_offer = FALSE
+              has_pending_offer = FALSE,
+
+              pending_break_kind = NULL,
+
+              pending_break_request_id = NULL,
+
+              active_break_request_id = @activeBreakRequestId
 
             WHERE shift_id = @shiftId
 
@@ -1627,7 +1801,13 @@ class PostgresRideRequestRepository
 
           '''),
 
-          parameters: {'shiftId': shiftId, 'queuePrioritySince': completedAt},
+          parameters: {
+            'shiftId': shiftId,
+            'queuePrioritySince': completedAt,
+            'pendingBreakKind': pendingBreakKind,
+            'breakStartedAt': activatedAt,
+            'activeBreakRequestId': pendingBreakRequestId,
+          },
         );
 
         if (queueUpdateResult.isEmpty) {

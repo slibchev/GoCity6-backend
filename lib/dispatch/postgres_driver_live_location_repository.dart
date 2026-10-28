@@ -7,9 +7,7 @@ class PostgresDriverLiveLocationRepository
     implements DriverLiveLocationRepository {
   final SessionExecutor database;
 
-  PostgresDriverLiveLocationRepository({
-    required this.database,
-  });
+  PostgresDriverLiveLocationRepository({required this.database});
 
   @override
   Future<DriverLiveLocation?> findByDriverId(String driverId) {
@@ -19,7 +17,8 @@ class PostgresDriverLiveLocationRepository
           SELECT
             q.latitude,
             q.longitude,
-            q.location_updated_at
+            q.location_updated_at,
+            q.gps_fix_at
           FROM driver_queue_states q
           JOIN driver_shifts s
             ON s.id = q.shift_id
@@ -28,9 +27,7 @@ class PostgresDriverLiveLocationRepository
             AND q.latitude IS NOT NULL
           LIMIT 1
         '''),
-        parameters: {
-          'driverId': driverId,
-        },
+        parameters: {'driverId': driverId},
       );
 
       if (result.isEmpty) {
@@ -44,6 +41,7 @@ class PostgresDriverLiveLocationRepository
         latitude: (row['latitude'] as num).toDouble(),
         longitude: (row['longitude'] as num).toDouble(),
         updatedAt: (row['location_updated_at'] as DateTime).toUtc(),
+        gpsFixAt: (row['gps_fix_at'] as DateTime?)?.toUtc(),
       );
     });
   }
@@ -85,9 +83,7 @@ class PostgresDriverLiveLocationRepository
       );
 
       if (result.isEmpty) {
-        throw StateError(
-          'Active shift was not found for driver.',
-        );
+        throw StateError('Active shift was not found for driver.');
       }
 
       return location;

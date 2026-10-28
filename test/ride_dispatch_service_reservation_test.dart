@@ -134,6 +134,7 @@ class FakeAtomicRideReservationRepository
   String? driverId;
   int? combinedEtaSeconds;
   DateTime? now;
+  AtomicRideReservationConflict? conflict;
 
   @override
   Future<RideReservation> reserveWaitingRide({
@@ -149,6 +150,10 @@ class FakeAtomicRideReservationRepository
     this.driverId = driverId;
     this.combinedEtaSeconds = combinedEtaSeconds;
     this.now = now;
+
+    if (conflict != null) {
+      throw AtomicRideReservationConflictException(conflict!);
+    }
 
     return RideReservation.create(
       id: reservationId,
@@ -445,6 +450,62 @@ void main() {
       expect(reservationRepository.combinedEtaSeconds, 600);
     },
   );
+
+  test('scheduled break blocks atomic reservation as unavailable', () async {
+    final currentRide = createRide(
+      id: 'ride-current',
+      status: RideRequestStatus.inProgress,
+      assignedDriverId: 'driver-001',
+      assignedVehicleId: 'vehicle-001',
+      destination: 'Current destination',
+    );
+    final waitingRide = createRide(
+      id: 'ride-next',
+      status: RideRequestStatus.waitingForVehicle,
+      pickup: 'Next pickup',
+      pickupLatitude: 42.711,
+      pickupLongitude: 23.302,
+    );
+    final reservationRepository = FakeAtomicRideReservationRepository()
+      ..conflict = AtomicRideReservationConflict.driverBreakScheduled;
+    final service = RideDispatchService(
+      repository: FakeRideRequestRepository([currentRide, waitingRide]),
+      waitingRideAcceptanceRepository:
+          FakeAtomicWaitingRideAcceptanceRepository(waitingRide),
+      driverShiftRepository: FakeDriverShiftRepository(
+        createShift(DriverQueueAvailability.busy),
+      ),
+      rideReservationRepository: reservationRepository,
+      routeEstimator: FakeRouteEstimator([
+        estimate(
+          durationSeconds: 100,
+          destinationLatitude: 42.70,
+          destinationLongitude: 23.30,
+        ),
+        estimate(durationSeconds: 100),
+      ]),
+    );
+
+    await expectLater(
+      service.selectWaitingRide(
+        rideId: waitingRide.id,
+        driverId: 'driver-001',
+        vehicleId: 'vehicle-001',
+        driverLatitude: 42.65,
+        driverLongitude: 23.25,
+        reservationId: 'reservation-001',
+        now: now,
+      ),
+      throwsA(
+        isA<RideDispatchConflictException>().having(
+          (error) => error.conflict,
+          'conflict',
+          RideDispatchConflict.driverNotAvailable,
+        ),
+      ),
+    );
+    expect(reservationRepository.callCount, 1);
+  });
 
   test('externalRide driver uses current GPS to next pickup only', () async {
     final waitingRide = createRide(

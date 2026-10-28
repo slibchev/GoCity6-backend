@@ -466,6 +466,7 @@ class RideDispatchService {
 
         case AtomicRideReservationConflict.activeShiftNotFound:
         case AtomicRideReservationConflict.driverNotReservable:
+        case AtomicRideReservationConflict.driverBreakScheduled:
         case AtomicRideReservationConflict.queueStateMismatch:
         case AtomicRideReservationConflict.activeExternalRideNotFound:
           throw const RideDispatchConflictException(

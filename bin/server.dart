@@ -41,10 +41,14 @@ import 'package:gocity6_backend/dispatch/postgres_atomic_waiting_ride_acceptance
 import 'package:gocity6_backend/dispatch/atomic_ride_reservation_repository.dart';
 
 import 'package:gocity6_backend/dispatch/driver_shift_repository.dart';
+import 'package:gocity6_backend/dispatch/driver_break_service.dart';
+import 'package:gocity6_backend/dispatch/driver_break_route.dart';
+import 'package:gocity6_backend/dispatch/driver_break_state_json.dart';
 
 import 'package:gocity6_backend/dispatch/postgres_atomic_ride_reservation_repository.dart';
 
 import 'package:gocity6_backend/dispatch/postgres_driver_shift_repository.dart';
+import 'package:gocity6_backend/dispatch/postgres_driver_break_repository.dart';
 import 'package:gocity6_backend/dispatch/driver_assigned_vehicle_repository.dart';
 import 'package:gocity6_backend/dispatch/driver_shift_start_service.dart';
 import 'package:gocity6_backend/dispatch/driver_shift_end_service.dart';
@@ -88,6 +92,8 @@ import 'package:gocity6_backend/dispatch/postgres_waiting_ride_redispatch_reposi
 import 'package:gocity6_backend/dispatch/waiting_board_redispatch_service.dart';
 import 'package:gocity6_backend/dispatch/driver_live_location.dart';
 import 'package:gocity6_backend/geography/district_matcher.dart';
+import 'package:gocity6_backend/dispatch/driver_district_queue_service.dart';
+import 'package:gocity6_backend/dispatch/postgres_driver_district_queue_repository.dart';
 
 late final DistrictMatcher _districtMatcher;
 
@@ -553,12 +559,14 @@ void main(List<String> args) async {
   DriverDispatchPolicyService? driverDispatchPolicyService;
   PostgresIgnoredOfferPenaltyService? ignoredOfferPenaltyService;
   DriverLiveLocationService? driverLiveLocationService;
+  DriverDistrictQueueService? driverDistrictQueueService;
 
   AssignedDriverInfoService? assignedDriverInfoService;
 
   AtomicWaitingRideAcceptanceRepository? waitingRideAcceptanceRepository;
 
   DriverShiftRepository? driverShiftRepository;
+  DriverBreakService? driverBreakService;
 
   AtomicRideReservationRepository? rideReservationRepository;
 
@@ -604,6 +612,9 @@ void main(List<String> args) async {
     driverShiftRepository = PostgresDriverShiftRepository(
       database: databasePool,
     );
+    driverBreakService = DriverBreakService(
+      repository: PostgresDriverBreakRepository(database: databasePool),
+    );
     driverWorkStateRepository = PostgresDriverWorkStateRepository(
       database: databasePool,
     );
@@ -612,6 +623,13 @@ void main(List<String> args) async {
     );
     driverDispatchStateRepository = PostgresDriverDispatchStateRepository(
       database: databasePool,
+    );
+    driverDistrictQueueService = DriverDistrictQueueService(
+      districtMatcher: _districtMatcher,
+      repository: PostgresDriverDistrictQueueRepository(database: databasePool),
+      shiftRepository: driverShiftRepository,
+      liveLocationRepository: driverLiveLocationRepository,
+      dispatchStateRepository: driverDispatchStateRepository,
     );
     final postgresRideOfferRepository = PostgresRideOfferRepository(
       database: databasePool,
@@ -1168,6 +1186,15 @@ void main(List<String> args) async {
             }),
             headers: {'Content-Type': 'application/json'},
           );
+        case DriverShiftEndFailure.pendingBreakScheduled:
+          return Response(
+            409,
+            body: jsonEncode({
+              'code': 'breakScheduled',
+              'error': 'Cancel the scheduled break before ending the shift.',
+            }),
+            headers: {'Content-Type': 'application/json'},
+          );
       }
     } catch (error) {
       print('Driver shift end error: $error');
@@ -1178,6 +1205,12 @@ void main(List<String> args) async {
       );
     }
   });
+
+  registerDriverBreakRoutes(
+    router,
+    tokenService: driverTokenService,
+    breakService: driverBreakService,
+  );
 
   router.post('/rides', (Request request) async {
     try {
@@ -1457,6 +1490,7 @@ void main(List<String> args) async {
 
       final latitude = decodedBody['latitude'];
       final longitude = decodedBody['longitude'];
+      final gpsFixAt = parseDriverGpsFixTimestamp(decodedBody['gpsFixAt']);
 
       if (latitude is! num || longitude is! num) {
         return Response(
@@ -1474,6 +1508,21 @@ void main(List<String> args) async {
         latitude: latitude.toDouble(),
         longitude: longitude.toDouble(),
         now: locationUpdatedAt,
+      );
+      final districtMatch = _districtMatcher.match(
+        latitude: location.latitude,
+        longitude: location.longitude,
+      );
+      final locationWithGpsFix = DriverLiveLocation(
+        driverId: location.driverId,
+        latitude: location.latitude,
+        longitude: location.longitude,
+        updatedAt: location.updatedAt,
+        gpsFixAt: gpsFixAt,
+      );
+      await driverDistrictQueueService?.observeLocation(
+        location: locationWithGpsFix,
+        match: districtMatch,
       );
 
       return Response.ok(
@@ -1680,6 +1729,12 @@ void main(List<String> args) async {
                         ?.toUtc()
                         .toIso8601String(),
                     'hasPendingOffer': shift.queueState.hasPendingOffer,
+                    'break': driverBreakStateJson(shift.queueState, now: now),
+                    'pendingBreak': pendingDriverBreakStateJson(
+                      kind: state.snapshot.pendingBreakKind,
+                      requestId: state.snapshot.pendingBreakRequestId,
+                      requestedAt: state.snapshot.pendingBreakRequestedAt,
+                    ),
                   },
                 },
           'pendingOffer': pendingOffer == null

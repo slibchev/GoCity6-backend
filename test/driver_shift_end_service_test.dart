@@ -84,6 +84,50 @@ void main() {
     expect(shiftRepository.endCalls, 0);
     expect(dispatchStateRepository.state?.penaltyResetEligibleAt, isNull);
   });
+
+  test('does not end a shift with a scheduled after-ride break', () async {
+    final shiftRepository =
+        _FakeDriverShiftRepository(
+            activeShift: _buildShift(
+              id: 'shift-001',
+              driverId: 'driver-001',
+              vehicleId: 'vehicle-001',
+              startedAt: now.subtract(const Duration(hours: 4)),
+            ),
+          )
+          ..endConflict = const DriverShiftEndConflictException(
+            DriverShiftEndConflict.pendingBreakScheduled,
+          );
+    final dispatchStateRepository = _FakeDriverDispatchStateRepository(
+      initialState: const DriverDispatchState(
+        driverId: 'driver-001',
+        consecutiveRejects: 0,
+        penaltyLevel: 0,
+        dispatchBlockedUntil: null,
+        penaltyResetEligibleAt: null,
+      ),
+    );
+    final service = DriverShiftEndService(
+      shiftRepository: shiftRepository,
+      dispatchPolicyService: DriverDispatchPolicyService(
+        repository: dispatchStateRepository,
+      ),
+      now: () => now,
+    );
+
+    await expectLater(
+      service.end(driverId: 'driver-001'),
+      throwsA(
+        isA<DriverShiftEndException>().having(
+          (error) => error.failure,
+          'failure',
+          DriverShiftEndFailure.pendingBreakScheduled,
+        ),
+      ),
+    );
+    expect(shiftRepository.endCalls, 0);
+    expect(dispatchStateRepository.state?.penaltyResetEligibleAt, isNull);
+  });
 }
 
 ActiveDriverShift _buildShift({
@@ -155,6 +199,7 @@ class _FakeDriverShiftRepository implements DriverShiftRepository {
   ActiveDriverShift? activeShift;
 
   int endCalls = 0;
+  DriverShiftEndConflictException? endConflict;
   String? lastEndedShiftId;
   DateTime? lastEndedAt;
 
@@ -168,6 +213,7 @@ class _FakeDriverShiftRepository implements DriverShiftRepository {
     required String shiftId,
     required DateTime endedAt,
   }) async {
+    if (endConflict != null) throw endConflict!;
     endCalls += 1;
     lastEndedShiftId = shiftId;
     lastEndedAt = endedAt;

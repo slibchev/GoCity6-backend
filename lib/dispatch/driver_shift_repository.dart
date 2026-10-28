@@ -1,6 +1,14 @@
 import 'active_driver_shift.dart';
 import 'driver_queue_state.dart';
 
+enum DriverShiftEndConflict { pendingBreakScheduled }
+
+class DriverShiftEndConflictException implements Exception {
+  final DriverShiftEndConflict conflict;
+
+  const DriverShiftEndConflictException(this.conflict);
+}
+
 abstract interface class DriverShiftRepository {
   Future<ActiveDriverShift?> findActiveByDriverId(String driverId);
 

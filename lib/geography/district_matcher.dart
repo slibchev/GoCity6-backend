@@ -37,7 +37,10 @@ final class DistrictMatch {
 /// longitude/latitude order. Polygon boundaries are inclusive. If a point is
 /// on a shared boundary or in a tiny overlap, the lowest object_id wins.
 final class DistrictMatcher {
-  DistrictMatcher._(this._districts);
+  DistrictMatcher._(this._districts)
+    : _objectIds = Set.unmodifiable(
+        _districts.map((geometry) => geometry.district.objectId),
+      );
 
   static const String defaultGeoJsonPath =
       'data/geography/sofiaplan/districts_working.geojson';
@@ -45,8 +48,12 @@ final class DistrictMatcher {
   static const double _coordinateEpsilon = 1e-12;
 
   final List<_DistrictGeometry> _districts;
+  final Set<int> _objectIds;
 
   int get districtCount => _districts.length;
+
+  /// Whether [objectId] belongs to the currently loaded, validated map.
+  bool containsObjectId(int objectId) => _objectIds.contains(objectId);
 
   /// Loads the approved source once. The hash guard prevents a stale or
   /// unreviewed map from silently becoming the runtime boundary source.

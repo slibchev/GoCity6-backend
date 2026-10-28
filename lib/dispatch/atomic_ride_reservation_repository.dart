@@ -9,6 +9,7 @@ enum AtomicRideReservationConflict {
 
   activeShiftNotFound,
   driverNotReservable,
+  driverBreakScheduled,
   queueStateMismatch,
 
   currentCity6RideNotFound,
