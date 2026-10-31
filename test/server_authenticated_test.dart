@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:bcrypt/bcrypt.dart';
 import 'package:http/http.dart' as http;
 import 'package:postgres/postgres.dart';
 import 'package:test/test.dart';
@@ -8,6 +9,8 @@ import 'package:uuid/uuid.dart';
 
 import 'package:gocity6_backend/auth/driver_token_service.dart';
 import 'package:gocity6_backend/dispatch/postgres_driver_shift_repository.dart';
+import 'package:gocity6_backend/ride/postgres_ride_request_repository.dart';
+import 'package:gocity6_backend/ride/ride_request.dart';
 
 void main() {
   const port = '8082';
@@ -15,11 +18,50 @@ void main() {
   const jwtSecret = 'city6-http-integration-test-only-secret';
 
   late Connection db;
+  late String testDbPassword;
   Process? serverProcess;
   final driverId = const Uuid().v4();
   final vehicleId = const Uuid().v4();
   final shiftId = const Uuid().v4();
   final username = 'http-test-$driverId';
+  final passengerOneId = const Uuid().v4();
+  final passengerTwoId = const Uuid().v4();
+  final passengerRideOneId = const Uuid().v4();
+  final passengerRideTwoId = const Uuid().v4();
+  final passengerOneUsername = 'http-passenger-$passengerOneId';
+  final passengerTwoUsername = 'http-passenger-$passengerTwoId';
+  const passengerOnePassword = 'test-passenger-one-password';
+  const passengerTwoPassword = 'test-passenger-two-password';
+
+  Future<void> startTestServer() async {
+    final process = await Process.start(
+      'dart',
+      ['run', 'bin/server.dart'],
+      environment: {
+        'PORT': port,
+        'GOOGLE_MAPS_API_KEY': 'test-api-key',
+        'CITY6_RIDE_STORAGE': 'postgres',
+        'CITY6_DB_NAME': 'city6_test',
+        'CITY6_DB_PASSWORD': testDbPassword,
+        'CITY6_DRIVER_JWT_SECRET': jwtSecret,
+      },
+    );
+    serverProcess = process;
+    await process.stdout
+        .transform(utf8.decoder)
+        .transform(const LineSplitter())
+        .firstWhere((line) => line.contains('Server listening on port'))
+        .timeout(const Duration(seconds: 30));
+  }
+
+  Future<void> restartTestServer() async {
+    final process = serverProcess;
+    if (process != null) {
+      process.kill();
+      await process.exitCode;
+    }
+    await startTestServer();
+  }
 
   setUpAll(() async {
     final password = Platform.environment['CITY6_TEST_DB_PASSWORD'];
@@ -27,6 +69,7 @@ void main() {
     if (password == null || password.isEmpty) {
       fail('CITY6_TEST_DB_PASSWORD is required.');
     }
+    testDbPassword = password;
 
     db = await Connection.open(
       Endpoint(
@@ -44,6 +87,29 @@ void main() {
     expect(result.single[0], 'city6_test');
 
     final now = DateTime.now().toUtc();
+
+    await db.execute(
+      Sql.named('''
+        INSERT INTO passengers (id, username, password_hash, status)
+        VALUES
+          (@passengerOneId, @passengerOneUsername, @passengerOneHash, 'active'),
+          (@passengerTwoId, @passengerTwoUsername, @passengerTwoHash, 'active')
+      '''),
+      parameters: {
+        'passengerOneId': passengerOneId,
+        'passengerOneUsername': passengerOneUsername,
+        'passengerOneHash': BCrypt.hashpw(
+          passengerOnePassword,
+          BCrypt.gensalt(),
+        ),
+        'passengerTwoId': passengerTwoId,
+        'passengerTwoUsername': passengerTwoUsername,
+        'passengerTwoHash': BCrypt.hashpw(
+          passengerTwoPassword,
+          BCrypt.gensalt(),
+        ),
+      },
+    );
 
     await db.execute(
       Sql.named('''
@@ -78,24 +144,29 @@ void main() {
       startedAt: now,
     );
 
-    serverProcess = await Process.start(
-      'dart',
-      ['run', 'bin/server.dart'],
-      environment: {
-        'PORT': port,
-        'GOOGLE_MAPS_API_KEY': 'test-api-key',
-        'CITY6_RIDE_STORAGE': 'postgres',
-        'CITY6_DB_NAME': 'city6_test',
-        'CITY6_DB_PASSWORD': password,
-        'CITY6_DRIVER_JWT_SECRET': jwtSecret,
-      },
+    final rideRepository = PostgresRideRequestRepository(database: db);
+    await rideRepository.save(
+      RideRequest(
+        id: passengerRideOneId,
+        passengerId: passengerOneId,
+        pickup: 'Passenger ownership fixture pickup',
+        destination: 'Passenger ownership fixture destination',
+        passengers: 1,
+        requestedAt: now,
+      ),
+    );
+    await rideRepository.save(
+      RideRequest(
+        id: passengerRideTwoId,
+        passengerId: passengerTwoId,
+        pickup: 'Passenger ownership fixture pickup',
+        destination: 'Passenger ownership fixture destination',
+        passengers: 1,
+        requestedAt: now,
+      ),
     );
 
-    await serverProcess!.stdout
-        .transform(utf8.decoder)
-        .transform(const LineSplitter())
-        .firstWhere((line) => line.contains('Server listening on port'))
-        .timeout(const Duration(seconds: 30));
+    await startTestServer();
   });
 
   tearDownAll(() async {
@@ -106,6 +177,47 @@ void main() {
         process.kill();
         await process.exitCode;
       }
+
+      await db.execute(
+        Sql.named('DELETE FROM rides WHERE id IN (@rideOne, @rideTwo)'),
+        parameters: {
+          'rideOne': passengerRideOneId,
+          'rideTwo': passengerRideTwoId,
+        },
+      );
+
+      await db.execute(
+        Sql.named('''
+          DELETE FROM passengers
+          WHERE id IN (@passengerOne, @passengerTwo)
+        '''),
+        parameters: {
+          'passengerOne': passengerOneId,
+          'passengerTwo': passengerTwoId,
+        },
+      );
+
+      final passengerResidue = await db.execute(
+        Sql.named('''
+          SELECT
+            (SELECT count(*) FROM passengers
+             WHERE id IN (@passengerOne, @passengerTwo))
+            +
+            (SELECT count(*) FROM rides
+             WHERE id IN (@rideOne, @rideTwo))
+        '''),
+        parameters: {
+          'passengerOne': passengerOneId,
+          'passengerTwo': passengerTwoId,
+          'rideOne': passengerRideOneId,
+          'rideTwo': passengerRideTwoId,
+        },
+      );
+      expect(
+        passengerResidue.single[0],
+        0,
+        reason: 'Passenger fixtures remained.',
+      );
 
       await db.execute(
         Sql.named('''
@@ -606,4 +718,115 @@ void main() {
       );
     }
   });
+
+  test('Passenger login and current session reject bad credentials', () async {
+    final wrongPassword = await http.post(
+      Uri.parse('$host/passenger/login'),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode({
+        'username': passengerOneUsername,
+        'password': 'wrong-password',
+      }),
+    );
+    expect(wrongPassword.statusCode, 401);
+
+    final login = await http.post(
+      Uri.parse('$host/passenger/login'),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode({
+        'username': passengerOneUsername,
+        'password': passengerOnePassword,
+      }),
+    );
+    expect(login.statusCode, 200, reason: login.body);
+    final loginBody = jsonDecode(login.body) as Map<String, dynamic>;
+    expect(loginBody['passenger'], {
+      'id': passengerOneId,
+      'username': passengerOneUsername,
+    });
+    expect(loginBody['tokenType'], 'Bearer');
+    final token = loginBody['token'] as String;
+
+    final session = await http.get(
+      Uri.parse('$host/passenger/session'),
+      headers: {'Authorization': 'Bearer $token'},
+    );
+    expect(session.statusCode, 200, reason: session.body);
+    expect(
+      (jsonDecode(session.body) as Map<String, dynamic>)['authenticated'],
+      isTrue,
+    );
+  });
+
+  test('Passenger cannot read or cancel another Passenger ride', () async {
+    final login = await http.post(
+      Uri.parse('$host/passenger/login'),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode({
+        'username': passengerOneUsername,
+        'password': passengerOnePassword,
+      }),
+    );
+    final token =
+        (jsonDecode(login.body) as Map<String, dynamic>)['token'] as String;
+    final headers = {'Authorization': 'Bearer $token'};
+
+    final ownRide = await http.get(
+      Uri.parse('$host/rides/$passengerRideOneId'),
+      headers: headers,
+    );
+    expect(ownRide.statusCode, 200, reason: ownRide.body);
+
+    final foreignRide = await http.get(
+      Uri.parse('$host/rides/$passengerRideTwoId'),
+      headers: headers,
+    );
+    expect(foreignRide.statusCode, 404);
+
+    final anonymousRide = await http.get(
+      Uri.parse('$host/rides/$passengerRideOneId'),
+    );
+    expect(anonymousRide.statusCode, 401);
+
+    final foreignCancellation = await http.post(
+      Uri.parse('$host/rides/$passengerRideTwoId/cancel'),
+      headers: headers,
+    );
+    expect(foreignCancellation.statusCode, 404);
+
+    final foreignRideState = await db.execute(
+      Sql.named('SELECT status FROM rides WHERE id = @rideId'),
+      parameters: {'rideId': passengerRideTwoId},
+    );
+    expect(foreignRideState.single[0], 'pending');
+  });
+
+  test(
+    'Passenger login remains available after a Backend process restart',
+    () async {
+      final login = await http.post(
+        Uri.parse('$host/passenger/login'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({
+          'username': passengerTwoUsername,
+          'password': passengerTwoPassword,
+        }),
+      );
+      expect(login.statusCode, 200, reason: login.body);
+      final token =
+          (jsonDecode(login.body) as Map<String, dynamic>)['token'] as String;
+
+      await restartTestServer();
+
+      final session = await http.get(
+        Uri.parse('$host/passenger/session'),
+        headers: {'Authorization': 'Bearer $token'},
+      );
+      expect(session.statusCode, 200, reason: session.body);
+      expect((jsonDecode(session.body) as Map<String, dynamic>)['passenger'], {
+        'id': passengerTwoId,
+        'username': passengerTwoUsername,
+      });
+    },
+  );
 }

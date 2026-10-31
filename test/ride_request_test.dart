@@ -38,6 +38,26 @@ void main() {
     expect(request.status, RideRequestStatus.pending);
   });
 
+  test('Passenger ownership survives ride state transitions and copies', () {
+    final request = RideRequest(
+      id: 'owned-ride',
+      passengerId: 'passenger-001',
+      pickup: 'Pickup address',
+      destination: 'Destination address',
+      passengers: 1,
+      requestedAt: DateTime.utc(2026, 10, 31),
+    );
+
+    expect(
+      request.copyWith(destination: 'Updated destination').passengerId,
+      'passenger-001',
+    );
+    expect(
+      request.transitionTo(RideRequestStatus.waitingForVehicle).passengerId,
+      'passenger-001',
+    );
+  });
+
   test('RideRequest stores driver and vehicle assignment', () {
     final request = createRequest(
       status: RideRequestStatus.reserved,

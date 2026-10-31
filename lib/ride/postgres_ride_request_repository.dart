@@ -44,6 +44,7 @@ class PostgresRideRequestRepository
 
           requested_at,
           client_request_id,
+          passenger_id,
 
           status,
 
@@ -129,6 +130,7 @@ class PostgresRideRequestRepository
 
           requested_at,
           client_request_id,
+          passenger_id,
 
           status,
 
@@ -182,6 +184,7 @@ class PostgresRideRequestRepository
           has_luggage,
           requested_at,
           client_request_id,
+          passenger_id,
           status,
           assigned_driver_id,
           assigned_vehicle_id,
@@ -235,6 +238,7 @@ class PostgresRideRequestRepository
 
           requested_at,
           client_request_id,
+          passenger_id,
 
           status,
 
@@ -282,6 +286,8 @@ class PostgresRideRequestRepository
 
           @clientRequestId,
 
+          @passengerId,
+
           @status,
 
           @assignedDriverId,
@@ -328,6 +334,8 @@ class PostgresRideRequestRepository
 
           client_request_id = COALESCE(rides.client_request_id, EXCLUDED.client_request_id),
 
+          passenger_id = COALESCE(rides.passenger_id, EXCLUDED.passenger_id),
+
           status = EXCLUDED.status,
 
           assigned_driver_id = EXCLUDED.assigned_driver_id,
@@ -372,6 +380,8 @@ class PostgresRideRequestRepository
         'requestedAt': request.requestedAt.toUtc(),
 
         'clientRequestId': request.clientRequestId,
+
+        'passengerId': request.passengerId,
 
         'status': request.status.name,
 
@@ -460,6 +470,7 @@ class PostgresRideRequestRepository
 
           requested_at,
           client_request_id,
+          passenger_id,
 
           status,
 
@@ -757,6 +768,7 @@ class PostgresRideRequestRepository
           has_luggage,
           requested_at,
           client_request_id,
+          passenger_id,
           status,
           assigned_driver_id,
           assigned_vehicle_id,
@@ -1145,6 +1157,7 @@ class PostgresRideRequestRepository
           has_luggage,
           requested_at,
           client_request_id,
+          passenger_id,
           status,
           assigned_driver_id,
           assigned_vehicle_id,
@@ -1566,6 +1579,7 @@ class PostgresRideRequestRepository
 
             requested_at,
             client_request_id,
+            passenger_id,
 
             status,
 
@@ -1841,6 +1855,8 @@ class PostgresRideRequestRepository
       requestedAt: (row['requested_at'] as DateTime).toUtc(),
 
       clientRequestId: row['client_request_id'] as String?,
+
+      passengerId: row['passenger_id'] as String?,
 
       status: RideRequestStatus.values.byName(row['status'] as String),
 

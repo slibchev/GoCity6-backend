@@ -62,6 +62,11 @@ import 'package:gocity6_backend/routing/route_estimator.dart';
 import 'package:gocity6_backend/auth/driver_authentication_service.dart';
 import 'package:gocity6_backend/auth/driver_token_service.dart';
 import 'package:gocity6_backend/auth/postgres_driver_auth_repository.dart';
+import 'package:gocity6_backend/auth/passenger_authentication_service.dart';
+import 'package:gocity6_backend/auth/passenger_request_identity.dart';
+import 'package:gocity6_backend/auth/passenger_ride_access_policy.dart';
+import 'package:gocity6_backend/auth/passenger_token_service.dart';
+import 'package:gocity6_backend/auth/postgres_passenger_auth_repository.dart';
 import 'package:gocity6_backend/dispatch/driver_state_service.dart';
 import 'package:gocity6_backend/dispatch/driver_work_state_repository.dart';
 import 'package:gocity6_backend/dispatch/postgres_driver_work_state_repository.dart';
@@ -136,6 +141,64 @@ Map<String, dynamic> _pickupDistrictJson(RideRequest ride) {
     return _districtMatchJson(status: 'matched', match: match);
   } on ArgumentError {
     return _districtMatchJson(status: 'invalid_coordinates');
+  }
+}
+
+Future<PassengerRequestIdentity> _passengerIdentityForRequest({
+  required Request request,
+  required PassengerAuthenticationService? authenticationService,
+  required PassengerTokenService? tokenService,
+}) {
+  return resolvePassengerRequestIdentity(
+    authorizationHeader: request.headers['authorization'],
+    authenticationService: authenticationService,
+    tokenService: tokenService,
+  );
+}
+
+Response? _passengerIdentityError(PassengerRequestIdentity identity) {
+  switch (identity.state) {
+    case PassengerIdentityState.invalid:
+      return Response(
+        401,
+        body: jsonEncode({'error': 'Invalid or expired Passenger token.'}),
+        headers: {'Content-Type': 'application/json'},
+      );
+    case PassengerIdentityState.unavailable:
+      return Response(
+        503,
+        body: jsonEncode({'error': 'Passenger authentication is unavailable.'}),
+        headers: {'Content-Type': 'application/json'},
+      );
+    case PassengerIdentityState.anonymous:
+    case PassengerIdentityState.authenticated:
+      return null;
+  }
+}
+
+Response? _passengerRideAccessError({
+  required RideRequest ride,
+  required PassengerRequestIdentity identity,
+}) {
+  final access = passengerRideAccess(
+    ridePassengerId: ride.passengerId,
+    authenticatedPassengerId: identity.passenger?.id,
+  );
+  switch (access) {
+    case PassengerRideAccess.allowed:
+      return null;
+    case PassengerRideAccess.authenticationRequired:
+      return Response(
+        401,
+        body: jsonEncode({'error': 'Authentication required.'}),
+        headers: {'Content-Type': 'application/json'},
+      );
+    case PassengerRideAccess.notFound:
+      return Response(
+        404,
+        body: jsonEncode({'error': 'Ride not found.'}),
+        headers: {'Content-Type': 'application/json'},
+      );
   }
 }
 
@@ -542,6 +605,8 @@ void main(List<String> args) async {
   late final RideRequestRepository rideRepository;
   DriverAuthenticationService? driverAuthenticationService;
   DriverTokenService? driverTokenService;
+  PassengerAuthenticationService? passengerAuthenticationService;
+  PassengerTokenService? passengerTokenService;
   DriverAssignedVehicleRepository? driverAssignedVehicleRepository;
   DriverShiftStartService? driverShiftStartService;
   DriverShiftEndService? driverShiftEndService;
@@ -677,6 +742,12 @@ void main(List<String> args) async {
     );
 
     driverTokenService = DriverTokenService(secret: driverJwtSecret);
+    passengerAuthenticationService = PassengerAuthenticationService(
+      repository: PostgresPassengerAuthRepository(database: databasePool),
+    );
+    passengerTokenService = PassengerTokenService(
+      secret: derivePassengerTokenSecret(driverJwtSecret),
+    );
 
     print('Ride storage: PostgreSQL');
   } else if (rideStorage == 'memory') {
@@ -868,6 +939,24 @@ void main(List<String> args) async {
     }
 
     try {
+      final identity = await _passengerIdentityForRequest(
+        request: request,
+        authenticationService: passengerAuthenticationService,
+        tokenService: passengerTokenService,
+      );
+      final identityError = _passengerIdentityError(identity);
+      if (identityError != null) {
+        return identityError;
+      }
+      final currentRide = await rideLifecycleService.getRide(rideId);
+      final accessError = _passengerRideAccessError(
+        ride: currentRide,
+        identity: identity,
+      );
+      if (accessError != null) {
+        return accessError;
+      }
+
       await bonusService.accept(rideId: rideId);
 
       final ride = await rideLifecycleService.getRide(rideId);
@@ -927,6 +1016,24 @@ void main(List<String> args) async {
     }
 
     try {
+      final identity = await _passengerIdentityForRequest(
+        request: request,
+        authenticationService: passengerAuthenticationService,
+        tokenService: passengerTokenService,
+      );
+      final identityError = _passengerIdentityError(identity);
+      if (identityError != null) {
+        return identityError;
+      }
+      final currentRide = await rideLifecycleService.getRide(rideId);
+      final accessError = _passengerRideAccessError(
+        ride: currentRide,
+        identity: identity,
+      );
+      if (accessError != null) {
+        return accessError;
+      }
+
       await bonusService.decline(rideId: rideId);
 
       final ride = await rideLifecycleService.getRide(rideId);
@@ -1056,6 +1163,117 @@ void main(List<String> args) async {
       );
     }
   });
+  router.post('/passenger/login', (Request request) async {
+    try {
+      final authService = passengerAuthenticationService;
+      final tokenService = passengerTokenService;
+      if (authService == null || tokenService == null) {
+        return Response(
+          503,
+          body: jsonEncode({
+            'error': 'Passenger authentication is unavailable.',
+          }),
+          headers: {'Content-Type': 'application/json'},
+        );
+      }
+
+      final decodedBody = jsonDecode(await request.readAsString());
+      if (decodedBody is! Map<String, dynamic>) {
+        return Response(
+          400,
+          body: jsonEncode({'error': 'Request body must be a JSON object.'}),
+          headers: {'Content-Type': 'application/json'},
+        );
+      }
+
+      final username = decodedBody['username'];
+      final password = decodedBody['password'];
+      if (username is! String ||
+          username.trim().isEmpty ||
+          password is! String ||
+          password.isEmpty) {
+        return Response(
+          400,
+          body: jsonEncode({'error': 'Username and password are required.'}),
+          headers: {'Content-Type': 'application/json'},
+        );
+      }
+
+      final passenger = await authService.authenticate(
+        username: username,
+        password: password,
+      );
+      if (passenger == null) {
+        return Response(
+          401,
+          body: jsonEncode({'error': 'Invalid username or password.'}),
+          headers: {'Content-Type': 'application/json'},
+        );
+      }
+
+      return Response.ok(
+        jsonEncode({
+          'token': tokenService.createToken(
+            passengerId: passenger.id,
+            username: passenger.username,
+          ),
+          'tokenType': 'Bearer',
+          'expiresInSeconds': tokenService.tokenLifetime.inSeconds,
+          'passenger': {'id': passenger.id, 'username': passenger.username},
+        }),
+        headers: {'Content-Type': 'application/json'},
+      );
+    } on FormatException {
+      return Response(
+        400,
+        body: jsonEncode({'error': 'Invalid JSON body.'}),
+        headers: {'Content-Type': 'application/json'},
+      );
+    } catch (_) {
+      // Do not log request bodies, passwords, token values, or hashes.
+      return Response.internalServerError(
+        body: jsonEncode({'error': 'Passenger login failed.'}),
+        headers: {'Content-Type': 'application/json'},
+      );
+    }
+  });
+
+  router.get('/passenger/session', (Request request) async {
+    try {
+      final identity = await _passengerIdentityForRequest(
+        request: request,
+        authenticationService: passengerAuthenticationService,
+        tokenService: passengerTokenService,
+      );
+      final errorResponse = _passengerIdentityError(identity);
+      if (errorResponse != null) {
+        return errorResponse;
+      }
+
+      final passenger = identity.passenger;
+      if (passenger == null) {
+        return Response(
+          401,
+          body: jsonEncode({'error': 'Authentication required.'}),
+          headers: {'Content-Type': 'application/json'},
+        );
+      }
+
+      return Response.ok(
+        jsonEncode({
+          'authenticated': true,
+          'passenger': {'id': passenger.id, 'username': passenger.username},
+        }),
+        headers: {'Content-Type': 'application/json'},
+      );
+    } catch (_) {
+      return Response.internalServerError(
+        body: jsonEncode({'error': 'Passenger session could not be checked.'}),
+        headers: {'Content-Type': 'application/json'},
+      );
+    }
+  });
+
   router.post('/driver/shift/start', (Request request) async {
     final tokenService = driverTokenService;
     final shiftStartService = driverShiftStartService;
@@ -1235,6 +1453,16 @@ void main(List<String> args) async {
         );
       }
 
+      final passengerIdentity = await _passengerIdentityForRequest(
+        request: request,
+        authenticationService: passengerAuthenticationService,
+        tokenService: passengerTokenService,
+      );
+      final passengerIdentityError = _passengerIdentityError(passengerIdentity);
+      if (passengerIdentityError != null) {
+        return passengerIdentityError;
+      }
+
       final pickup = decodedBody['pickup'];
 
       final destination = decodedBody['destination'];
@@ -1321,6 +1549,14 @@ void main(List<String> args) async {
         );
 
         if (existing != null) {
+          final accessError = _passengerRideAccessError(
+            ride: existing,
+            identity: passengerIdentity,
+          );
+          if (accessError != null) {
+            return accessError;
+          }
+
           if (!rideSubmissionMatchesExisting(
             existing: existing,
             pickup: pickup.trim(),
@@ -1355,6 +1591,8 @@ void main(List<String> args) async {
         id: uuid.v4(),
 
         clientRequestId: clientRequestId as String?,
+
+        passengerId: passengerIdentity.passenger?.id,
 
         pickup: pickup.trim(),
 
@@ -1391,6 +1629,14 @@ void main(List<String> args) async {
 
         if (existing == null) {
           rethrow;
+        }
+
+        final accessError = _passengerRideAccessError(
+          ride: existing,
+          identity: passengerIdentity,
+        );
+        if (accessError != null) {
+          return accessError;
         }
 
         if (!rideSubmissionMatchesExisting(
@@ -2046,7 +2292,24 @@ void main(List<String> args) async {
 
   router.get('/rides/<rideId>', (Request request, String rideId) async {
     try {
+      final identity = await _passengerIdentityForRequest(
+        request: request,
+        authenticationService: passengerAuthenticationService,
+        tokenService: passengerTokenService,
+      );
+      final identityError = _passengerIdentityError(identity);
+      if (identityError != null) {
+        return identityError;
+      }
+
       final ride = await rideLifecycleService.getRide(rideId);
+      final accessError = _passengerRideAccessError(
+        ride: ride,
+        identity: identity,
+      );
+      if (accessError != null) {
+        return accessError;
+      }
 
       return Response.ok(
         jsonEncode(
@@ -2079,6 +2342,25 @@ void main(List<String> args) async {
 
   router.post('/rides/<rideId>/cancel', (Request request, String rideId) async {
     try {
+      final identity = await _passengerIdentityForRequest(
+        request: request,
+        authenticationService: passengerAuthenticationService,
+        tokenService: passengerTokenService,
+      );
+      final identityError = _passengerIdentityError(identity);
+      if (identityError != null) {
+        return identityError;
+      }
+
+      final currentRide = await rideLifecycleService.getRide(rideId);
+      final accessError = _passengerRideAccessError(
+        ride: currentRide,
+        identity: identity,
+      );
+      if (accessError != null) {
+        return accessError;
+      }
+
       final cancelledRide = await rideLifecycleService.cancelRide(rideId);
 
       return Response.ok(

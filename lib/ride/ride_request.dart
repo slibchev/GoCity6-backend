@@ -52,6 +52,7 @@ class RideRequest {
 
   final String id;
   final String? clientRequestId;
+  final String? passengerId;
 
   final String pickup;
   final double? pickupLatitude;
@@ -82,6 +83,7 @@ class RideRequest {
   const RideRequest({
     required this.id,
     this.clientRequestId,
+    this.passengerId,
     required this.pickup,
     this.pickupLatitude,
     this.pickupLongitude,
@@ -121,6 +123,7 @@ class RideRequest {
   RideRequest copyWith({
     String? id,
     String? clientRequestId,
+    String? passengerId,
     String? pickup,
     Object? pickupLatitude = _notProvided,
     Object? pickupLongitude = _notProvided,
@@ -143,6 +146,7 @@ class RideRequest {
     return RideRequest(
       id: id ?? this.id,
       clientRequestId: clientRequestId ?? this.clientRequestId,
+      passengerId: passengerId ?? this.passengerId,
       pickup: pickup ?? this.pickup,
       pickupLatitude: identical(pickupLatitude, _notProvided)
           ? this.pickupLatitude
@@ -189,6 +193,7 @@ class RideRequest {
     return RideRequest(
       id: id,
       clientRequestId: clientRequestId,
+      passengerId: passengerId,
       pickup: pickup,
       pickupLatitude: pickupLatitude,
       pickupLongitude: pickupLongitude,
