@@ -24,7 +24,13 @@ class PostgresPassengerAuthRepository implements PassengerAuthRepository {
     return database.run((session) async {
       final result = await session.execute(
         Sql.named('''
-          SELECT id, username, password_hash, status
+          SELECT
+            id,
+            username,
+            password_hash,
+            status,
+            phone_e164,
+            phone_verified_at
           FROM passengers
           WHERE $predicate
           LIMIT 1
@@ -41,6 +47,8 @@ class PostgresPassengerAuthRepository implements PassengerAuthRepository {
         username: row['username'] as String,
         passwordHash: row['password_hash'] as String,
         status: row['status'] as String,
+        phoneE164: row['phone_e164'] as String?,
+        phoneVerifiedAt: (row['phone_verified_at'] as DateTime?)?.toUtc(),
       );
     });
   }

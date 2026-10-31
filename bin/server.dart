@@ -67,6 +67,7 @@ import 'package:gocity6_backend/auth/passenger_request_identity.dart';
 import 'package:gocity6_backend/auth/passenger_ride_access_policy.dart';
 import 'package:gocity6_backend/auth/passenger_token_service.dart';
 import 'package:gocity6_backend/auth/postgres_passenger_auth_repository.dart';
+import 'package:gocity6_backend/auth/postgres_passenger_phone_policy_repository.dart';
 import 'package:gocity6_backend/dispatch/driver_state_service.dart';
 import 'package:gocity6_backend/dispatch/driver_work_state_repository.dart';
 import 'package:gocity6_backend/dispatch/postgres_driver_work_state_repository.dart';
@@ -742,8 +743,11 @@ void main(List<String> args) async {
     );
 
     driverTokenService = DriverTokenService(secret: driverJwtSecret);
+    final passengerPhonePolicyRepository =
+        PostgresPassengerPhonePolicyRepository(database: databasePool);
     passengerAuthenticationService = PassengerAuthenticationService(
       repository: PostgresPassengerAuthRepository(database: databasePool),
+      phoneRestrictionChecker: passengerPhonePolicyRepository,
     );
     passengerTokenService = PassengerTokenService(
       secret: derivePassengerTokenSecret(driverJwtSecret),

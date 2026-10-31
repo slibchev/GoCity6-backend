@@ -3,6 +3,7 @@ import 'package:gocity6_backend/auth/driver_token_service.dart';
 import 'package:gocity6_backend/auth/passenger_authentication_service.dart';
 import 'package:gocity6_backend/auth/passenger_request_identity.dart';
 import 'package:gocity6_backend/auth/passenger_token_service.dart';
+import 'package:gocity6_backend/auth/passenger_phone_restriction_service.dart';
 import 'package:test/test.dart';
 
 class _PassengerRepository implements PassengerAuthRepository {
@@ -23,6 +24,17 @@ class _PassengerRepository implements PassengerAuthRepository {
   @override
   Future<PassengerAuthRecord?> findByUsername(String username) async =>
       _byUsername[username.toLowerCase()];
+}
+
+class _PhoneRestrictionChecker implements PassengerPhoneRestrictionChecker {
+  bool restricted = false;
+  int reads = 0;
+
+  @override
+  Future<bool> hasActiveRestriction(String phoneE164) async {
+    reads++;
+    return restricted;
+  }
 }
 
 void main() {
@@ -123,6 +135,84 @@ void main() {
 
       expect(active?.id, 'passenger-02');
       expect(disabled, isNull);
+    },
+  );
+
+  test(
+    'verified restricted phone blocks login and existing sessions',
+    () async {
+      final checker = _PhoneRestrictionChecker()..restricted = true;
+      final verifiedRepository = _PassengerRepository([
+        PassengerAuthRecord(
+          id: 'verified-passenger',
+          username: 'verified',
+          passwordHash: passwordHash,
+          status: 'active',
+          phoneE164: '+359888123456',
+          phoneVerifiedAt: DateTime.utc(2026, 10, 31),
+        ),
+        PassengerAuthRecord(
+          id: 'legacy-test-passenger',
+          username: 'legacy-test',
+          passwordHash: passwordHash,
+          status: 'active',
+        ),
+      ]);
+      final service = PassengerAuthenticationService(
+        repository: verifiedRepository,
+        phoneRestrictionChecker: checker,
+      );
+
+      expect(
+        await service.authenticate(
+          username: 'verified',
+          password: 'correct horse battery staple',
+        ),
+        isNull,
+      );
+      expect(
+        await service.resolveActiveSession(passengerId: 'verified-passenger'),
+        isNull,
+      );
+      expect(
+        (await service.authenticate(
+          username: 'legacy-test',
+          password: 'correct horse battery staple',
+        ))?.id,
+        'legacy-test-passenger',
+      );
+      expect(checker.reads, 2);
+    },
+  );
+
+  test(
+    'verified phone fails closed when restriction lookup is unavailable',
+    () async {
+      final verifiedRepository = _PassengerRepository([
+        PassengerAuthRecord(
+          id: 'verified-passenger',
+          username: 'verified',
+          passwordHash: passwordHash,
+          status: 'active',
+          phoneE164: '+359888123456',
+          phoneVerifiedAt: DateTime.utc(2026, 10, 31),
+        ),
+      ]);
+      final service = PassengerAuthenticationService(
+        repository: verifiedRepository,
+      );
+
+      expect(
+        await service.authenticate(
+          username: 'verified',
+          password: 'correct horse battery staple',
+        ),
+        isNull,
+      );
+      expect(
+        await service.resolveActiveSession(passengerId: 'verified-passenger'),
+        isNull,
+      );
     },
   );
 

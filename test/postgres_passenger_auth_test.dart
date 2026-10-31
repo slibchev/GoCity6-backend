@@ -60,7 +60,13 @@ void main() {
       "SELECT to_regclass('public.passengers'), "
       "EXISTS (SELECT 1 FROM information_schema.columns "
       "WHERE table_schema = 'public' AND table_name = 'rides' "
-      "AND column_name = 'passenger_id')",
+      "AND column_name = 'passenger_id'), "
+      "EXISTS (SELECT 1 FROM information_schema.columns "
+      "WHERE table_schema = 'public' AND table_name = 'passengers' "
+      "AND column_name = 'phone_e164'), "
+      "EXISTS (SELECT 1 FROM information_schema.columns "
+      "WHERE table_schema = 'public' AND table_name = 'passengers' "
+      "AND column_name = 'phone_verified_at')",
     );
     expect(
       schema.single[0],
@@ -68,6 +74,8 @@ void main() {
       reason: 'Migration 020 must be applied.',
     );
     expect(schema.single[1], isTrue, reason: 'rides.passenger_id must exist.');
+    expect(schema.single[2], isTrue, reason: 'Migration 021 must be applied.');
+    expect(schema.single[3], isTrue);
   });
 
   tearDownAll(() async {
@@ -201,7 +209,12 @@ void main() {
       expect(authenticatedOne?.id, passengerOneId);
       expect(authenticatedTwo?.id, passengerTwoId);
       expect(wrongPassword, isNull);
-      expect(await reopenedRepository.findById(passengerOneId), isNotNull);
+      final reopenedPassenger = await reopenedRepository.findById(
+        passengerOneId,
+      );
+      expect(reopenedPassenger, isNotNull);
+      expect(reopenedPassenger?.phoneE164, isNull);
+      expect(reopenedPassenger?.phoneVerifiedAt, isNull);
 
       final rideAfterReconnect = await PostgresRideRequestRepository(
         database: database!,

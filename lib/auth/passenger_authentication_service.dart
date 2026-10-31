@@ -1,17 +1,23 @@
 import 'package:bcrypt/bcrypt.dart';
 
+import 'passenger_phone_restriction_service.dart';
+
 class PassengerAuthRecord {
   const PassengerAuthRecord({
     required this.id,
     required this.username,
     required this.passwordHash,
     required this.status,
+    this.phoneE164,
+    this.phoneVerifiedAt,
   });
 
   final String id;
   final String username;
   final String passwordHash;
   final String status;
+  final String? phoneE164;
+  final DateTime? phoneVerifiedAt;
 
   bool get isActive => status == 'active';
 }
@@ -29,9 +35,13 @@ class AuthenticatedPassenger {
 }
 
 class PassengerAuthenticationService {
-  const PassengerAuthenticationService({required this.repository});
+  const PassengerAuthenticationService({
+    required this.repository,
+    this.phoneRestrictionChecker,
+  });
 
   final PassengerAuthRepository repository;
+  final PassengerPhoneRestrictionChecker? phoneRestrictionChecker;
 
   Future<AuthenticatedPassenger?> authenticate({
     required String username,
@@ -55,6 +65,10 @@ class PassengerAuthenticationService {
       return null;
     }
 
+    if (await _hasApplicablePhoneRestriction(passenger)) {
+      return null;
+    }
+
     return AuthenticatedPassenger(
       id: passenger.id,
       username: passenger.username,
@@ -70,10 +84,29 @@ class PassengerAuthenticationService {
     if (passenger == null || !passenger.isActive) {
       return null;
     }
+    if (await _hasApplicablePhoneRestriction(passenger)) {
+      return null;
+    }
 
     return AuthenticatedPassenger(
       id: passenger.id,
       username: passenger.username,
     );
+  }
+
+  Future<bool> _hasApplicablePhoneRestriction(
+    PassengerAuthRecord passenger,
+  ) async {
+    if (passenger.phoneVerifiedAt == null) {
+      return false;
+    }
+
+    final phoneE164 = passenger.phoneE164;
+    final restrictionChecker = phoneRestrictionChecker;
+    if (phoneE164 == null || restrictionChecker == null) {
+      return true;
+    }
+
+    return restrictionChecker.hasActiveRestriction(phoneE164);
   }
 }
