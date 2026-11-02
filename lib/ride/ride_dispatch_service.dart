@@ -2,6 +2,12 @@ import '../dispatch/atomic_ride_reservation_repository.dart';
 import '../dispatch/atomic_waiting_ride_acceptance_repository.dart';
 import '../dispatch/driver_queue_state.dart';
 import '../dispatch/driver_shift_repository.dart';
+import '../dispatch/driver_live_location.dart';
+import '../dispatch/driver_live_location_repository.dart';
+import '../dispatch/driver_work_state_repository.dart';
+import '../dispatch/active_driver_shift.dart';
+import '../dispatch/external_ride_session.dart';
+import '../dispatch/external_ride_session_repository.dart';
 import '../routing/route_estimator.dart';
 import 'ride_request.dart';
 import 'ride_pickup_route_waypoint.dart';
@@ -25,7 +31,11 @@ enum RideDispatchConflict {
   rideHasAutomaticOffer,
 }
 
-enum RideDispatchInputConflict { driverLocationRequired, invalidDriverLocation }
+enum RideDispatchInputConflict {
+  driverLocationRequired,
+  invalidDriverLocation,
+  driverLocationUnavailable,
+}
 
 class RideNotFoundException implements Exception {
   final String rideId;
@@ -60,6 +70,53 @@ class RideDispatchInputException implements Exception {
   }
 }
 
+class WaitingRideSelectionAssessment {
+  const WaitingRideSelectionAssessment({
+    required this.canSelect,
+    required this.combinedEtaSeconds,
+    required this.reasonCode,
+  });
+
+  final bool canSelect;
+  final int? combinedEtaSeconds;
+  final String? reasonCode;
+
+  Map<String, Object?> toJson() => {
+    'canSelect': canSelect,
+    'combinedEtaSeconds': combinedEtaSeconds,
+    'reasonCode': reasonCode,
+  };
+}
+
+final class _BusyRoutePrefix {
+  const _BusyRoutePrefix({required this.seconds, required this.origin});
+
+  final double seconds;
+  final RouteWaypoint origin;
+}
+
+final class _WaitingRideContext {
+  const _WaitingRideContext({
+    required this.shift,
+    required this.currentRide,
+    required this.currentRideCount,
+    required this.reservedRideExists,
+    required this.pendingOffer,
+    required this.breakScheduled,
+    required this.location,
+    required this.externalRideSession,
+  });
+
+  final ActiveDriverShift? shift;
+  final RideRequest? currentRide;
+  final int currentRideCount;
+  final bool reservedRideExists;
+  final bool pendingOffer;
+  final bool breakScheduled;
+  final DriverLiveLocation? location;
+  final ExternalRideSession? externalRideSession;
+}
+
 class RideDispatchService {
   final RideRequestRepository repository;
 
@@ -71,13 +128,369 @@ class RideDispatchService {
 
   final RouteEstimator? routeEstimator;
 
+  final DriverWorkStateRepository? workStateRepository;
+
+  final DriverLiveLocationRepository? liveLocationRepository;
+
+  final ExternalRideSessionRepository? externalRideSessionRepository;
+
+  final int maxWaitingRideEvaluations;
+
+  final Duration routeEstimateTimeout;
+
   const RideDispatchService({
     required this.repository,
     this.waitingRideAcceptanceRepository,
     this.driverShiftRepository,
     this.rideReservationRepository,
     this.routeEstimator,
-  });
+    this.workStateRepository,
+    this.liveLocationRepository,
+    this.externalRideSessionRepository,
+    this.maxWaitingRideEvaluations = 25,
+    this.routeEstimateTimeout = const Duration(seconds: 4),
+  }) : assert(maxWaitingRideEvaluations > 0),
+       assert(routeEstimateTimeout > Duration.zero);
+
+  /// Evaluates the current waiting-board list for one authenticated driver.
+  /// This is advisory only; the atomic repositories remain authoritative.
+  Future<List<WaitingRideSelectionAssessment>> assessWaitingRides({
+    required String driverId,
+    required List<RideRequest> rides,
+    DateTime? now,
+  }) async {
+    final nowUtc = (now ?? DateTime.now()).toUtc();
+    final context = await _loadWaitingRideContext(driverId, nowUtc);
+    final baseFailure = _contextFailure(context, nowUtc);
+    final assessments = List<WaitingRideSelectionAssessment?>.filled(
+      rides.length,
+      null,
+    );
+
+    for (var i = 0; i < rides.length; i++) {
+      final rideFailure = _rideFailure(rides[i], nowUtc);
+      if (rideFailure != null) {
+        assessments[i] = _notSelectable(rideFailure);
+      } else if (baseFailure != null) {
+        assessments[i] = _notSelectable(baseFailure);
+      }
+    }
+
+    if (baseFailure != null || context.shift == null) {
+      return List.unmodifiable(assessments.map((item) => item!));
+    }
+
+    final queueState = context.shift!.queueState.effectiveAt(nowUtc);
+    if (queueState.availability == DriverQueueAvailability.available) {
+      for (var i = 0; i < rides.length; i++) {
+        assessments[i] ??= const WaitingRideSelectionAssessment(
+          canSelect: true,
+          combinedEtaSeconds: null,
+          reasonCode: null,
+        );
+      }
+      return List.unmodifiable(assessments.map((item) => item!));
+    }
+
+    final routeIndexes = <int>[];
+    for (var i = 0; i < rides.length; i++) {
+      if (assessments[i] == null) routeIndexes.add(i);
+    }
+    if (routeIndexes.isEmpty) {
+      return List.unmodifiable(assessments.map((item) => item!));
+    }
+    if (routeIndexes.length > maxWaitingRideEvaluations) {
+      for (final index in routeIndexes.skip(maxWaitingRideEvaluations)) {
+        assessments[index] = _notSelectable('evaluation_deferred');
+      }
+      routeIndexes.removeRange(maxWaitingRideEvaluations, routeIndexes.length);
+    }
+
+    final location = context.location;
+    if (location == null || !location.isReliableAt(nowUtc)) {
+      for (final index in routeIndexes) {
+        assessments[index] = _notSelectable('gps_unavailable');
+      }
+      return List.unmodifiable(assessments.map((item) => item!));
+    }
+
+    if (queueState.availability == DriverQueueAvailability.busy) {
+      final currentRide = context.currentRide;
+      if (currentRide == null) {
+        for (final index in routeIndexes) {
+          assessments[index] = _notSelectable('current_ride_unavailable');
+        }
+        return List.unmodifiable(assessments.map((item) => item!));
+      }
+      try {
+        final prefix = await _prepareBusyRoutePrefix(
+          currentRide: currentRide,
+          driverLatitude: location.latitude,
+          driverLongitude: location.longitude,
+        );
+        await _assessPickupRoutes(
+          origin: prefix.origin,
+          indexes: routeIndexes,
+          rides: rides,
+          prefixSeconds: prefix.seconds,
+          assessments: assessments,
+        );
+      } catch (_) {
+        for (final index in routeIndexes) {
+          assessments[index] = _notSelectable('route_unavailable');
+        }
+      }
+      return List.unmodifiable(assessments.map((item) => item!));
+    }
+
+    if (queueState.availability == DriverQueueAvailability.externalRide) {
+      final session = context.externalRideSession;
+      if (session == null || !session.qualifiesAsExternalRide) {
+        for (final index in routeIndexes) {
+          assessments[index] = _notSelectable('external_ride_not_qualified');
+        }
+        return List.unmodifiable(assessments.map((item) => item!));
+      }
+      await _assessPickupRoutes(
+        origin: RouteWaypoint(
+          latitude: location.latitude,
+          longitude: location.longitude,
+        ),
+        indexes: routeIndexes,
+        rides: rides,
+        assessments: assessments,
+      );
+      return List.unmodifiable(assessments.map((item) => item!));
+    }
+
+    for (final index in routeIndexes) {
+      assessments[index] = _notSelectable('driver_not_available');
+    }
+    return List.unmodifiable(assessments.map((item) => item!));
+  }
+
+  Future<_WaitingRideContext> _loadWaitingRideContext(
+    String driverId,
+    DateTime nowUtc,
+  ) async {
+    final snapshot = await workStateRepository?.loadByDriverId(driverId);
+    final shift =
+        snapshot?.activeShift ??
+        (snapshot == null
+            ? await driverShiftRepository?.findActiveByDriverId(driverId)
+            : null);
+    final assignedRides = snapshot == null && shift != null
+        ? await repository.findByAssignedDriverId(driverId)
+        : const <RideRequest>[];
+    final activeRides = snapshot == null
+        ? assignedRides
+              .where((ride) => _isActiveCurrentRide(ride.status))
+              .toList()
+        : (snapshot.currentRide == null
+              ? const <RideRequest>[]
+              : [snapshot.currentRide!]);
+    final currentRide =
+        snapshot?.currentRide ??
+        (activeRides.length == 1 ? activeRides.single : null);
+    final currentRideCount = snapshot == null
+        ? activeRides.length
+        : (snapshot.currentRide == null ? 0 : 1);
+    final reservedRideExists =
+        snapshot?.reservedRide != null ||
+        assignedRides.any((ride) => ride.status == RideRequestStatus.reserved);
+    final pendingOffer =
+        snapshot?.pendingOffer != null ||
+        shift?.queueState.hasPendingOffer == true;
+    final breakScheduled =
+        snapshot?.pendingBreakRequestId != null ||
+        snapshot?.pendingBreakKind != null;
+    final availability = shift?.queueState.effectiveAt(nowUtc).availability;
+    DriverLiveLocation? location;
+    if (shift != null &&
+        (availability == DriverQueueAvailability.busy ||
+            availability == DriverQueueAvailability.externalRide)) {
+      try {
+        location = await liveLocationRepository?.findByDriverId(driverId);
+      } catch (_) {
+        location = null;
+      }
+    }
+
+    ExternalRideSession? externalRideSession;
+    if (availability == DriverQueueAvailability.externalRide) {
+      try {
+        externalRideSession = await externalRideSessionRepository
+            ?.findActiveByDriverId(driverId);
+      } catch (_) {
+        externalRideSession = null;
+      }
+    }
+
+    return _WaitingRideContext(
+      shift: shift,
+      currentRide: currentRide,
+      currentRideCount: currentRideCount,
+      reservedRideExists: reservedRideExists,
+      pendingOffer: pendingOffer,
+      breakScheduled: breakScheduled,
+      location: location,
+      externalRideSession: externalRideSession,
+    );
+  }
+
+  String? _contextFailure(_WaitingRideContext context, DateTime nowUtc) {
+    final shift = context.shift;
+    if (shift == null) return 'no_active_shift';
+    if (context.breakScheduled) return 'break_scheduled';
+    if (context.pendingOffer) return 'pending_offer';
+    if (context.reservedRideExists) return 'reserved_ride_exists';
+
+    final availability = shift.queueState.effectiveAt(nowUtc).availability;
+    if (availability == DriverQueueAvailability.shortBreak ||
+        availability == DriverQueueAvailability.longBreak) {
+      return 'driver_on_break';
+    }
+    if (availability == DriverQueueAvailability.busy) {
+      final ride = context.currentRide;
+      if (context.currentRideCount != 1 ||
+          ride == null ||
+          ride.assignedDriverId != shift.driverId ||
+          ride.assignedVehicleId != shift.vehicleId ||
+          !_isActiveCurrentRide(ride.status)) {
+        return 'current_ride_unavailable';
+      }
+    } else if (availability == DriverQueueAvailability.available &&
+        context.currentRideCount != 0) {
+      return 'driver_state_mismatch';
+    } else if (availability == DriverQueueAvailability.externalRide) {
+      if (context.currentRideCount != 0) return 'driver_state_mismatch';
+      final session = context.externalRideSession;
+      if (session == null ||
+          !session.isActive ||
+          !session.qualifiesAsExternalRide) {
+        return 'external_ride_not_qualified';
+      }
+    }
+    return null;
+  }
+
+  String? _rideFailure(RideRequest ride, DateTime nowUtc) {
+    if (ride.status != RideRequestStatus.waitingForVehicle) {
+      return 'ride_not_waiting';
+    }
+    if (ride.assignedDriverId != null || ride.assignedVehicleId != null) {
+      return 'ride_already_assigned';
+    }
+    if (!nowUtc.isBefore(
+      ride.requestedAt.toUtc().add(const Duration(minutes: 30)),
+    )) {
+      return 'ride_expired';
+    }
+    return null;
+  }
+
+  WaitingRideSelectionAssessment _notSelectable(String reasonCode) =>
+      WaitingRideSelectionAssessment(
+        canSelect: false,
+        combinedEtaSeconds: null,
+        reasonCode: reasonCode,
+      );
+
+  WaitingRideSelectionAssessment _etaAssessment(int seconds) {
+    final canSelect =
+        seconds <= AtomicRideReservationRepository.maximumCombinedEtaSeconds;
+    return WaitingRideSelectionAssessment(
+      canSelect: canSelect,
+      combinedEtaSeconds: seconds,
+      reasonCode: canSelect ? null : 'combined_eta_too_high',
+    );
+  }
+
+  Future<List<RouteEstimate?>> _estimateFinalLegs({
+    required RouteWaypoint origin,
+    required List<RouteWaypoint> destinations,
+  }) async {
+    final estimator = routeEstimator;
+    if (estimator == null) return List.filled(destinations.length, null);
+    if (estimator is MultiDestinationRouteEstimator) {
+      return estimator
+          .estimateToMany(origin: origin, destinations: destinations)
+          .timeout(routeEstimateTimeout);
+    }
+
+    final estimates = List<RouteEstimate?>.filled(destinations.length, null);
+    const concurrency = 4;
+    for (var start = 0; start < destinations.length; start += concurrency) {
+      final end = start + concurrency < destinations.length
+          ? start + concurrency
+          : destinations.length;
+      await Future.wait(
+        List<Future<void>>.generate(end - start, (offset) async {
+          final index = start + offset;
+          try {
+            estimates[index] = await estimator
+                .estimate(origin: origin, destination: destinations[index])
+                .timeout(routeEstimateTimeout);
+          } catch (_) {
+            estimates[index] = null;
+          }
+        }),
+      );
+    }
+    return estimates;
+  }
+
+  Future<void> _assessPickupRoutes({
+    required RouteWaypoint origin,
+    required List<int> indexes,
+    required List<RideRequest> rides,
+    required List<WaitingRideSelectionAssessment?> assessments,
+    double prefixSeconds = 0,
+  }) async {
+    final destinationIndexes = <int>[];
+    final destinations = <RouteWaypoint>[];
+    for (final index in indexes) {
+      try {
+        final destination = ridePickupRouteWaypoint(rides[index]);
+        destinationIndexes.add(index);
+        destinations.add(destination);
+      } catch (_) {
+        assessments[index] = _notSelectable('route_unavailable');
+      }
+    }
+    try {
+      final estimates = await _estimateFinalLegs(
+        origin: origin,
+        destinations: destinations,
+      );
+      for (var offset = 0; offset < destinationIndexes.length; offset++) {
+        final index = destinationIndexes[offset];
+        final estimate = offset < estimates.length ? estimates[offset] : null;
+        if (estimate == null ||
+            !estimate.durationSeconds.isFinite ||
+            estimate.durationSeconds < 0) {
+          assessments[index] = _notSelectable('route_unavailable');
+          continue;
+        }
+        assessments[index] = _etaAssessment(
+          (prefixSeconds + estimate.durationSeconds).ceil(),
+        );
+      }
+    } catch (_) {
+      for (final index in destinationIndexes) {
+        assessments[index] = _notSelectable('route_unavailable');
+      }
+    }
+  }
+
+  Future<RouteEstimate> _estimateRoute({
+    required RouteWaypoint origin,
+    required RouteWaypoint destination,
+  }) {
+    return routeEstimator!
+        .estimate(origin: origin, destination: destination)
+        .timeout(routeEstimateTimeout);
+  }
 
   Future<RideRequest> selectWaitingRide({
     required String rideId,
@@ -179,7 +592,12 @@ class RideDispatchService {
     required String? reservationId,
     required DateTime? now,
   }) async {
-    final shift = await driverShiftRepository!.findActiveByDriverId(driverId);
+    final snapshot = await workStateRepository?.loadByDriverId(driverId);
+    final shift =
+        snapshot?.activeShift ??
+        (snapshot == null
+            ? await driverShiftRepository!.findActiveByDriverId(driverId)
+            : null);
 
     if (shift == null) {
       throw const RideDispatchConflictException(
@@ -187,7 +605,25 @@ class RideDispatchService {
       );
     }
 
-    switch (shift.queueState.availability) {
+    if (snapshot?.pendingBreakRequestId != null ||
+        snapshot?.pendingBreakKind != null) {
+      throw const RideDispatchConflictException(
+        RideDispatchConflict.driverNotAvailable,
+      );
+    }
+    if (snapshot?.reservedRide != null) {
+      throw const RideDispatchConflictException(
+        RideDispatchConflict.driverAlreadyHasReservedRide,
+      );
+    }
+    if (snapshot?.pendingOffer != null || shift.queueState.hasPendingOffer) {
+      throw const RideDispatchConflictException(
+        RideDispatchConflict.driverNotAvailable,
+      );
+    }
+
+    final nowUtc = (now ?? DateTime.now()).toUtc();
+    switch (shift.queueState.effectiveAt(nowUtc).availability) {
       case DriverQueueAvailability.available:
         if (waitingRideAcceptanceRepository == null) {
           throw StateError(
@@ -204,23 +640,35 @@ class RideDispatchService {
       case DriverQueueAvailability.busy:
         _requireReservationDependencies(reservationId: reservationId, now: now);
 
+        final expectedLocation = await _loadReservationLocation(
+          driverId: driverId,
+          now: nowUtc,
+        );
         final location = _requireDriverLocation(
-          latitude: driverLatitude,
-          longitude: driverLongitude,
+          latitude: expectedLocation?.latitude ?? driverLatitude,
+          longitude: expectedLocation?.longitude ?? driverLongitude,
         );
 
-        final driverRides = await repository.findByAssignedDriverId(driverId);
-
-        final activeCurrentRides = driverRides
-            .where(
-              (existingRide) =>
-                  existingRide.id != ride.id &&
-                  existingRide.assignedVehicleId == shift.vehicleId &&
-                  _isActiveCurrentRide(existingRide.status),
-            )
-            .toList();
+        final activeCurrentRides = snapshot == null
+            ? (await repository.findByAssignedDriverId(driverId))
+                  .where(
+                    (existingRide) =>
+                        existingRide.id != ride.id &&
+                        existingRide.assignedVehicleId == shift.vehicleId &&
+                        _isActiveCurrentRide(existingRide.status),
+                  )
+                  .toList()
+            : (snapshot.currentRide == null
+                  ? <RideRequest>[]
+                  : [snapshot.currentRide!]);
 
         if (activeCurrentRides.length != 1) {
+          throw const RideDispatchConflictException(
+            RideDispatchConflict.currentCity6RideNotFound,
+          );
+        }
+        if (activeCurrentRides.single.assignedDriverId != driverId ||
+            activeCurrentRides.single.assignedVehicleId != shift.vehicleId) {
           throw const RideDispatchConflictException(
             RideDispatchConflict.currentCity6RideNotFound,
           );
@@ -239,14 +687,20 @@ class RideDispatchService {
           reservationId: reservationId!,
           combinedEtaSeconds: combinedEtaSeconds,
           now: now!,
+          expectedDriverLocation: expectedLocation,
+          expectedCurrentRideId: activeCurrentRides.single.id,
         );
 
       case DriverQueueAvailability.externalRide:
         _requireReservationDependencies(reservationId: reservationId, now: now);
 
+        final expectedLocation = await _loadReservationLocation(
+          driverId: driverId,
+          now: nowUtc,
+        );
         final location = _requireDriverLocation(
-          latitude: driverLatitude,
-          longitude: driverLongitude,
+          latitude: expectedLocation?.latitude ?? driverLatitude,
+          longitude: expectedLocation?.longitude ?? driverLongitude,
         );
 
         final combinedEtaSeconds = await _calculateExternalCombinedEtaSeconds(
@@ -261,6 +715,7 @@ class RideDispatchService {
           reservationId: reservationId!,
           combinedEtaSeconds: combinedEtaSeconds,
           now: now!,
+          expectedDriverLocation: expectedLocation,
         );
 
       case DriverQueueAvailability.shortBreak:
@@ -269,6 +724,29 @@ class RideDispatchService {
           RideDispatchConflict.driverNotAvailable,
         );
     }
+  }
+
+  Future<DriverLiveLocation?> _loadReservationLocation({
+    required String driverId,
+    required DateTime now,
+  }) async {
+    final locationRepository = liveLocationRepository;
+    if (locationRepository == null) {
+      if (workStateRepository != null) {
+        throw const RideDispatchInputException(
+          RideDispatchInputConflict.driverLocationUnavailable,
+        );
+      }
+      return null;
+    }
+
+    final location = await locationRepository.findByDriverId(driverId);
+    if (location == null || !location.isReliableAt(now)) {
+      throw const RideDispatchInputException(
+        RideDispatchInputConflict.driverLocationUnavailable,
+      );
+    }
+    return location;
   }
 
   Future<RideRequest> _selectWaitingRideLegacy({
@@ -355,10 +833,24 @@ class RideDispatchService {
     required double driverLatitude,
     required double driverLongitude,
   }) async {
-    final estimator = routeEstimator!;
+    final prefix = await _prepareBusyRoutePrefix(
+      currentRide: currentRide,
+      driverLatitude: driverLatitude,
+      driverLongitude: driverLongitude,
+    );
+    final finalLeg = await _estimateRoute(
+      origin: prefix.origin,
+      destination: ridePickupRouteWaypoint(nextRide),
+    );
+    return (prefix.seconds + _requireFiniteDuration(finalLeg)).ceil();
+  }
 
+  Future<_BusyRoutePrefix> _prepareBusyRoutePrefix({
+    required RideRequest currentRide,
+    required double driverLatitude,
+    required double driverLongitude,
+  }) async {
     var totalSeconds = 0.0;
-
     RouteWaypoint origin = RouteWaypoint(
       latitude: driverLatitude,
       longitude: driverLongitude,
@@ -366,39 +858,28 @@ class RideDispatchService {
 
     if (currentRide.status != RideRequestStatus.inProgress) {
       final currentPickup = ridePickupRouteWaypoint(currentRide);
-      final toCurrentPickup = await estimator.estimate(
+      final toCurrentPickup = await _estimateRoute(
         origin: origin,
         destination: currentPickup,
       );
-
       totalSeconds += _requireFiniteDuration(toCurrentPickup);
-
       origin = _routeDestinationOrAddress(
         estimate: toCurrentPickup,
         fallbackWaypoint: currentPickup,
       );
     }
 
-    final toCurrentDestination = await estimator.estimate(
+    final destination = RouteWaypoint(address: currentRide.destination);
+    final toCurrentDestination = await _estimateRoute(
       origin: origin,
-      destination: RouteWaypoint(address: currentRide.destination),
+      destination: destination,
     );
-
     totalSeconds += _requireFiniteDuration(toCurrentDestination);
-
     origin = _routeDestinationOrAddress(
       estimate: toCurrentDestination,
-      fallbackWaypoint: RouteWaypoint(address: currentRide.destination),
+      fallbackWaypoint: destination,
     );
-
-    final toNextPickup = await estimator.estimate(
-      origin: origin,
-      destination: ridePickupRouteWaypoint(nextRide),
-    );
-
-    totalSeconds += _requireFiniteDuration(toNextPickup);
-
-    return totalSeconds.ceil();
+    return _BusyRoutePrefix(seconds: totalSeconds, origin: origin);
   }
 
   Future<int> _calculateExternalCombinedEtaSeconds({
@@ -406,7 +887,7 @@ class RideDispatchService {
     required double driverLatitude,
     required double driverLongitude,
   }) async {
-    final estimate = await routeEstimator!.estimate(
+    final estimate = await _estimateRoute(
       origin: RouteWaypoint(
         latitude: driverLatitude,
         longitude: driverLongitude,
@@ -423,6 +904,8 @@ class RideDispatchService {
     required String reservationId,
     required int combinedEtaSeconds,
     required DateTime now,
+    DriverLiveLocation? expectedDriverLocation,
+    String? expectedCurrentRideId,
   }) async {
     if (combinedEtaSeconds >
         AtomicRideReservationRepository.maximumCombinedEtaSeconds) {
@@ -438,6 +921,8 @@ class RideDispatchService {
         driverId: driverId,
         combinedEtaSeconds: combinedEtaSeconds,
         now: now,
+        expectedDriverLocation: expectedDriverLocation,
+        expectedCurrentRideId: expectedCurrentRideId,
       );
     } on AtomicRideReservationConflictException catch (error) {
       switch (error.conflict) {
@@ -501,6 +986,16 @@ class RideDispatchService {
         case AtomicRideReservationConflict.vehicleAlreadyHasReservedRide:
           throw const RideDispatchConflictException(
             RideDispatchConflict.vehicleAlreadyHasReservedRide,
+          );
+
+        case AtomicRideReservationConflict.driverLocationUnavailable:
+          throw const RideDispatchInputException(
+            RideDispatchInputConflict.driverLocationUnavailable,
+          );
+
+        case AtomicRideReservationConflict.currentRideChanged:
+          throw const RideDispatchConflictException(
+            RideDispatchConflict.currentCity6RideNotFound,
           );
       }
     }

@@ -4,7 +4,10 @@ import 'package:gocity6_backend/dispatch/active_driver_shift.dart';
 import 'package:gocity6_backend/dispatch/atomic_ride_reservation_repository.dart';
 import 'package:gocity6_backend/dispatch/atomic_waiting_ride_acceptance_repository.dart';
 import 'package:gocity6_backend/dispatch/driver_queue_state.dart';
+import 'package:gocity6_backend/dispatch/driver_live_location.dart';
+import 'package:gocity6_backend/dispatch/driver_live_location_repository.dart';
 import 'package:gocity6_backend/dispatch/driver_shift_repository.dart';
+import 'package:gocity6_backend/dispatch/driver_work_state_repository.dart';
 import 'package:gocity6_backend/dispatch/ride_reservation.dart';
 import 'package:gocity6_backend/ride/ride_dispatch_service.dart';
 import 'package:gocity6_backend/ride/ride_request.dart';
@@ -107,6 +110,42 @@ class FakeDriverShiftRepository implements DriverShiftRepository {
   }
 }
 
+class FakeDriverWorkStateRepository implements DriverWorkStateRepository {
+  final DriverWorkStateSnapshot snapshot;
+
+  FakeDriverWorkStateRepository(this.snapshot);
+
+  @override
+  Future<DriverWorkStateSnapshot> loadByDriverId(String driverId) async =>
+      snapshot;
+}
+
+class FakeDriverLiveLocationRepository implements DriverLiveLocationRepository {
+  DriverLiveLocation? location;
+
+  FakeDriverLiveLocationRepository(this.location);
+
+  @override
+  Future<DriverLiveLocation?> findByDriverId(String driverId) async => location;
+
+  @override
+  Future<DriverLiveLocation> save({
+    required String driverId,
+    required double latitude,
+    required double longitude,
+    required DateTime updatedAt,
+  }) async {
+    final next = DriverLiveLocation(
+      driverId: driverId,
+      latitude: latitude,
+      longitude: longitude,
+      updatedAt: updatedAt,
+    );
+    location = next;
+    return next;
+  }
+}
+
 class FakeAtomicWaitingRideAcceptanceRepository
     implements AtomicWaitingRideAcceptanceRepository {
   final RideRequest result;
@@ -134,6 +173,8 @@ class FakeAtomicRideReservationRepository
   String? driverId;
   int? combinedEtaSeconds;
   DateTime? now;
+  DriverLiveLocation? expectedDriverLocation;
+  String? expectedCurrentRideId;
   AtomicRideReservationConflict? conflict;
 
   @override
@@ -143,6 +184,8 @@ class FakeAtomicRideReservationRepository
     required String driverId,
     required int combinedEtaSeconds,
     required DateTime now,
+    DriverLiveLocation? expectedDriverLocation,
+    String? expectedCurrentRideId,
   }) async {
     callCount += 1;
     this.reservationId = reservationId;
@@ -150,6 +193,8 @@ class FakeAtomicRideReservationRepository
     this.driverId = driverId;
     this.combinedEtaSeconds = combinedEtaSeconds;
     this.now = now;
+    this.expectedDriverLocation = expectedDriverLocation;
+    this.expectedCurrentRideId = expectedCurrentRideId;
 
     if (conflict != null) {
       throw AtomicRideReservationConflictException(conflict!);
@@ -192,6 +237,19 @@ class FakeRouteEstimator implements RouteEstimator {
     }
 
     return estimates.removeFirst();
+  }
+}
+
+class _LocationAwareRouteEstimator implements RouteEstimator {
+  @override
+  Future<RouteEstimate> estimate({
+    required RouteWaypoint origin,
+    required RouteWaypoint destination,
+  }) async {
+    final seconds = origin.latitude == null
+        ? 100.0
+        : (origin.latitude == 42.65 ? 501.0 : 300.0);
+    return RouteEstimate(distanceMeters: 1000, durationSeconds: seconds);
   }
 }
 
@@ -368,6 +426,7 @@ void main() {
 
     expect(reservationRepository.callCount, 1);
     expect(reservationRepository.combinedEtaSeconds, 600);
+    expect(reservationRepository.expectedCurrentRideId, currentRide.id);
 
     expect(result.status, RideRequestStatus.reserved);
     expect(result.assignedDriverId, isNull);
@@ -652,5 +711,383 @@ void main() {
         ),
       ),
     );
+  });
+
+  test(
+    'waiting assessment accepts busy ETA 599 and 600, rejects 601',
+    () async {
+      final currentRide = createRide(
+        id: 'ride-current',
+        status: RideRequestStatus.inProgress,
+        assignedDriverId: 'driver-001',
+        assignedVehicleId: 'vehicle-001',
+        destination: 'Current destination',
+      );
+      final location = DriverLiveLocation(
+        driverId: 'driver-001',
+        latitude: 42.65,
+        longitude: 23.25,
+        updatedAt: now.subtract(const Duration(seconds: 1)),
+        gpsFixAt: now.subtract(const Duration(seconds: 1)),
+      );
+
+      for (final seconds in [599, 600, 601]) {
+        final waitingRide = createRide(
+          id: 'ride-$seconds',
+          status: RideRequestStatus.waitingForVehicle,
+          pickupLatitude: 42.66,
+          pickupLongitude: 23.26,
+        );
+        final service = RideDispatchService(
+          repository: FakeRideRequestRepository([waitingRide]),
+          driverShiftRepository: FakeDriverShiftRepository(
+            createShift(DriverQueueAvailability.busy),
+          ),
+          workStateRepository: FakeDriverWorkStateRepository(
+            DriverWorkStateSnapshot(
+              activeShift: createShift(DriverQueueAvailability.busy),
+              pendingOffer: null,
+              currentRide: currentRide,
+              reservedRide: null,
+            ),
+          ),
+          liveLocationRepository: FakeDriverLiveLocationRepository(location),
+          routeEstimator: FakeRouteEstimator([
+            estimate(durationSeconds: 0),
+            estimate(durationSeconds: seconds.toDouble()),
+          ]),
+        );
+
+        final assessment = (await service.assessWaitingRides(
+          driverId: 'driver-001',
+          rides: [waitingRide],
+          now: now,
+        )).single;
+
+        expect(assessment.combinedEtaSeconds, seconds);
+        expect(assessment.canSelect, seconds <= 600);
+        expect(
+          assessment.reasonCode,
+          seconds <= 600 ? isNull : 'combined_eta_too_high',
+        );
+      }
+    },
+  );
+
+  test(
+    'waiting assessment reacts to GPS freshness and new saved fixes',
+    () async {
+      final currentRide = createRide(
+        id: 'ride-current',
+        status: RideRequestStatus.inProgress,
+        assignedDriverId: 'driver-001',
+        assignedVehicleId: 'vehicle-001',
+        destination: 'Current destination',
+      );
+      final waitingRide = createRide(
+        id: 'ride-next',
+        status: RideRequestStatus.waitingForVehicle,
+        pickupLatitude: 42.66,
+        pickupLongitude: 23.26,
+      );
+      final locationRepository = FakeDriverLiveLocationRepository(
+        DriverLiveLocation(
+          driverId: 'driver-001',
+          latitude: 42.65,
+          longitude: 23.25,
+          updatedAt: now.subtract(const Duration(seconds: 31)),
+          gpsFixAt: now.subtract(const Duration(seconds: 31)),
+        ),
+      );
+      final service = RideDispatchService(
+        repository: FakeRideRequestRepository([waitingRide]),
+        driverShiftRepository: FakeDriverShiftRepository(
+          createShift(DriverQueueAvailability.busy),
+        ),
+        workStateRepository: FakeDriverWorkStateRepository(
+          DriverWorkStateSnapshot(
+            activeShift: createShift(DriverQueueAvailability.busy),
+            pendingOffer: null,
+            currentRide: currentRide,
+            reservedRide: null,
+          ),
+        ),
+        liveLocationRepository: locationRepository,
+        routeEstimator: FakeRouteEstimator([
+          estimate(durationSeconds: 0),
+          estimate(durationSeconds: 120),
+        ]),
+      );
+
+      final stale = (await service.assessWaitingRides(
+        driverId: 'driver-001',
+        rides: [waitingRide],
+        now: now,
+      )).single;
+      expect(stale.canSelect, isFalse);
+      expect(stale.reasonCode, 'gps_unavailable');
+
+      locationRepository.location = DriverLiveLocation(
+        driverId: 'driver-001',
+        latitude: 42.651,
+        longitude: 23.251,
+        updatedAt: now,
+        gpsFixAt: now,
+      );
+      final fresh = (await service.assessWaitingRides(
+        driverId: 'driver-001',
+        rides: [waitingRide],
+        now: now,
+      )).single;
+      expect(fresh.canSelect, isTrue);
+      expect(fresh.combinedEtaSeconds, 120);
+    },
+  );
+
+  test('waiting assessment recomputes when the GPS position changes', () async {
+    final currentRide = createRide(
+      id: 'ride-current',
+      status: RideRequestStatus.inProgress,
+      assignedDriverId: 'driver-001',
+      assignedVehicleId: 'vehicle-001',
+      destination: 'Current destination',
+    );
+    final waitingRide = createRide(
+      id: 'ride-next',
+      status: RideRequestStatus.waitingForVehicle,
+      pickupLatitude: 42.66,
+      pickupLongitude: 23.26,
+    );
+    final locationRepository = FakeDriverLiveLocationRepository(
+      DriverLiveLocation(
+        driverId: 'driver-001',
+        latitude: 42.65,
+        longitude: 23.25,
+        updatedAt: now,
+        gpsFixAt: now,
+      ),
+    );
+    final shift = createShift(DriverQueueAvailability.busy);
+    final service = RideDispatchService(
+      repository: FakeRideRequestRepository([waitingRide]),
+      driverShiftRepository: FakeDriverShiftRepository(shift),
+      workStateRepository: FakeDriverWorkStateRepository(
+        DriverWorkStateSnapshot(
+          activeShift: shift,
+          pendingOffer: null,
+          currentRide: currentRide,
+          reservedRide: null,
+        ),
+      ),
+      liveLocationRepository: locationRepository,
+      routeEstimator: _LocationAwareRouteEstimator(),
+    );
+
+    final first = (await service.assessWaitingRides(
+      driverId: 'driver-001',
+      rides: [waitingRide],
+      now: now,
+    )).single;
+    expect(first.canSelect, isFalse);
+    expect(first.combinedEtaSeconds, 601);
+
+    final later = now.add(const Duration(seconds: 1));
+    locationRepository.location = DriverLiveLocation(
+      driverId: 'driver-001',
+      latitude: 42.651,
+      longitude: 23.251,
+      updatedAt: later,
+      gpsFixAt: later,
+    );
+    final updated = (await service.assessWaitingRides(
+      driverId: 'driver-001',
+      rides: [waitingRide],
+      now: later,
+    )).single;
+    expect(updated.canSelect, isTrue);
+    expect(updated.combinedEtaSeconds, 400);
+  });
+
+  test('available driver keeps existing no-ETA selection behavior', () async {
+    final waitingRide = createRide(
+      id: 'ride-next',
+      status: RideRequestStatus.waitingForVehicle,
+    );
+    final service = RideDispatchService(
+      repository: FakeRideRequestRepository([waitingRide]),
+      driverShiftRepository: FakeDriverShiftRepository(
+        createShift(DriverQueueAvailability.available),
+      ),
+      workStateRepository: FakeDriverWorkStateRepository(
+        DriverWorkStateSnapshot(
+          activeShift: createShift(DriverQueueAvailability.available),
+          pendingOffer: null,
+          currentRide: null,
+          reservedRide: null,
+        ),
+      ),
+      routeEstimator: FakeRouteEstimator([]),
+    );
+
+    final assessment = (await service.assessWaitingRides(
+      driverId: 'driver-001',
+      rides: [waitingRide],
+      now: now,
+    )).single;
+    expect(assessment.canSelect, isTrue);
+    expect(assessment.combinedEtaSeconds, isNull);
+    expect(assessment.reasonCode, isNull);
+  });
+
+  test(
+    'waiting assessment blocks breaks, reservations and pending breaks',
+    () async {
+      final waitingRide = createRide(
+        id: 'ride-next',
+        status: RideRequestStatus.waitingForVehicle,
+      );
+      final availableShift = createShift(DriverQueueAvailability.available);
+      final pendingOfferShift = ActiveDriverShift.restore(
+        id: availableShift.id,
+        driverId: availableShift.driverId,
+        vehicleId: availableShift.vehicleId,
+        startedAt: availableShift.startedAt,
+        queueState: DriverQueueState.restore(
+          driverId: 'driver-001',
+          queuePrioritySince: now,
+          availability: DriverQueueAvailability.available,
+          shortBreaksUsed: 0,
+          breakStartedAt: null,
+          hasPendingOffer: true,
+        ),
+      );
+      final cases = <(DriverWorkStateSnapshot, String)>[
+        (
+          DriverWorkStateSnapshot(
+            activeShift: pendingOfferShift,
+            pendingOffer: null,
+            currentRide: null,
+            reservedRide: null,
+          ),
+          'pending_offer',
+        ),
+        (
+          DriverWorkStateSnapshot(
+            activeShift: ActiveDriverShift.restore(
+              id: availableShift.id,
+              driverId: availableShift.driverId,
+              vehicleId: availableShift.vehicleId,
+              startedAt: availableShift.startedAt,
+              queueState: DriverQueueState.restore(
+                driverId: 'driver-001',
+                queuePrioritySince: now,
+                availability: DriverQueueAvailability.shortBreak,
+                shortBreaksUsed: 1,
+                breakStartedAt: now.subtract(const Duration(minutes: 1)),
+                hasPendingOffer: false,
+              ),
+            ),
+            pendingOffer: null,
+            currentRide: null,
+            reservedRide: null,
+          ),
+          'driver_on_break',
+        ),
+        (
+          DriverWorkStateSnapshot(
+            activeShift: availableShift,
+            pendingOffer: null,
+            currentRide: null,
+            reservedRide: waitingRide,
+          ),
+          'reserved_ride_exists',
+        ),
+        (
+          DriverWorkStateSnapshot(
+            activeShift: availableShift,
+            pendingOffer: null,
+            currentRide: null,
+            reservedRide: null,
+            pendingBreakKind: 'short',
+            pendingBreakRequestId: 'break-request-1',
+          ),
+          'break_scheduled',
+        ),
+      ];
+
+      for (final (snapshot, expectedReason) in cases) {
+        final service = RideDispatchService(
+          repository: FakeRideRequestRepository([waitingRide]),
+          driverShiftRepository: FakeDriverShiftRepository(availableShift),
+          workStateRepository: FakeDriverWorkStateRepository(snapshot),
+          routeEstimator: FakeRouteEstimator([]),
+        );
+        final assessment = (await service.assessWaitingRides(
+          driverId: 'driver-001',
+          rides: [waitingRide],
+          now: now,
+        )).single;
+        expect(assessment.canSelect, isFalse);
+        expect(assessment.reasonCode, expectedReason);
+      }
+    },
+  );
+
+  test('waiting assessment isolates invalid pickup routes per ride', () async {
+    final currentRide = createRide(
+      id: 'ride-current',
+      status: RideRequestStatus.inProgress,
+      assignedDriverId: 'driver-001',
+      assignedVehicleId: 'vehicle-001',
+      destination: 'Current destination',
+    );
+    final badPickup = createRide(
+      id: 'ride-bad-pickup',
+      status: RideRequestStatus.waitingForVehicle,
+      pickupLatitude: 95,
+      pickupLongitude: 23.26,
+    );
+    final goodPickup = createRide(
+      id: 'ride-good-pickup',
+      status: RideRequestStatus.waitingForVehicle,
+      pickupLatitude: 42.66,
+      pickupLongitude: 23.26,
+    );
+    final shift = createShift(DriverQueueAvailability.busy);
+    final service = RideDispatchService(
+      repository: FakeRideRequestRepository([badPickup, goodPickup]),
+      driverShiftRepository: FakeDriverShiftRepository(shift),
+      workStateRepository: FakeDriverWorkStateRepository(
+        DriverWorkStateSnapshot(
+          activeShift: shift,
+          pendingOffer: null,
+          currentRide: currentRide,
+          reservedRide: null,
+        ),
+      ),
+      liveLocationRepository: FakeDriverLiveLocationRepository(
+        DriverLiveLocation(
+          driverId: 'driver-001',
+          latitude: 42.65,
+          longitude: 23.25,
+          updatedAt: now,
+          gpsFixAt: now,
+        ),
+      ),
+      routeEstimator: FakeRouteEstimator([
+        estimate(durationSeconds: 0),
+        estimate(durationSeconds: 100),
+      ]),
+    );
+
+    final assessments = await service.assessWaitingRides(
+      driverId: 'driver-001',
+      rides: [badPickup, goodPickup],
+      now: now,
+    );
+    expect(assessments[0].canSelect, isFalse);
+    expect(assessments[0].reasonCode, 'route_unavailable');
+    expect(assessments[1].canSelect, isTrue);
+    expect(assessments[1].combinedEtaSeconds, 100);
   });
 }

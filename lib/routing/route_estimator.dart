@@ -92,3 +92,13 @@ abstract interface class BatchRouteEstimator {
     required RouteWaypoint destination,
   });
 }
+
+/// Optional route-matrix capability for evaluating several destinations from
+/// one origin without issuing one HTTP request per waiting ride.
+abstract interface class MultiDestinationRouteEstimator
+    implements RouteEstimator {
+  Future<List<RouteEstimate?>> estimateToMany({
+    required RouteWaypoint origin,
+    required List<RouteWaypoint> destinations,
+  });
+}

@@ -1,4 +1,5 @@
 import 'ride_reservation.dart';
+import 'driver_live_location.dart';
 
 enum AtomicRideReservationConflict {
   rideNotFound,
@@ -22,6 +23,8 @@ enum AtomicRideReservationConflict {
   rideAlreadyReserved,
   driverAlreadyHasReservedRide,
   vehicleAlreadyHasReservedRide,
+  driverLocationUnavailable,
+  currentRideChanged,
 }
 
 class AtomicRideReservationConflictException implements Exception {
@@ -72,5 +75,7 @@ abstract interface class AtomicRideReservationRepository {
     required String driverId,
     required int combinedEtaSeconds,
     required DateTime now,
+    DriverLiveLocation? expectedDriverLocation,
+    String? expectedCurrentRideId,
   });
 }

@@ -1,6 +1,7 @@
 import 'package:postgres/postgres.dart';
 
 import 'atomic_ride_reservation_repository.dart';
+import 'driver_live_location.dart';
 import 'external_ride_session.dart';
 import 'ride_reservation.dart';
 
@@ -17,6 +18,8 @@ class PostgresAtomicRideReservationRepository
     required String driverId,
     required int combinedEtaSeconds,
     required DateTime now,
+    DriverLiveLocation? expectedDriverLocation,
+    String? expectedCurrentRideId,
   }) {
     if (combinedEtaSeconds < 0) {
       throw ArgumentError.value(
@@ -121,7 +124,11 @@ class PostgresAtomicRideReservationRepository
             s.vehicle_id,
             q.availability,
             q.has_pending_offer,
-            q.pending_break_request_id
+            q.pending_break_request_id,
+            q.latitude,
+            q.longitude,
+            q.location_updated_at,
+            q.gps_fix_at
           FROM driver_shifts s
           JOIN driver_queue_states q
             ON q.shift_id = s.id
@@ -145,6 +152,33 @@ class PostgresAtomicRideReservationRepository
       final vehicleId = shiftRow['vehicle_id'] as String;
       final availability = shiftRow['availability'] as String;
       final hasPendingOffer = shiftRow['has_pending_offer'] as bool;
+
+      if (expectedDriverLocation != null) {
+        final databaseTimeResult = await transaction.execute(
+          Sql('SELECT clock_timestamp() AS database_now'),
+        );
+        final databaseNow =
+            (databaseTimeResult.single.toColumnMap()['database_now']
+                    as DateTime)
+                .toUtc();
+        final savedUpdatedAt = shiftRow['location_updated_at'] as DateTime?;
+        final savedGpsFixAt = shiftRow['gps_fix_at'] as DateTime?;
+        final savedLatitude = shiftRow['latitude'] as num?;
+        final savedLongitude = shiftRow['longitude'] as num?;
+        final locationMatches =
+            expectedDriverLocation.driverId == driverId &&
+            savedLatitude?.toDouble() == expectedDriverLocation.latitude &&
+            savedLongitude?.toDouble() == expectedDriverLocation.longitude &&
+            savedUpdatedAt?.toUtc() ==
+                expectedDriverLocation.updatedAt.toUtc() &&
+            savedGpsFixAt?.toUtc() == expectedDriverLocation.gpsFixAt?.toUtc();
+        if (!locationMatches ||
+            !expectedDriverLocation.isReliableAt(databaseNow)) {
+          throw const AtomicRideReservationConflictException(
+            AtomicRideReservationConflict.driverLocationUnavailable,
+          );
+        }
+      }
 
       if (shiftRow['pending_break_request_id'] != null) {
         throw const AtomicRideReservationConflictException(
@@ -208,6 +242,13 @@ class PostgresAtomicRideReservationRepository
         if (currentRideResult.length > 1) {
           throw const AtomicRideReservationConflictException(
             AtomicRideReservationConflict.queueStateMismatch,
+          );
+        }
+        if (expectedCurrentRideId != null &&
+            currentRideResult.single.toColumnMap()['id'] !=
+                expectedCurrentRideId) {
+          throw const AtomicRideReservationConflictException(
+            AtomicRideReservationConflict.currentRideChanged,
           );
         }
       } else {

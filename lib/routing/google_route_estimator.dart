@@ -4,7 +4,11 @@ import 'package:http/http.dart' as http;
 
 import 'route_estimator.dart';
 
-class GoogleRouteEstimator implements RouteEstimator, BatchRouteEstimator {
+class GoogleRouteEstimator
+    implements
+        RouteEstimator,
+        BatchRouteEstimator,
+        MultiDestinationRouteEstimator {
   final String apiKey;
   final http.Client client;
 
@@ -200,6 +204,104 @@ class GoogleRouteEstimator implements RouteEstimator, BatchRouteEstimator {
 
     await Future.wait(requests);
 
+    return List.unmodifiable(estimates);
+  }
+
+  @override
+  Future<List<RouteEstimate?>> estimateToMany({
+    required RouteWaypoint origin,
+    required List<RouteWaypoint> destinations,
+  }) async {
+    if (destinations.isEmpty) return const [];
+
+    final originPayload = await _buildWaypoint(origin);
+    final estimates = List<RouteEstimate?>.filled(destinations.length, null);
+    const batchSize = 50;
+
+    for (var start = 0; start < destinations.length; start += batchSize) {
+      final end = start + batchSize < destinations.length
+          ? start + batchSize
+          : destinations.length;
+      final chunk = destinations.sublist(start, end);
+      final payloads = await Future.wait(
+        chunk.map((waypoint) async {
+          try {
+            return await _buildWaypoint(waypoint);
+          } catch (_) {
+            // A malformed/unresolvable pickup must not fail other rides.
+            return null;
+          }
+        }),
+      );
+      final validIndexes = <int>[];
+      for (var i = 0; i < payloads.length; i++) {
+        if (payloads[i] != null) validIndexes.add(i);
+      }
+      if (validIndexes.isEmpty) continue;
+
+      final response = await client
+          .post(
+            Uri.parse(
+              'https://routes.googleapis.com/distanceMatrix/v2:computeRouteMatrix',
+            ),
+            headers: {
+              'Content-Type': 'application/json',
+              'X-Goog-Api-Key': apiKey,
+              'X-Goog-FieldMask': 'originIndex,destinationIndex,duration,distanceMeters,condition',
+            },
+            body: jsonEncode({
+              'origins': [
+                {'waypoint': originPayload},
+              ],
+              'destinations': validIndexes
+                  .map((index) => {'waypoint': payloads[index]})
+                  .toList(growable: false),
+              'travelMode': 'DRIVE',
+              'routingPreference': 'TRAFFIC_AWARE',
+              'units': 'METRIC',
+            }),
+          )
+          .timeout(const Duration(seconds: 4));
+
+      if (response.statusCode != 200) {
+        throw StateError(
+          'Google Routes matrix request failed with status '
+          '${response.statusCode}.',
+        );
+      }
+      final decoded = jsonDecode(response.body);
+      final elements = decoded is List<dynamic>
+          ? decoded
+          : (decoded is Map<String, dynamic>
+                ? decoded['matrixElements'] as List<dynamic>?
+                : null);
+      if (elements == null) {
+        throw StateError('Google Routes matrix returned an invalid body.');
+      }
+
+      for (final element in elements) {
+        if (element is! Map<String, dynamic> ||
+            element['originIndex'] != 0 ||
+            element['condition'] != 'ROUTE_EXISTS') {
+          continue;
+        }
+        final destinationIndex = element['destinationIndex'];
+        final durationText = element['duration'];
+        final distanceMeters = element['distanceMeters'];
+        if (destinationIndex is! int ||
+            destinationIndex < 0 ||
+            destinationIndex >= validIndexes.length ||
+            durationText is! String ||
+            distanceMeters is! num) {
+          continue;
+        }
+        final originalIndex = start + validIndexes[destinationIndex];
+        estimates[originalIndex] = RouteEstimate(
+          durationSeconds: _parseDurationSeconds(durationText),
+          distanceMeters: distanceMeters.toDouble(),
+        );
+      }
+    }
     return List.unmodifiable(estimates);
   }
 

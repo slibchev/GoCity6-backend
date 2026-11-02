@@ -1,4 +1,6 @@
 class DriverLiveLocation {
+  static const Duration maximumReliableAge = Duration(seconds: 30);
+
   final String driverId;
   final double latitude;
   final double longitude;
@@ -8,6 +10,26 @@ class DriverLiveLocation {
   /// [updatedAt] remains the Backend receipt time used by existing freshness
   /// and display behavior.
   final DateTime? gpsFixAt;
+
+  bool isReliableAt(DateTime now, {Duration maximumAge = maximumReliableAge}) {
+    if (!latitude.isFinite ||
+        !longitude.isFinite ||
+        latitude < -90 ||
+        latitude > 90 ||
+        longitude < -180 ||
+        longitude > 180) {
+      return false;
+    }
+
+    final receivedAge = now.toUtc().difference(updatedAt.toUtc());
+    final fixAt = gpsFixAt?.toUtc();
+    if (receivedAge.isNegative || receivedAge > maximumAge || fixAt == null) {
+      return false;
+    }
+
+    final fixAge = now.toUtc().difference(fixAt);
+    return !fixAge.isNegative && fixAge <= maximumAge;
+  }
 
   DriverLiveLocation({
     required this.driverId,

@@ -108,7 +108,8 @@ class PostgresAtomicWaitingRideAcceptanceRepository
             s.id AS shift_id,
             s.vehicle_id,
             q.availability,
-            q.has_pending_offer
+            q.has_pending_offer,
+            q.pending_break_request_id
           FROM driver_shifts s
           JOIN driver_queue_states q
             ON q.shift_id = s.id
@@ -131,6 +132,8 @@ class PostgresAtomicWaitingRideAcceptanceRepository
       final vehicleId = shiftRow['vehicle_id'] as String;
       final availability = shiftRow['availability'] as String;
       final hasPendingOffer = shiftRow['has_pending_offer'] as bool;
+      final pendingBreakRequestId =
+          shiftRow['pending_break_request_id'] as String?;
 
       if (availability != 'available') {
         throw const AtomicWaitingRideAcceptanceConflictException(
@@ -141,6 +144,46 @@ class PostgresAtomicWaitingRideAcceptanceRepository
       if (hasPendingOffer) {
         throw const AtomicWaitingRideAcceptanceConflictException(
           AtomicWaitingRideAcceptanceConflict.pendingOfferExists,
+        );
+      }
+
+      if (pendingBreakRequestId != null) {
+        throw const AtomicWaitingRideAcceptanceConflictException(
+          AtomicWaitingRideAcceptanceConflict.driverNotAvailable,
+        );
+      }
+
+      final activeRideResult = await transaction.execute(
+        Sql.named('''
+          SELECT id
+          FROM rides
+          WHERE assigned_driver_id = @driverId
+            AND status IN ('accepted', 'driverArriving', 'inProgress')
+          LIMIT 1
+        '''),
+        parameters: {'driverId': driverId},
+      );
+      if (activeRideResult.isNotEmpty) {
+        throw const AtomicWaitingRideAcceptanceConflictException(
+          AtomicWaitingRideAcceptanceConflict.queueStateMismatch,
+        );
+      }
+
+      final activeReservationResult = await transaction.execute(
+        Sql.named('''
+          SELECT rr.id
+          FROM ride_reservations rr
+          JOIN rides reserved_ride ON reserved_ride.id = rr.ride_id
+          WHERE rr.ended_at IS NULL
+            AND reserved_ride.status = 'reserved'
+            AND (rr.driver_id = @driverId OR rr.vehicle_id = @vehicleId)
+          LIMIT 1
+        '''),
+        parameters: {'driverId': driverId, 'vehicleId': vehicleId},
+      );
+      if (activeReservationResult.isNotEmpty) {
+        throw const AtomicWaitingRideAcceptanceConflictException(
+          AtomicWaitingRideAcceptanceConflict.queueStateMismatch,
         );
       }
 

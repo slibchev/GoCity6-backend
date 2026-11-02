@@ -43,6 +43,34 @@ void main() {
     expect(result, same(location));
     expect(repository.findCalls, 1);
   });
+
+  test('reservation reliability requires a recent, non-future GPS fix', () {
+    final atLimit = DriverLiveLocation(
+      driverId: 'driver-001',
+      latitude: 42.6977,
+      longitude: 23.3219,
+      updatedAt: now.subtract(const Duration(seconds: 30)),
+      gpsFixAt: now.subtract(const Duration(seconds: 30)),
+    );
+    expect(atLimit.isReliableAt(now), isTrue);
+
+    final missingGpsFix = DriverLiveLocation(
+      driverId: 'driver-001',
+      latitude: 42.6977,
+      longitude: 23.3219,
+      updatedAt: now,
+    );
+    expect(missingGpsFix.isReliableAt(now), isFalse);
+
+    final futureGpsFix = DriverLiveLocation(
+      driverId: 'driver-001',
+      latitude: 42.6977,
+      longitude: 23.3219,
+      updatedAt: now,
+      gpsFixAt: now.add(const Duration(seconds: 1)),
+    );
+    expect(futureGpsFix.isReliableAt(now), isFalse);
+  });
 }
 
 class _FakeDriverLiveLocationRepository

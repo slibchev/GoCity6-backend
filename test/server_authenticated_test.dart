@@ -321,32 +321,58 @@ void main() {
   });
   test('waiting rides API requires valid driver JWT', () async {
     final url = Uri.parse('$host/driver/rides/waiting');
-
-    // Заявка без JWT трябва да бъде отказана.
-    final unauthorizedResponse = await http.get(url);
-
-    expect(unauthorizedResponse.statusCode, 401);
-
-    // Генерираме валиден JWT за тестовия шофьор.
-    final tokenService = DriverTokenService(secret: jwtSecret);
-
-    final token = tokenService.createToken(
-      driverId: driverId,
-      username: username,
+    final waitingRideId = const Uuid().v4();
+    await db.execute(
+      Sql.named('''
+        INSERT INTO rides (
+          id, pickup, destination, passengers, requested_at, status
+        ) VALUES (
+          @id, 'Waiting API pickup', 'Waiting API destination',
+          1, @now, 'waitingForVehicle'
+        )
+      '''),
+      parameters: {'id': waitingRideId, 'now': DateTime.now().toUtc()},
     );
 
-    // Заявка с валиден JWT и активна смяна.
-    final response = await http.get(
-      url,
-      headers: {'Authorization': 'Bearer $token'},
-    );
+    try {
+      // Заявка без JWT трябва да бъде отказана.
+      final unauthorizedResponse = await http.get(url);
 
-    expect(response.statusCode, 200, reason: response.body);
+      expect(unauthorizedResponse.statusCode, 401);
 
-    final body = jsonDecode(response.body) as Map<String, dynamic>;
+      // Генерираме валиден JWT за тестовия шофьор.
+      final tokenService = DriverTokenService(secret: jwtSecret);
 
-    expect(body['rides'], isA<List<dynamic>>());
-    expect(response.headers['cache-control'], 'no-store');
+      final token = tokenService.createToken(
+        driverId: driverId,
+        username: username,
+      );
+
+      // Заявка с валиден JWT и активна смяна.
+      final response = await http.get(
+        url,
+        headers: {'Authorization': 'Bearer $token'},
+      );
+
+      expect(response.statusCode, 200, reason: response.body);
+
+      final body = jsonDecode(response.body) as Map<String, dynamic>;
+
+      expect(body['rides'], isA<List<dynamic>>());
+      final rides = body['rides'] as List<dynamic>;
+      final waitingRide = rides.cast<Map<String, dynamic>>().singleWhere(
+        (ride) => ride['id'] == waitingRideId,
+      );
+      expect(waitingRide['canSelect'], isTrue);
+      expect(waitingRide['combinedEtaSeconds'], isNull);
+      expect(waitingRide['reasonCode'], isNull);
+      expect(response.headers['cache-control'], 'no-store');
+    } finally {
+      await db.execute(
+        Sql.named('DELETE FROM rides WHERE id = @id'),
+        parameters: {'id': waitingRideId},
+      );
+    }
   });
 
   test('authenticated driver selects waiting ride', () async {

@@ -48,6 +48,8 @@ import 'package:gocity6_backend/dispatch/driver_break_route.dart';
 import 'package:gocity6_backend/dispatch/driver_break_state_json.dart';
 
 import 'package:gocity6_backend/dispatch/postgres_atomic_ride_reservation_repository.dart';
+import 'package:gocity6_backend/dispatch/external_ride_session_repository.dart';
+import 'package:gocity6_backend/dispatch/postgres_external_ride_session_repository.dart';
 
 import 'package:gocity6_backend/dispatch/postgres_driver_shift_repository.dart';
 import 'package:gocity6_backend/dispatch/postgres_driver_break_repository.dart';
@@ -639,6 +641,8 @@ void main(List<String> args) async {
 
   AtomicRideReservationRepository? rideReservationRepository;
 
+  ExternalRideSessionRepository? externalRideSessionRepository;
+
   RouteEstimator? routeEstimator;
 
   late final Pool databasePool;
@@ -728,6 +732,10 @@ void main(List<String> args) async {
       database: databasePool,
     );
 
+    externalRideSessionRepository = PostgresExternalRideSessionRepository(
+      database: databasePool,
+    );
+
     routeEstimator = GoogleRouteEstimator(apiKey: apiKey);
     final driverJwtSecret = Platform.environment['CITY6_DRIVER_JWT_SECRET'];
 
@@ -774,6 +782,12 @@ void main(List<String> args) async {
     rideReservationRepository: rideReservationRepository,
 
     routeEstimator: routeEstimator,
+
+    workStateRepository: driverWorkStateRepository,
+
+    liveLocationRepository: driverLiveLocationRepository,
+
+    externalRideSessionRepository: externalRideSessionRepository,
   );
 
   const uuid = Uuid();
@@ -1871,15 +1885,20 @@ void main(List<String> args) async {
       }
 
       final waitingRides = await rideRepository.findWaitingForVehicle();
-
-      final ridesJson = await Future.wait(
-        waitingRides.map(
-          (ride) => rideRequestToJson(
-            ride,
-            assignedDriverInfoService: assignedDriverInfoService,
-          ),
-        ),
+      final selectionAssessments = await rideDispatchService.assessWaitingRides(
+        driverId: tokenPayload.driverId,
+        rides: waitingRides,
+        now: DateTime.now().toUtc(),
       );
+      final ridesJson = <Map<String, dynamic>>[];
+      for (var index = 0; index < waitingRides.length; index++) {
+        final rideJson = await rideRequestToJson(
+          waitingRides[index],
+          assignedDriverInfoService: assignedDriverInfoService,
+        );
+        rideJson.addAll(selectionAssessments[index].toJson());
+        ridesJson.add(rideJson);
+      }
 
       return Response.ok(
         jsonEncode({'rides': ridesJson}),
@@ -2544,12 +2563,16 @@ void main(List<String> args) async {
 
         headers: {'Content-Type': 'application/json'},
       );
-    } on RideDispatchInputException {
+    } on RideDispatchInputException catch (error) {
+      final locationUnavailable =
+          error.conflict == RideDispatchInputConflict.driverLocationUnavailable;
       return Response(
-        400,
+        locationUnavailable ? 409 : 400,
 
         body: jsonEncode({
-          'error': 'Current driver location is required for reservation.',
+          'error': locationUnavailable
+              ? 'Current driver location is unavailable or stale.'
+              : 'Current driver location is required for reservation.',
         }),
 
         headers: {'Content-Type': 'application/json'},

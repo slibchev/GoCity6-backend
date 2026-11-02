@@ -163,6 +163,51 @@ void main() {
   });
 
   test(
+    'GoogleRouteEstimator maps multi-destination matrix results by index',
+    () async {
+      final client = MockClient((request) async {
+        final body = jsonDecode(request.body) as Map<String, dynamic>;
+        expect(body['origins'], hasLength(1));
+        expect(body['destinations'], hasLength(2));
+        return http.Response(
+          jsonEncode([
+            {
+              'originIndex': 0,
+              'destinationIndex': 1,
+              'condition': 'ROUTE_EXISTS',
+              'duration': '222s',
+              'distanceMeters': 2220,
+            },
+            {
+              'originIndex': 0,
+              'destinationIndex': 0,
+              'condition': 'ROUTE_EXISTS',
+              'duration': '111s',
+              'distanceMeters': 1110,
+            },
+          ]),
+          200,
+        );
+      });
+      final estimator = GoogleRouteEstimator(
+        apiKey: 'test-api-key',
+        client: client,
+      );
+
+      final estimates = await estimator.estimateToMany(
+        origin: RouteWaypoint(latitude: 42.65, longitude: 23.30),
+        destinations: [
+          RouteWaypoint(latitude: 42.66, longitude: 23.31),
+          RouteWaypoint(latitude: 42.67, longitude: 23.32),
+        ],
+      );
+
+      expect(estimates[0]?.durationSeconds, 111);
+      expect(estimates[1]?.durationSeconds, 222);
+    },
+  );
+
+  test(
     'classifies geocoding ZERO_RESULTS without requesting a route',
     () async {
       var routeMatrixRequested = false;
