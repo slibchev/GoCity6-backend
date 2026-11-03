@@ -17,6 +17,17 @@ const _pickupLatitude = 42.6977123;
 const _pickupLongitude = 23.3219876;
 
 Future<Connection> _connectToCity6Test() async {
+  final username = Platform.environment['CITY6_TEST_DB_USER'];
+  if (username == null || username.isEmpty) {
+    fail('CITY6_TEST_DB_USER is required for city6_test.');
+  }
+
+  final portValue = Platform.environment['CITY6_TEST_DB_PORT'];
+  final port = portValue == null ? null : int.tryParse(portValue);
+  if (port == null || port < 1 || port > 65535) {
+    fail('CITY6_TEST_DB_PORT must be a valid PostgreSQL port.');
+  }
+
   final password = Platform.environment['CITY6_TEST_DB_PASSWORD'];
   if (password == null || password.isEmpty) {
     fail('CITY6_TEST_DB_PASSWORD is required.');
@@ -24,18 +35,24 @@ Future<Connection> _connectToCity6Test() async {
 
   final db = await Connection.open(
     Endpoint(
-      host: 'localhost',
-      port: 5432,
+      // Bind tests to the isolated test cluster's IPv4 loopback explicitly.
+      // This avoids hostname resolution to ::1, which is rejected by its HBA.
+      host: '127.0.0.1',
+      port: port,
       database: 'city6_test',
-      username: 'city6_app',
+      username: username,
       password: password,
     ),
     settings: const ConnectionSettings(sslMode: SslMode.disable),
   );
 
   try {
-    final result = await db.execute('SELECT current_database()');
+    final result = await db.execute(
+      'SELECT current_database(), current_user, inet_server_port()',
+    );
     expect(result.single[0], 'city6_test');
+    expect(result.single[1], username);
+    expect(result.single[2], port);
     return db;
   } catch (_) {
     await db.close();
@@ -46,6 +63,7 @@ Future<Connection> _connectToCity6Test() async {
 RideRequest _waitingRide({
   required String id,
   required DateTime requestedAt,
+  String? displayAddress,
   double? latitude,
   double? longitude,
   String? clientRequestId,
@@ -57,6 +75,7 @@ RideRequest _waitingRide({
     id: id,
     clientRequestId: clientRequestId,
     pickup: latitude == null ? 'Legacy address-only pickup' : 'My location',
+    pickupDisplayAddress: displayAddress,
     pickupLatitude: latitude,
     pickupLongitude: longitude,
     destination: 'Test destination',
@@ -152,6 +171,7 @@ void main() {
           _waitingRide(
             id: currentRideId,
             requestedAt: requestedAt,
+            displayAddress: 'ул. Верила 2, София',
             latitude: _pickupLatitude,
             longitude: _pickupLongitude,
           ),
@@ -192,6 +212,7 @@ void main() {
         expect(savedCoordinateRide, isNotNull);
         expect(savedCoordinateRide!.pickupLatitude, _pickupLatitude);
         expect(savedCoordinateRide.pickupLongitude, _pickupLongitude);
+        expect(savedCoordinateRide.pickupDisplayAddress, 'ул. Верила 2, София');
 
         final waitingBoard = PostgresWaitingRideRedispatchRepository(
           database: db,
@@ -203,6 +224,10 @@ void main() {
         final boardById = {for (final ride in boardRides) ride.id: ride};
         expect(boardById[currentRideId]?.pickupLatitude, _pickupLatitude);
         expect(boardById[currentRideId]?.pickupLongitude, _pickupLongitude);
+        expect(
+          boardById[currentRideId]?.pickupDisplayAddress,
+          'ул. Верила 2, София',
+        );
         expect(
           boardById[waitingRideId]?.pickupLatitude,
           _pickupLatitude + 0.002,
@@ -224,6 +249,7 @@ void main() {
           now: now,
         );
         expect(acceptedRide.status, RideRequestStatus.accepted);
+        expect(acceptedRide.pickupDisplayAddress, 'ул. Верила 2, София');
         expect(acceptedRide.pickupLatitude, _pickupLatitude);
         expect(acceptedRide.pickupLongitude, _pickupLongitude);
 
@@ -234,6 +260,10 @@ void main() {
         expect(workState.currentRide?.id, currentRideId);
         expect(workState.currentRide?.pickupLatitude, _pickupLatitude);
         expect(workState.currentRide?.pickupLongitude, _pickupLongitude);
+        expect(
+          workState.currentRide?.pickupDisplayAddress,
+          'ул. Верила 2, София',
+        );
 
         final lifecycle = RideLifecycleService(
           repository: rideRepository,
@@ -281,11 +311,16 @@ void main() {
         expect(completedRide.status, RideRequestStatus.completed);
         expect(completedRide.pickupLatitude, _pickupLatitude);
         expect(completedRide.pickupLongitude, _pickupLongitude);
+        expect(completedRide.pickupDisplayAddress, 'ул. Верила 2, София');
         final reloadedCompletedRide = await rideRepository.findById(
           currentRideId,
         );
         expect(reloadedCompletedRide?.pickupLatitude, _pickupLatitude);
         expect(reloadedCompletedRide?.pickupLongitude, _pickupLongitude);
+        expect(
+          reloadedCompletedRide?.pickupDisplayAddress,
+          'ул. Верила 2, София',
+        );
 
         workState = await workStateRepository.loadByDriverId(driverId);
         expect(workState.currentRide?.id, reservedRideId);

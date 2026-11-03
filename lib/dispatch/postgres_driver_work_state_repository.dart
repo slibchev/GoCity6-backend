@@ -79,6 +79,7 @@ class PostgresDriverWorkStateRepository implements DriverWorkStateRepository {
 
             r.id AS ride_id,
             r.pickup AS ride_pickup,
+            r.pickup_display_address AS ride_pickup_display_address,
             r.pickup_latitude AS ride_pickup_latitude,
             r.pickup_longitude AS ride_pickup_longitude,
             r.destination AS ride_destination,
@@ -128,6 +129,7 @@ class PostgresDriverWorkStateRepository implements DriverWorkStateRepository {
           SELECT
             r.id AS ride_id,
             r.pickup AS ride_pickup,
+            r.pickup_display_address AS ride_pickup_display_address,
             r.pickup_latitude AS ride_pickup_latitude,
             r.pickup_longitude AS ride_pickup_longitude,
             r.destination AS ride_destination,
@@ -172,6 +174,7 @@ class PostgresDriverWorkStateRepository implements DriverWorkStateRepository {
           SELECT
             r.id AS ride_id,
             r.pickup AS ride_pickup,
+            r.pickup_display_address AS ride_pickup_display_address,
             r.pickup_latitude AS ride_pickup_latitude,
             r.pickup_longitude AS ride_pickup_longitude,
             r.destination AS ride_destination,
@@ -273,6 +276,7 @@ class PostgresDriverWorkStateRepository implements DriverWorkStateRepository {
     return RideRequest(
       id: row['ride_id'] as String,
       pickup: row['ride_pickup'] as String,
+      pickupDisplayAddress: row['ride_pickup_display_address'] as String?,
       pickupLatitude: (row['ride_pickup_latitude'] as num?)?.toDouble(),
       pickupLongitude: (row['ride_pickup_longitude'] as num?)?.toDouble(),
       destination: row['ride_destination'] as String,

@@ -22,6 +22,8 @@ import 'package:gocity6_backend/ride/ride_lifecycle_service.dart';
 import 'package:gocity6_backend/ride/ride_request.dart';
 import 'package:gocity6_backend/ride/ride_request_status.dart';
 import 'package:gocity6_backend/ride/ride_pickup_coordinates.dart';
+import 'package:gocity6_backend/ride/driver_ride_pickup_json.dart';
+import 'package:gocity6_backend/ride/resolve_pickup_display_address.dart';
 import 'package:gocity6_backend/ride/ride_submission_payload.dart';
 
 import 'package:gocity6_backend/ride/ride_dispatch_service.dart';
@@ -59,6 +61,7 @@ import 'package:gocity6_backend/dispatch/driver_shift_end_service.dart';
 import 'package:gocity6_backend/dispatch/postgres_driver_assigned_vehicle_repository.dart';
 
 import 'package:gocity6_backend/routing/google_route_estimator.dart';
+import 'package:gocity6_backend/routing/google_reverse_geocoder.dart';
 
 import 'package:gocity6_backend/routing/route_estimator.dart';
 import 'package:gocity6_backend/auth/driver_authentication_service.dart';
@@ -498,6 +501,19 @@ Future<Map<String, dynamic>> rideRequestToJson(
   };
 }
 
+Future<Map<String, dynamic>> driverRideRequestToJson(
+  RideRequest ride, {
+  AssignedDriverInfoService? assignedDriverInfoService,
+}) async {
+  return {
+    ...await rideRequestToJson(
+      ride,
+      assignedDriverInfoService: assignedDriverInfoService,
+    ),
+    ...driverRidePickupJson(ride),
+  };
+}
+
 const corsResponseHeaders = {
   'Access-Control-Allow-Origin': '*',
 
@@ -644,6 +660,7 @@ void main(List<String> args) async {
   ExternalRideSessionRepository? externalRideSessionRepository;
 
   RouteEstimator? routeEstimator;
+  GoogleReverseGeocoder? pickupReverseGeocoder;
 
   late final Pool databasePool;
 
@@ -737,6 +754,7 @@ void main(List<String> args) async {
     );
 
     routeEstimator = GoogleRouteEstimator(apiKey: apiKey);
+    pickupReverseGeocoder = GoogleReverseGeocoder(apiKey: apiKey);
     final driverJwtSecret = Platform.environment['CITY6_DRIVER_JWT_SECRET'];
 
     if (driverJwtSecret == null || driverJwtSecret.isEmpty) {
@@ -1614,6 +1632,12 @@ void main(List<String> args) async {
 
         pickup: pickup.trim(),
 
+        pickupDisplayAddress: await resolvePickupDisplayAddress(
+          pickup: pickup.trim(),
+          coordinates: pickupCoordinates,
+          reverseGeocode: pickupReverseGeocoder?.resolve,
+        ),
+
         pickupLatitude: pickupCoordinates?.latitude,
 
         pickupLongitude: pickupCoordinates?.longitude,
@@ -1892,7 +1916,7 @@ void main(List<String> args) async {
       );
       final ridesJson = <Map<String, dynamic>>[];
       for (var index = 0; index < waitingRides.length; index++) {
-        final rideJson = await rideRequestToJson(
+        final rideJson = await driverRideRequestToJson(
           waitingRides[index],
           assignedDriverInfoService: assignedDriverInfoService,
         );
@@ -2033,20 +2057,20 @@ void main(List<String> args) async {
                       .toUtc()
                       .toIso8601String(),
                   'status': pendingOffer.offer.status.name,
-                  'ride': await rideRequestToJson(
+                  'ride': await driverRideRequestToJson(
                     pendingOffer.ride,
                     assignedDriverInfoService: assignedDriverInfoService,
                   ),
                 },
           'currentRide': currentRide == null
               ? null
-              : await rideRequestToJson(
+              : await driverRideRequestToJson(
                   currentRide,
                   assignedDriverInfoService: assignedDriverInfoService,
                 ),
           'reservedRide': reservedRide == null
               ? null
-              : await rideRequestToJson(
+              : await driverRideRequestToJson(
                   reservedRide,
                   assignedDriverInfoService: assignedDriverInfoService,
                 ),
@@ -2547,7 +2571,7 @@ void main(List<String> args) async {
 
       return Response.ok(
         jsonEncode(
-          await rideRequestToJson(
+          await driverRideRequestToJson(
             selectedRide,
             assignedDriverInfoService: assignedDriverInfoService,
           ),
@@ -2646,7 +2670,7 @@ void main(List<String> args) async {
 
       return Response.ok(
         jsonEncode(
-          await rideRequestToJson(
+          await driverRideRequestToJson(
             updatedRide,
             assignedDriverInfoService: assignedDriverInfoService,
           ),
@@ -2718,7 +2742,7 @@ void main(List<String> args) async {
 
       return Response.ok(
         jsonEncode(
-          await rideRequestToJson(
+          await driverRideRequestToJson(
             updatedRide,
             assignedDriverInfoService: assignedDriverInfoService,
           ),
@@ -2817,7 +2841,7 @@ void main(List<String> args) async {
 
       return Response.ok(
         jsonEncode(
-          await rideRequestToJson(
+          await driverRideRequestToJson(
             completedRide,
             assignedDriverInfoService: assignedDriverInfoService,
           ),

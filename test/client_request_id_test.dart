@@ -10,6 +10,7 @@ void main() {
     id: 'ride-test-001',
     clientRequestId: clientId,
     pickup: 'Sofia Center',
+    pickupDisplayAddress: 'ул. Верила 2, София',
     pickupLatitude: 42.6977,
     pickupLongitude: 23.3219,
     destination: 'Sofia Airport',
@@ -23,6 +24,7 @@ void main() {
     final updated = ride.transitionTo(RideRequestStatus.waitingForVehicle);
 
     expect(updated.clientRequestId, clientId);
+    expect(updated.pickupDisplayAddress, 'ул. Верила 2, София');
     expect(updated.pickupLatitude, 42.6977);
     expect(updated.pickupLongitude, 23.3219);
     expect(updated.status, RideRequestStatus.waitingForVehicle);
@@ -40,6 +42,16 @@ void main() {
       ride
           .copyWith(pickupLatitude: null, pickupLongitude: null)
           .pickupLongitude,
+      isNull,
+    );
+  });
+
+  test('copyWith preserves and can clear pickup display address', () {
+    final ride = createRide();
+
+    expect(ride.copyWith().pickupDisplayAddress, 'ул. Верила 2, София');
+    expect(
+      ride.copyWith(pickupDisplayAddress: null).pickupDisplayAddress,
       isNull,
     );
   });

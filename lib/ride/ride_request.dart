@@ -55,6 +55,7 @@ class RideRequest {
   final String? passengerId;
 
   final String pickup;
+  final String? pickupDisplayAddress;
   final double? pickupLatitude;
   final double? pickupLongitude;
   final String destination;
@@ -85,6 +86,7 @@ class RideRequest {
     this.clientRequestId,
     this.passengerId,
     required this.pickup,
+    this.pickupDisplayAddress,
     this.pickupLatitude,
     this.pickupLongitude,
     required this.destination,
@@ -125,6 +127,7 @@ class RideRequest {
     String? clientRequestId,
     String? passengerId,
     String? pickup,
+    Object? pickupDisplayAddress = _notProvided,
     Object? pickupLatitude = _notProvided,
     Object? pickupLongitude = _notProvided,
     String? destination,
@@ -148,6 +151,9 @@ class RideRequest {
       clientRequestId: clientRequestId ?? this.clientRequestId,
       passengerId: passengerId ?? this.passengerId,
       pickup: pickup ?? this.pickup,
+      pickupDisplayAddress: identical(pickupDisplayAddress, _notProvided)
+          ? this.pickupDisplayAddress
+          : pickupDisplayAddress as String?,
       pickupLatitude: identical(pickupLatitude, _notProvided)
           ? this.pickupLatitude
           : pickupLatitude as double?,
@@ -195,6 +201,7 @@ class RideRequest {
       clientRequestId: clientRequestId,
       passengerId: passengerId,
       pickup: pickup,
+      pickupDisplayAddress: pickupDisplayAddress,
       pickupLatitude: pickupLatitude,
       pickupLongitude: pickupLongitude,
       destination: destination,

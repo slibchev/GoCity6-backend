@@ -170,6 +170,7 @@ void main() {
     expect(response.statusCode, 201);
     final body = jsonDecode(response.body) as Map<String, dynamic>;
     expect(body['pickup'], 'Моето местоположение');
+    expect(body.containsKey('pickupDisplayAddress'), isFalse);
     expect(body.containsKey('pickupLatitude'), isFalse);
     expect(body.containsKey('pickupLongitude'), isFalse);
   });

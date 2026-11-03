@@ -31,6 +31,7 @@ class PostgresRideRequestRepository
           id,
 
           pickup,
+          pickup_display_address,
 
           pickup_latitude,
 
@@ -117,6 +118,7 @@ class PostgresRideRequestRepository
           id,
 
           pickup,
+          pickup_display_address,
 
           pickup_latitude,
 
@@ -177,6 +179,7 @@ class PostgresRideRequestRepository
         SELECT
           id,
           pickup,
+          pickup_display_address,
           pickup_latitude,
           pickup_longitude,
           destination,
@@ -225,6 +228,7 @@ class PostgresRideRequestRepository
           id,
 
           pickup,
+          pickup_display_address,
 
           pickup_latitude,
 
@@ -271,6 +275,8 @@ class PostgresRideRequestRepository
           @id,
 
           @pickup,
+
+          @pickupDisplayAddress,
 
           @pickupLatitude,
 
@@ -320,6 +326,11 @@ class PostgresRideRequestRepository
 
           pickup = EXCLUDED.pickup,
 
+          pickup_display_address = COALESCE(
+            EXCLUDED.pickup_display_address,
+            rides.pickup_display_address
+          ),
+
           pickup_latitude = EXCLUDED.pickup_latitude,
 
           pickup_longitude = EXCLUDED.pickup_longitude,
@@ -366,6 +377,8 @@ class PostgresRideRequestRepository
         'id': request.id,
 
         'pickup': request.pickup,
+
+        'pickupDisplayAddress': request.pickupDisplayAddress,
 
         'pickupLatitude': request.pickupLatitude,
 
@@ -457,6 +470,7 @@ class PostgresRideRequestRepository
           id,
 
           pickup,
+          pickup_display_address,
 
           pickup_latitude,
 
@@ -761,6 +775,7 @@ class PostgresRideRequestRepository
         RETURNING
           id,
           pickup,
+          pickup_display_address,
           pickup_latitude,
           pickup_longitude,
           destination,
@@ -1150,6 +1165,7 @@ class PostgresRideRequestRepository
         RETURNING
           id,
           pickup,
+          pickup_display_address,
           pickup_latitude,
           pickup_longitude,
           destination,
@@ -1566,6 +1582,7 @@ class PostgresRideRequestRepository
             id,
 
             pickup,
+            pickup_display_address,
 
           pickup_latitude,
 
@@ -1841,6 +1858,8 @@ class PostgresRideRequestRepository
       id: row['id'] as String,
 
       pickup: row['pickup'] as String,
+
+      pickupDisplayAddress: row['pickup_display_address'] as String?,
 
       pickupLatitude: (row['pickup_latitude'] as num?)?.toDouble(),
 
