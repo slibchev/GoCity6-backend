@@ -20,7 +20,7 @@ final class AutomaticRedispatchAlreadyProgressed
 
 enum AutomaticRedispatchConflict {
   actionNotFound,
-  actionNotReject,
+  actionNotContinuation,
   leaseLost,
   rideMismatch,
 }

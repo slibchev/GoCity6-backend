@@ -274,6 +274,7 @@ class AtomicDriverOfferRejectionService {
 
     final outboxRecord = DriverOfferActionOutboxRecord(
       actionId: actionIdFactory(),
+      rideId: offer.rideId,
       offerId: offerId,
       driverId: driverId,
       action: DriverOfferAction.reject,

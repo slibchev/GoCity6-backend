@@ -7,6 +7,13 @@ import 'package:http/testing.dart';
 import 'package:test/test.dart';
 
 void main() {
+  test('classified route failures retain the StateError type contract', () {
+    expect(
+      RouteEstimationFailure(RouteEstimationFailureReason.timeout),
+      isA<StateError>(),
+    );
+  });
+
   test('RouteWaypoint requires a complete locator', () {
     expect(() => RouteWaypoint(), throwsArgumentError);
 
@@ -247,7 +254,7 @@ void main() {
     },
   );
 
-  test('keeps unexpected geocoding statuses as StateError', () async {
+  test('classifies unexpected geocoding provider statuses', () async {
     final client = MockClient((request) async {
       if (request.method == 'GET') {
         return http.Response(
@@ -269,7 +276,64 @@ void main() {
         origin: RouteWaypoint(latitude: 42.7, longitude: 23.3),
         destination: RouteWaypoint(address: 'Some pickup'),
       ),
-      throwsA(isA<StateError>()),
+      throwsA(
+        isA<RouteEstimationFailure>().having(
+          (error) => error.reason,
+          'reason',
+          RouteEstimationFailureReason.providerRejected,
+        ),
+      ),
+    );
+  });
+
+  test(
+    'classifies a failed Google Routes HTTP response as StateError subtype',
+    () async {
+      final client = MockClient((_) async => http.Response('unavailable', 503));
+      final estimator = GoogleRouteEstimator(
+        apiKey: 'test-api-key',
+        client: client,
+      );
+
+      await expectLater(
+        estimator.estimate(
+          origin: RouteWaypoint(latitude: 42.7, longitude: 23.3),
+          destination: RouteWaypoint(latitude: 42.71, longitude: 23.31),
+        ),
+        throwsA(
+          isA<RouteEstimationFailure>().having(
+            (error) => error.reason,
+            'reason',
+            RouteEstimationFailureReason.providerRejected,
+          ),
+        ),
+      );
+    },
+  );
+
+  test('classifies Google Routes request timeout predictably', () async {
+    final client = MockClient((_) async {
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+      return http.Response('late', 200);
+    });
+    final estimator = GoogleRouteEstimator(
+      apiKey: 'test-api-key',
+      client: client,
+      requestTimeout: const Duration(milliseconds: 10),
+    );
+
+    await expectLater(
+      estimator.estimate(
+        origin: RouteWaypoint(latitude: 42.7, longitude: 23.3),
+        destination: RouteWaypoint(latitude: 42.71, longitude: 23.31),
+      ),
+      throwsA(
+        isA<RouteEstimationFailure>().having(
+          (error) => error.reason,
+          'reason',
+          RouteEstimationFailureReason.timeout,
+        ),
+      ),
     );
   });
 
@@ -305,49 +369,56 @@ void main() {
     },
   );
 
-  test('GoogleRouteEstimator treats missing distanceMeters as zero for zero-distance route', () async {
-    final client = MockClient((request) async {
-      return http.Response(
-        jsonEncode({
-          'routes': [
-            {
-              'legs': [
-                {
-                  'startLocation': {
-                    'latLng': {'latitude': 42.696391, 'longitude': 23.3325317},
+  test(
+    'GoogleRouteEstimator rejects a response missing distanceMeters',
+    () async {
+      final client = MockClient((request) async {
+        return http.Response(
+          jsonEncode({
+            'routes': [
+              {
+                'legs': [
+                  {
+                    'startLocation': {
+                      'latLng': {
+                        'latitude': 42.696391,
+                        'longitude': 23.3325317,
+                      },
+                    },
+                    'endLocation': {
+                      'latLng': {
+                        'latitude': 42.696391,
+                        'longitude': 23.3325317,
+                      },
+                    },
                   },
-                  'endLocation': {
-                    'latLng': {'latitude': 42.696391, 'longitude': 23.3325317},
-                  },
-                },
-              ],
-              'duration': '0s',
-              'polyline': {'encodedPolyline': 'mcrcGiclmC'},
-            },
-          ],
-        }),
-        200,
+                ],
+                'duration': '0s',
+                'polyline': {'encodedPolyline': 'mcrcGiclmC'},
+              },
+            ],
+          }),
+          200,
+        );
+      });
+
+      final estimator = GoogleRouteEstimator(
+        apiKey: 'test-api-key',
+        client: client,
       );
-    });
 
-    final estimator = GoogleRouteEstimator(
-      apiKey: 'test-api-key',
-      client: client,
-    );
-
-    final estimate = await estimator.estimate(
-      origin: RouteWaypoint(latitude: 42.696100, longitude: 23.332200),
-      destination: RouteWaypoint(latitude: 42.696391, longitude: 23.3325317),
-    );
-
-    expect(estimate.distanceMeters, 0);
-    expect(estimate.durationSeconds, 0);
-    expect(estimate.originLatitude, 42.696391);
-    expect(estimate.originLongitude, 23.3325317);
-    expect(estimate.destinationLatitude, 42.696391);
-    expect(estimate.destinationLongitude, 23.3325317);
-    expect(estimate.encodedPolyline, 'mcrcGiclmC');
-  });
+      await expectLater(
+        estimator.estimate(
+          origin: RouteWaypoint(latitude: 42.696100, longitude: 23.332200),
+          destination: RouteWaypoint(
+            latitude: 42.696391,
+            longitude: 23.3325317,
+          ),
+        ),
+        throwsA(isA<RouteEstimationFailure>()),
+      );
+    },
+  );
   test('GoogleRouteEstimator rejects empty route results', () async {
     final client = MockClient((request) async {
       return http.Response(jsonEncode({'routes': <Object>[]}), 200);

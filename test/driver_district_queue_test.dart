@@ -463,6 +463,51 @@ void main() {
     });
 
     test(
+      'customer cancellation priority precedes ordinary FIFO ranks',
+      () async {
+        final priorityEntry = DriverDistrictQueueEntry(
+          shiftId: 's-cancelled-first',
+          driverId: 'driver-cancelled-first',
+          districtObjectId: 316,
+          enteredAt: now.subtract(const Duration(minutes: 1)),
+          queuePrioritySince: now.subtract(const Duration(minutes: 1)),
+          hasCustomerCancellationPriority: true,
+          lastObservedAt: now.subtract(const Duration(minutes: 1)),
+        );
+        final olderEntry = _entry(
+          's-older-fifo',
+          'driver-older-fifo',
+          now.subtract(const Duration(hours: 1)),
+          now.subtract(const Duration(hours: 1)),
+        );
+        final repository = _FakeDistrictQueueRepository()
+          ..entries[316] = [olderEntry, priorityEntry];
+        final candidates = await _service(
+          matcher: matcher,
+          repository: repository,
+          shifts: [
+            _activeShift('s-older-fifo', 'driver-older-fifo', enteredAt: now),
+            _activeShift(
+              's-cancelled-first',
+              'driver-cancelled-first',
+              enteredAt: now,
+            ),
+          ],
+          locations: _FakeLiveLocationRepository({
+            'driver-older-fifo': _location('driver-older-fifo', now),
+            'driver-cancelled-first': _location('driver-cancelled-first', now),
+          }),
+        ).findAvailableDrivers(districtObjectId: 316, now: now);
+
+        expect(candidates.map((candidate) => candidate.driverId), [
+          'driver-cancelled-first',
+          'driver-older-fifo',
+        ]);
+        expect(candidates.first.hasCustomerCancellationPriority, isTrue);
+      },
+    );
+
+    test(
       'missing, stale and implausibly future GPS time cannot confirm entry',
       () async {
         final repository = _FakeDistrictQueueRepository();

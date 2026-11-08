@@ -1,4 +1,6 @@
+import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:http/http.dart' as http;
 
@@ -11,9 +13,13 @@ class GoogleRouteEstimator
         MultiDestinationRouteEstimator {
   final String apiKey;
   final http.Client client;
+  final Duration requestTimeout;
 
-  GoogleRouteEstimator({required this.apiKey, http.Client? client})
-    : client = client ?? http.Client() {
+  GoogleRouteEstimator({
+    required this.apiKey,
+    http.Client? client,
+    this.requestTimeout = const Duration(seconds: 4),
+  }) : client = client ?? http.Client() {
     if (apiKey.isEmpty) {
       throw ArgumentError.value(
         apiKey,
@@ -31,7 +37,7 @@ class GoogleRouteEstimator
     final originPayload = await _buildWaypoint(origin);
     final destinationPayload = await _buildWaypoint(destination);
 
-    final response = await client.post(
+    final response = await _postJson(
       Uri.parse('https://routes.googleapis.com/directions/v2:computeRoutes'),
       headers: {
         'Content-Type': 'application/json',
@@ -43,55 +49,96 @@ class GoogleRouteEstimator
             'routes.legs.endLocation,'
             'routes.polyline.encodedPolyline',
       },
-      body: jsonEncode({
+      body: {
         'origin': originPayload,
         'destination': destinationPayload,
         'travelMode': 'DRIVE',
         'routingPreference': 'TRAFFIC_AWARE',
         'units': 'METRIC',
-      }),
+      },
     );
 
     if (response.statusCode != 200) {
-      throw StateError(
-        'Google Routes request failed with status '
-        '${response.statusCode}.',
+      throw RouteEstimationFailure(
+        RouteEstimationFailureReason.providerRejected,
       );
     }
 
-    final data = jsonDecode(response.body) as Map<String, dynamic>;
-    final routes = data['routes'] as List<dynamic>? ?? const [];
+    final decoded = _decodeProviderResponse(response.body);
+    if (decoded is! Map<String, dynamic>) {
+      throw RouteEstimationFailure(
+        RouteEstimationFailureReason.invalidProviderResponse,
+      );
+    }
+    final routesValue = decoded['routes'];
+    if (routesValue != null && routesValue is! List<dynamic>) {
+      throw RouteEstimationFailure(
+        RouteEstimationFailureReason.invalidProviderResponse,
+      );
+    }
+    final routes = routesValue as List<dynamic>? ?? const [];
 
     if (routes.isEmpty) {
-      throw StateError('Google Routes returned no route.');
+      throw RouteEstimationFailure(
+        RouteEstimationFailureReason.routeUnavailable,
+      );
     }
 
-    final route = routes.first as Map<String, dynamic>;
+    final routeValue = routes.first;
+    if (routeValue is! Map<String, dynamic>) {
+      throw RouteEstimationFailure(
+        RouteEstimationFailureReason.invalidProviderResponse,
+      );
+    }
+    final route = routeValue;
 
-    final distanceMeters = (route['distanceMeters'] as num?)?.toDouble() ?? 0.0;
+    final distanceValue = route['distanceMeters'];
+    if (distanceValue is! num ||
+        !distanceValue.toDouble().isFinite ||
+        distanceValue < 0) {
+      throw RouteEstimationFailure(
+        RouteEstimationFailureReason.invalidProviderResponse,
+      );
+    }
+    final distanceMeters = distanceValue.toDouble();
 
-    final durationText = route['duration'] as String?;
+    final durationValue = route['duration'];
 
-    if (durationText == null) {
-      throw StateError('Google Routes response is missing duration.');
+    if (durationValue is! String) {
+      throw RouteEstimationFailure(
+        RouteEstimationFailureReason.invalidProviderResponse,
+      );
     }
 
-    final durationSeconds = _parseDurationSeconds(durationText);
+    final durationSeconds = _parseDurationSeconds(durationValue);
 
-    final legs = route['legs'] as List<dynamic>?;
+    final legsValue = route['legs'];
 
-    if (legs == null || legs.isEmpty) {
-      throw StateError('Google Routes response has no legs.');
+    if (legsValue is! List<dynamic> || legsValue.isEmpty) {
+      throw RouteEstimationFailure(
+        RouteEstimationFailureReason.invalidProviderResponse,
+      );
     }
 
-    final firstLeg = legs.first as Map<String, dynamic>;
-    final lastLeg = legs.last as Map<String, dynamic>;
+    final firstLegValue = legsValue.first;
+    final lastLegValue = legsValue.last;
+    if (firstLegValue is! Map<String, dynamic> ||
+        lastLegValue is! Map<String, dynamic>) {
+      throw RouteEstimationFailure(
+        RouteEstimationFailureReason.invalidProviderResponse,
+      );
+    }
+    final firstLeg = firstLegValue;
+    final lastLeg = lastLegValue;
 
     final startLatLng = _readLatLng(firstLeg['startLocation']);
 
     final endLatLng = _readLatLng(lastLeg['endLocation']);
 
-    final polyline = route['polyline'] as Map<String, dynamic>?;
+    final polylineValue = route['polyline'];
+    final polyline = polylineValue is Map<String, dynamic>
+        ? polylineValue['encodedPolyline']
+        : null;
 
     return RouteEstimate(
       distanceMeters: distanceMeters,
@@ -100,7 +147,7 @@ class GoogleRouteEstimator
       originLongitude: startLatLng?.$2,
       destinationLatitude: endLatLng?.$1,
       destinationLongitude: endLatLng?.$2,
-      encodedPolyline: polyline?['encodedPolyline'] as String?,
+      encodedPolyline: polyline is String ? polyline : null,
     );
   }
 
@@ -127,7 +174,7 @@ class GoogleRouteEstimator
 
       requests.add(() async {
         final originPayloads = await Future.wait(chunk.map(_buildWaypoint));
-        final response = await client.post(
+        final response = await _postJson(
           Uri.parse(
             'https://routes.googleapis.com/distanceMatrix/v2:computeRouteMatrix',
           ),
@@ -136,7 +183,7 @@ class GoogleRouteEstimator
             'X-Goog-Api-Key': apiKey,
             'X-Goog-FieldMask': 'originIndex,destinationIndex,duration,distanceMeters,condition',
           },
-          body: jsonEncode({
+          body: {
             'origins': originPayloads
                 .map((origin) => {'waypoint': origin})
                 .toList(growable: false),
@@ -146,26 +193,28 @@ class GoogleRouteEstimator
             'travelMode': 'DRIVE',
             'routingPreference': 'TRAFFIC_AWARE',
             'units': 'METRIC',
-          }),
+          },
         );
 
         if (response.statusCode != 200) {
-          throw StateError(
-            'Google Routes matrix request failed with status '
-            '${response.statusCode}.',
+          throw RouteEstimationFailure(
+            RouteEstimationFailureReason.providerRejected,
           );
         }
 
-        final decoded = jsonDecode(response.body);
-        final elements = decoded is List<dynamic>
+        final decoded = _decodeProviderResponse(response.body);
+        final elementsValue = decoded is List<dynamic>
             ? decoded
             : (decoded is Map<String, dynamic>
-                  ? decoded['matrixElements'] as List<dynamic>?
+                  ? decoded['matrixElements']
                   : null);
 
-        if (elements == null) {
-          throw StateError('Google Routes matrix returned an invalid body.');
+        if (elementsValue is! List<dynamic>) {
+          throw RouteEstimationFailure(
+            RouteEstimationFailureReason.invalidProviderResponse,
+          );
         }
+        final elements = elementsValue;
 
         for (final element in elements) {
           if (element is! Map<String, dynamic>) {
@@ -187,10 +236,13 @@ class GoogleRouteEstimator
             continue;
           }
 
-          final durationText = element['duration'] as String?;
+          final durationText = element['duration'];
           final distanceMeters = element['distanceMeters'];
 
-          if (durationText == null || distanceMeters is! num) {
+          if (durationText is! String ||
+              distanceMeters is! num ||
+              !distanceMeters.toDouble().isFinite ||
+              distanceMeters < 0) {
             continue;
           }
 
@@ -227,8 +279,11 @@ class GoogleRouteEstimator
         chunk.map((waypoint) async {
           try {
             return await _buildWaypoint(waypoint);
-          } catch (_) {
-            // A malformed/unresolvable pickup must not fail other rides.
+          } on RouteWaypointResolutionException {
+            // An unresolved pickup must not fail the other waiting rides.
+            return null;
+          } on RouteEstimationFailure {
+            // A temporary geocoding/provider failure only excludes this ride.
             return null;
           }
         }),
@@ -239,45 +294,46 @@ class GoogleRouteEstimator
       }
       if (validIndexes.isEmpty) continue;
 
-      final response = await client
-          .post(
-            Uri.parse(
-              'https://routes.googleapis.com/distanceMatrix/v2:computeRouteMatrix',
-            ),
-            headers: {
-              'Content-Type': 'application/json',
-              'X-Goog-Api-Key': apiKey,
-              'X-Goog-FieldMask': 'originIndex,destinationIndex,duration,distanceMeters,condition',
-            },
-            body: jsonEncode({
-              'origins': [
-                {'waypoint': originPayload},
-              ],
-              'destinations': validIndexes
-                  .map((index) => {'waypoint': payloads[index]})
-                  .toList(growable: false),
-              'travelMode': 'DRIVE',
-              'routingPreference': 'TRAFFIC_AWARE',
-              'units': 'METRIC',
-            }),
-          )
-          .timeout(const Duration(seconds: 4));
+      final response = await _postJson(
+        Uri.parse(
+          'https://routes.googleapis.com/distanceMatrix/v2:computeRouteMatrix',
+        ),
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Goog-Api-Key': apiKey,
+          'X-Goog-FieldMask':
+              'originIndex,destinationIndex,duration,distanceMeters,condition',
+        },
+        body: {
+          'origins': [
+            {'waypoint': originPayload},
+          ],
+          'destinations': validIndexes
+              .map((index) => {'waypoint': payloads[index]})
+              .toList(growable: false),
+          'travelMode': 'DRIVE',
+          'routingPreference': 'TRAFFIC_AWARE',
+          'units': 'METRIC',
+        },
+      );
 
       if (response.statusCode != 200) {
-        throw StateError(
-          'Google Routes matrix request failed with status '
-          '${response.statusCode}.',
+        throw RouteEstimationFailure(
+          RouteEstimationFailureReason.providerRejected,
         );
       }
-      final decoded = jsonDecode(response.body);
-      final elements = decoded is List<dynamic>
+      final decoded = _decodeProviderResponse(response.body);
+      final elementsValue = decoded is List<dynamic>
           ? decoded
           : (decoded is Map<String, dynamic>
-                ? decoded['matrixElements'] as List<dynamic>?
+                ? decoded['matrixElements']
                 : null);
-      if (elements == null) {
-        throw StateError('Google Routes matrix returned an invalid body.');
+      if (elementsValue is! List<dynamic>) {
+        throw RouteEstimationFailure(
+          RouteEstimationFailureReason.invalidProviderResponse,
+        );
       }
+      final elements = elementsValue;
 
       for (final element in elements) {
         if (element is! Map<String, dynamic> ||
@@ -292,7 +348,9 @@ class GoogleRouteEstimator
             destinationIndex < 0 ||
             destinationIndex >= validIndexes.length ||
             durationText is! String ||
-            distanceMeters is! num) {
+            distanceMeters is! num ||
+            !distanceMeters.toDouble().isFinite ||
+            distanceMeters < 0) {
           continue;
         }
         final originalIndex = start + validIndexes[destinationIndex];
@@ -345,7 +403,7 @@ class GoogleRouteEstimator
   }
 
   Future<(double, double)> _geocodeAddress(String address) async {
-    final response = await client.get(
+    final response = await _get(
       Uri.https('maps.googleapis.com', '/maps/api/geocode/json', {
         'address': address,
         'key': apiKey,
@@ -353,13 +411,18 @@ class GoogleRouteEstimator
     );
 
     if (response.statusCode != 200) {
-      throw StateError(
-        'Google Geocoding request failed with status '
-        '${response.statusCode}.',
+      throw RouteEstimationFailure(
+        RouteEstimationFailureReason.providerRejected,
       );
     }
 
-    final data = jsonDecode(response.body) as Map<String, dynamic>;
+    final decoded = _decodeProviderResponse(response.body);
+    if (decoded is! Map<String, dynamic>) {
+      throw RouteEstimationFailure(
+        RouteEstimationFailureReason.invalidProviderResponse,
+      );
+    }
+    final data = decoded;
 
     final status = data['status'];
 
@@ -370,24 +433,49 @@ class GoogleRouteEstimator
     }
 
     if (status != 'OK') {
-      throw StateError('Google Geocoding failed with status $status.');
+      throw RouteEstimationFailure(
+        RouteEstimationFailureReason.providerRejected,
+      );
     }
 
-    final results = data['results'] as List<dynamic>? ?? const [];
+    final resultsValue = data['results'];
+    if (resultsValue != null && resultsValue is! List<dynamic>) {
+      throw RouteEstimationFailure(
+        RouteEstimationFailureReason.invalidProviderResponse,
+      );
+    }
+    final results = resultsValue as List<dynamic>? ?? const [];
 
     if (results.isEmpty) {
-      throw StateError('Google Geocoding returned no results.');
+      throw RouteEstimationFailure(
+        RouteEstimationFailureReason.invalidProviderResponse,
+      );
     }
 
-    final firstResult = results.first as Map<String, dynamic>;
-    final geometry = firstResult['geometry'] as Map<String, dynamic>?;
-    final location = geometry?['location'] as Map<String, dynamic>?;
+    final firstResult = results.first;
+    if (firstResult is! Map<String, dynamic>) {
+      throw RouteEstimationFailure(
+        RouteEstimationFailureReason.invalidProviderResponse,
+      );
+    }
+    final geometryValue = firstResult['geometry'];
+    final geometry = geometryValue is Map<String, dynamic>
+        ? geometryValue
+        : null;
+    final locationValue = geometry?['location'];
+    final location = locationValue is Map<String, dynamic>
+        ? locationValue
+        : null;
 
-    final latitude = (location?['lat'] as num?)?.toDouble();
-    final longitude = (location?['lng'] as num?)?.toDouble();
+    final latitudeValue = location?['lat'];
+    final longitudeValue = location?['lng'];
+    final latitude = latitudeValue is num ? latitudeValue.toDouble() : null;
+    final longitude = longitudeValue is num ? longitudeValue.toDouble() : null;
 
     if (latitude == null || longitude == null) {
-      throw StateError('Google Geocoding response is missing coordinates.');
+      throw RouteEstimationFailure(
+        RouteEstimationFailureReason.invalidProviderResponse,
+      );
     }
 
     if (!_isValidCoordinate(latitude, longitude)) {
@@ -397,6 +485,67 @@ class GoogleRouteEstimator
     }
 
     return (latitude, longitude);
+  }
+
+  Future<http.Response> _postJson(
+    Uri uri, {
+    required Map<String, String> headers,
+    required Map<String, Object?> body,
+  }) async {
+    try {
+      return await client
+          .post(uri, headers: headers, body: jsonEncode(body))
+          .timeout(requestTimeout);
+    } on TimeoutException {
+      throw RouteEstimationFailure(RouteEstimationFailureReason.timeout);
+    } on http.ClientException {
+      throw RouteEstimationFailure(
+        RouteEstimationFailureReason.networkUnavailable,
+      );
+    } on SocketException {
+      throw RouteEstimationFailure(
+        RouteEstimationFailureReason.networkUnavailable,
+      );
+    } on StateError {
+      // Some HTTP/provider adapters surface transport failures as StateError.
+      // Keep this recovery scoped to the external request; unrelated
+      // StateErrors elsewhere in route construction remain visible.
+      throw RouteEstimationFailure(
+        RouteEstimationFailureReason.networkUnavailable,
+      );
+    }
+  }
+
+  Future<http.Response> _get(Uri uri) async {
+    try {
+      return await client.get(uri).timeout(requestTimeout);
+    } on TimeoutException {
+      throw RouteEstimationFailure(RouteEstimationFailureReason.timeout);
+    } on http.ClientException {
+      throw RouteEstimationFailure(
+        RouteEstimationFailureReason.networkUnavailable,
+      );
+    } on SocketException {
+      throw RouteEstimationFailure(
+        RouteEstimationFailureReason.networkUnavailable,
+      );
+    } on StateError {
+      // See _postJson: only an error emitted by this external request is
+      // classified as a recoverable route-provider failure.
+      throw RouteEstimationFailure(
+        RouteEstimationFailureReason.networkUnavailable,
+      );
+    }
+  }
+
+  Object? _decodeProviderResponse(String body) {
+    try {
+      return jsonDecode(body);
+    } on FormatException {
+      throw RouteEstimationFailure(
+        RouteEstimationFailureReason.invalidProviderResponse,
+      );
+    }
   }
 
   bool _isValidCoordinate(double latitude, double longitude) {
@@ -410,28 +559,37 @@ class GoogleRouteEstimator
 
   double _parseDurationSeconds(String durationText) {
     if (!durationText.endsWith('s')) {
-      throw StateError('Unsupported Google route duration: $durationText');
+      throw RouteEstimationFailure(
+        RouteEstimationFailureReason.invalidProviderResponse,
+      );
     }
 
     final seconds = double.tryParse(
       durationText.substring(0, durationText.length - 1),
     );
 
-    if (seconds == null || seconds < 0) {
-      throw StateError('Invalid Google route duration: $durationText');
+    if (seconds == null || !seconds.isFinite || seconds < 0) {
+      throw RouteEstimationFailure(
+        RouteEstimationFailureReason.invalidProviderResponse,
+      );
     }
 
     return seconds;
   }
 
   (double, double)? _readLatLng(Object? locationValue) {
-    final location = locationValue as Map<String, dynamic>?;
-    final latLng = location?['latLng'] as Map<String, dynamic>?;
+    if (locationValue is! Map<String, dynamic>) return null;
+    final latLngValue = locationValue['latLng'];
+    if (latLngValue is! Map<String, dynamic>) return null;
 
-    final latitude = (latLng?['latitude'] as num?)?.toDouble();
-    final longitude = (latLng?['longitude'] as num?)?.toDouble();
+    final latitudeValue = latLngValue['latitude'];
+    final longitudeValue = latLngValue['longitude'];
+    final latitude = latitudeValue is num ? latitudeValue.toDouble() : null;
+    final longitude = longitudeValue is num ? longitudeValue.toDouble() : null;
 
-    if (latitude == null || longitude == null) {
+    if (latitude == null ||
+        longitude == null ||
+        !_isValidCoordinate(latitude, longitude)) {
       return null;
     }
 

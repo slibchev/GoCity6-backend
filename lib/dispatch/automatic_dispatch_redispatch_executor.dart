@@ -6,12 +6,12 @@ import 'ride_offer.dart';
 import 'ride_offer_repository.dart';
 
 enum DriverOfferRedispatchInvariant {
-  actionNotReject,
+  actionNotContinuation,
   missingLease,
   originalOfferNotFound,
   offerIdentityMismatch,
   ownerMismatch,
-  originalOfferNotRejected,
+  originalOfferStatusMismatch,
   resultRideMismatch,
   resultSourceMismatch,
 }
@@ -27,25 +27,31 @@ final class DriverOfferRedispatchInvariantException implements Exception {
   String toString() => 'Driver offer redispatch invariant failed.';
 }
 
-/// Executes the supported normal automatic redispatch path for one leased
-/// reject action. Waiting-board offers are left for a dedicated continuation.
+/// Executes normal dispatch continuation for one leased reject, timeout, or
+/// initial-dispatch action. Waiting-board offers use the existing scanner.
 final class AutomaticDispatchRedispatchExecutor
     implements DriverOfferRedispatchExecutor {
   const AutomaticDispatchRedispatchExecutor({
     required this.offerRepository,
     required this.redispatchService,
+    this.settleTimedOutOffer,
+    this.dispatchWaitingBoard,
   });
 
   final RideOfferRepository offerRepository;
   final AutomaticDispatchRedispatcher redispatchService;
+  final Future<bool> Function(String offerId)? settleTimedOutOffer;
+  final Future<void> Function()? dispatchWaitingBoard;
 
   @override
   Future<DriverOfferRedispatchExecutionResult> execute(
     DriverOfferActionOutboxRecord action,
   ) async {
-    if (action.action != DriverOfferAction.reject) {
+    if (action.action != DriverOfferAction.reject &&
+        action.action != DriverOfferAction.timeout &&
+        action.action != DriverOfferAction.initialDispatch) {
       throw const DriverOfferRedispatchInvariantException(
-        DriverOfferRedispatchInvariant.actionNotReject,
+        DriverOfferRedispatchInvariant.actionNotContinuation,
       );
     }
 
@@ -58,40 +64,67 @@ final class AutomaticDispatchRedispatchExecutor
       );
     }
 
-    final originalOffer = await offerRepository.findById(action.offerId);
-    if (originalOffer == null) {
-      throw const DriverOfferRedispatchInvariantException(
-        DriverOfferRedispatchInvariant.originalOfferNotFound,
-      );
-    }
-    if (originalOffer.id != action.offerId) {
-      throw const DriverOfferRedispatchInvariantException(
-        DriverOfferRedispatchInvariant.offerIdentityMismatch,
-      );
-    }
-    if (originalOffer.driverId != action.driverId) {
-      throw const DriverOfferRedispatchInvariantException(
-        DriverOfferRedispatchInvariant.ownerMismatch,
-      );
-    }
-    if (originalOffer.status != RideOfferStatus.rejected) {
-      throw const DriverOfferRedispatchInvariantException(
-        DriverOfferRedispatchInvariant.originalOfferNotRejected,
-      );
-    }
-    if (originalOffer.source == RideOfferSource.waitingBoard) {
-      return const DriverOfferRedispatchPermanentFailure(
-        errorCode: DriverOfferActionOutboxErrorCode.unsupportedOfferSource,
-      );
-    }
-    if (originalOffer.source != RideOfferSource.automatic) {
-      return const DriverOfferRedispatchPermanentFailure(
-        errorCode: DriverOfferActionOutboxErrorCode.unsupportedOfferSource,
-      );
+    RideOffer? sourceOffer;
+    if (action.action != DriverOfferAction.initialDispatch) {
+      final offerId = action.offerId;
+      final driverId = action.driverId;
+      if (offerId == null || driverId == null) {
+        throw const DriverOfferRedispatchInvariantException(
+          DriverOfferRedispatchInvariant.originalOfferNotFound,
+        );
+      }
+      sourceOffer = await offerRepository.findById(offerId);
+      if (sourceOffer == null) {
+        throw const DriverOfferRedispatchInvariantException(
+          DriverOfferRedispatchInvariant.originalOfferNotFound,
+        );
+      }
+      if (sourceOffer.id != offerId) {
+        throw const DriverOfferRedispatchInvariantException(
+          DriverOfferRedispatchInvariant.offerIdentityMismatch,
+        );
+      }
+      if (sourceOffer.driverId != driverId) {
+        throw const DriverOfferRedispatchInvariantException(
+          DriverOfferRedispatchInvariant.ownerMismatch,
+        );
+      }
+      final expectedStatus = action.action == DriverOfferAction.reject
+          ? RideOfferStatus.rejected
+          : RideOfferStatus.expired;
+      if (sourceOffer.status != expectedStatus) {
+        throw const DriverOfferRedispatchInvariantException(
+          DriverOfferRedispatchInvariant.originalOfferStatusMismatch,
+        );
+      }
+      if (action.action == DriverOfferAction.timeout) {
+        final settle = settleTimedOutOffer;
+        if (settle == null) {
+          return const DriverOfferRedispatchPermanentFailure(
+            errorCode: DriverOfferActionOutboxErrorCode.dependencyUnavailable,
+          );
+        }
+        await settle(sourceOffer.id);
+      }
+      if (sourceOffer.source == RideOfferSource.waitingBoard) {
+        final dispatch = dispatchWaitingBoard;
+        if (dispatch == null) {
+          return const DriverOfferRedispatchTemporaryFailure(
+            errorCode: DriverOfferActionOutboxErrorCode.dependencyUnavailable,
+          );
+        }
+        await dispatch();
+        return const DriverOfferRedispatchConfirmed();
+      }
+      if (sourceOffer.source != RideOfferSource.automatic) {
+        return const DriverOfferRedispatchPermanentFailure(
+          errorCode: DriverOfferActionOutboxErrorCode.unsupportedOfferSource,
+        );
+      }
     }
 
     final result = await redispatchService.redispatch(
-      rideId: originalOffer.rideId,
+      rideId: action.rideId,
       actionId: action.actionId,
       leaseToken: leaseToken,
     );
@@ -100,7 +133,9 @@ final class AutomaticDispatchRedispatchExecutor
       AutomaticDispatchRedispatchCreated(:final offer) ||
       AutomaticDispatchRedispatchAlreadyProgressed(
         :final offer,
-      ) => _confirmPersistedOffer(offer, originalOffer),
+      ) => _confirmPersistedOffer(offer, action.rideId),
+      AutomaticDispatchRedispatchAdvanced() =>
+        const DriverOfferRedispatchConfirmed(),
       AutomaticDispatchRedispatchNoEligibleDriver() =>
         const DriverOfferRedispatchTemporaryFailure(
           errorCode: DriverOfferActionOutboxErrorCode.noEligibleDriver,
@@ -110,9 +145,9 @@ final class AutomaticDispatchRedispatchExecutor
 
   DriverOfferRedispatchExecutionResult _confirmPersistedOffer(
     RideOffer redispatchedOffer,
-    RideOffer originalOffer,
+    String rideId,
   ) {
-    if (redispatchedOffer.rideId != originalOffer.rideId) {
+    if (redispatchedOffer.rideId != rideId) {
       throw const DriverOfferRedispatchInvariantException(
         DriverOfferRedispatchInvariant.resultRideMismatch,
       );

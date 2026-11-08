@@ -7,17 +7,23 @@ import 'package:test/test.dart';
 import 'package:uuid/uuid.dart';
 
 Future<Connection> _connectToCity6Test() async {
+  final username = Platform.environment['CITY6_TEST_DB_USER'];
   final password = Platform.environment['CITY6_TEST_DB_PASSWORD'];
-  if (password == null || password.isEmpty) {
-    fail('CITY6_TEST_DB_PASSWORD is required.');
+  final port = int.tryParse(Platform.environment['CITY6_TEST_DB_PORT'] ?? '');
+  if (username == null ||
+      username.isEmpty ||
+      password == null ||
+      password.isEmpty) {
+    fail('CITY6_TEST_DB_USER and CITY6_TEST_DB_PASSWORD are required.');
   }
+  if (port != 5433) fail('This test is restricted to isolated port 5433.');
 
   final database = await Connection.open(
     Endpoint(
-      host: 'localhost',
-      port: 5432,
+      host: '127.0.0.1',
+      port: port!,
       database: 'city6_test',
-      username: 'city6_app',
+      username: username,
       password: password,
     ),
     settings: const ConnectionSettings(sslMode: SslMode.disable),
@@ -25,11 +31,12 @@ Future<Connection> _connectToCity6Test() async {
 
   try {
     final identity = await database.execute(
-      'SELECT current_database() AS database_name, current_user AS role_name',
+      'SELECT current_database() AS database_name, current_user AS role_name, inet_server_port() AS server_port',
     );
     expect(identity.single.toColumnMap(), {
       'database_name': 'city6_test',
-      'role_name': 'city6_app',
+      'role_name': username,
+      'server_port': 5433,
     });
     return database;
   } catch (_) {
@@ -149,6 +156,7 @@ Future<void> _insertRideAndOffer(
 
 DriverOfferActionOutboxRecord _testAction({
   required String actionId,
+  required String rideId,
   required String offerId,
   required String driverId,
   required DriverOfferAction action,
@@ -159,6 +167,7 @@ DriverOfferActionOutboxRecord _testAction({
   final createdAt = now.subtract(const Duration(milliseconds: 1));
   return DriverOfferActionOutboxRecord(
     actionId: actionId,
+    rideId: rideId,
     offerId: offerId,
     driverId: driverId,
     action: action,
@@ -212,7 +221,7 @@ void main() {
               WHERE table_schema = 'public'
                 AND table_name = 'driver_offer_action_outbox'
             ''');
-          expect(columns, hasLength(18));
+          expect(columns, hasLength(19));
 
           final now = DateTime.now().toUtc();
           final createdAt = now.subtract(const Duration(milliseconds: 1));
@@ -249,6 +258,7 @@ void main() {
           final repository = PostgresDriverOfferActionOutboxRepository();
           final action = _testAction(
             actionId: actionId,
+            rideId: rideId,
             offerId: offerId,
             driverId: driverId,
             action: DriverOfferAction.reject,
@@ -298,6 +308,7 @@ void main() {
             transaction: transaction,
             record: _testAction(
               actionId: ids.v4(),
+              rideId: rideId,
               offerId: offerId,
               driverId: driverId,
               action: DriverOfferAction.accept,
@@ -312,6 +323,7 @@ void main() {
             transaction: transaction,
             record: _testAction(
               actionId: ids.v4(),
+              rideId: rideId,
               offerId: offerId,
               driverId: driverId,
               action: DriverOfferAction.reject,
@@ -326,6 +338,7 @@ void main() {
             transaction: transaction,
             record: _testAction(
               actionId: ids.v4(),
+              rideId: rideId,
               offerId: offerId,
               driverId: driverId,
               action: DriverOfferAction.reject,
@@ -340,6 +353,7 @@ void main() {
             transaction: transaction,
             record: _testAction(
               actionId: ids.v4(),
+              rideId: rideId,
               offerId: offerId,
               driverId: driverId,
               action: DriverOfferAction.reject,
@@ -352,6 +366,7 @@ void main() {
 
           final nullKeyAction = _testAction(
             actionId: ids.v4(),
+            rideId: secondRideId,
             offerId: secondOfferId,
             driverId: driverId,
             action: DriverOfferAction.reject,
@@ -375,6 +390,7 @@ void main() {
             transaction: transaction,
             record: _testAction(
               actionId: ids.v4(),
+              rideId: secondRideId,
               offerId: secondOfferId,
               driverId: driverId,
               action: DriverOfferAction.reject,
@@ -389,6 +405,7 @@ void main() {
             transaction: transaction,
             record: _testAction(
               actionId: ids.v4(),
+              rideId: secondRideId,
               offerId: secondOfferId,
               driverId: driverId,
               action: DriverOfferAction.reject,
@@ -403,6 +420,7 @@ void main() {
             transaction: transaction,
             record: _testAction(
               actionId: ids.v4(),
+              rideId: rideId,
               offerId: offerId,
               driverId: otherDriverId,
               action: DriverOfferAction.reject,

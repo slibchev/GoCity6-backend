@@ -17,6 +17,7 @@ class PostgresDriverOfferActionOutboxRepository
       '''
     INSERT INTO driver_offer_action_outbox (
       action_id,
+      ride_id,
       offer_id,
       driver_id,
       action,
@@ -36,6 +37,7 @@ class PostgresDriverOfferActionOutboxRepository
       redispatch_completed_at
     ) VALUES (
       @actionId,
+      @rideId,
       @offerId,
       @driverId,
       @action,
@@ -75,10 +77,11 @@ class PostgresDriverOfferActionOutboxRepository
     // Resolve a repeated idempotency key before offer uniqueness. A matching
     // key with a different request is always a conflict, never a success.
     final key = record.idempotencyKey;
-    if (key != null) {
+    final ownerDriverId = record.driverId;
+    if (key != null && ownerDriverId != null) {
       final existingByKey = await findByDriverAndIdempotencyKey(
         session: transaction,
-        driverId: record.driverId,
+        driverId: ownerDriverId,
         idempotencyKey: key,
       );
       if (existingByKey != null) {
@@ -109,31 +112,37 @@ class PostgresDriverOfferActionOutboxRepository
       throw const DriverOfferActionIdConflictException();
     }
 
-    final existingForOwner = await findForDriver(
-      session: transaction,
-      offerId: record.offerId,
-      driverId: record.driverId,
-    );
-    if (existingForOwner != null) {
-      if (existingForOwner.hasSameRequestAs(record)) {
-        return DriverOfferActionAlreadyExists(record: existingForOwner);
+    final recordOfferId = record.offerId;
+    final recordDriverId = record.driverId;
+    if (recordOfferId != null && recordDriverId != null) {
+      final existingForOwner = await findForDriver(
+        session: transaction,
+        offerId: recordOfferId,
+        driverId: recordDriverId,
+      );
+      if (existingForOwner != null) {
+        if (existingForOwner.hasSameRequestAs(record)) {
+          return DriverOfferActionAlreadyExists(record: existingForOwner);
+        }
+        return const DriverOfferActionOfferConflict();
       }
-      return const DriverOfferActionOfferConflict();
     }
 
     // Do not reveal a foreign driver's row. The boolean probe only classifies
     // the unique offer_id conflict and returns no journal or owner fields.
-    final offerExists = await transaction.execute(
-      Sql.named('''
+    if (recordOfferId != null) {
+      final offerExists = await transaction.execute(
+        Sql.named('''
         SELECT TRUE AS action_exists
         FROM driver_offer_action_outbox
         WHERE offer_id = @offerId
         LIMIT 1
       '''),
-      parameters: {'offerId': record.offerId},
-    );
-    if (offerExists.isNotEmpty) {
-      return const DriverOfferActionOfferConflict();
+        parameters: {'offerId': recordOfferId},
+      );
+      if (offerExists.isNotEmpty) {
+        return const DriverOfferActionOfferConflict();
+      }
     }
 
     // For example, a concurrent write may be invisible to a repeatable-read

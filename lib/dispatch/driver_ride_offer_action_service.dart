@@ -3,6 +3,7 @@ import 'ride_offer.dart';
 import 'ride_offer_repository.dart';
 import 'driver_dispatch_policy_service.dart';
 import '../ride/ride_request_repository.dart';
+import 'atomic_driver_offer_rejection_service.dart';
 
 typedef ContinueAutomaticDispatch = Future<RideOffer?> Function({
   required String rideId,
@@ -27,6 +28,8 @@ class DriverRideOfferActionService {
   final RideRequestRepository rideRepository;
   final ContinueAutomaticDispatch continueRide;
   final DriverDispatchPolicyService dispatchPolicyService;
+  final AtomicDriverOfferRejectionService? atomicRejectionService;
+  final Future<void> Function({required String actionId})? processOutboxAction;
 
   const DriverRideOfferActionService({
     required this.offerRepository,
@@ -34,6 +37,8 @@ class DriverRideOfferActionService {
     required this.rideRepository,
     required this.continueRide,
     required this.dispatchPolicyService,
+    this.atomicRejectionService,
+    this.processOutboxAction,
   });
 
   Future<RideOffer> accept({
@@ -55,6 +60,40 @@ class DriverRideOfferActionService {
       driverId: driverId,
       offerId: offerId,
     );
+    final atomicRejection = atomicRejectionService;
+    if (atomicRejection != null) {
+      final result = await atomicRejection.reject(
+        driverId: driverId,
+        offerId: offerId,
+      );
+      final actionId = switch (result) {
+        AtomicDriverOfferRejectionApplied(:final outboxRecord) =>
+          outboxRecord.actionId,
+        AtomicDriverOfferRejectionAlreadyRecorded(:final outboxRecord) =>
+          outboxRecord.actionId,
+        AtomicDriverOfferRejectionConflictResult(:final reason) =>
+          switch (reason) {
+            AtomicDriverOfferRejectionConflictReason.offerNotFound ||
+            AtomicDriverOfferRejectionConflictReason
+                .offerOwnedByAnotherDriver =>
+              throw DriverRideOfferActionException(
+                reason == AtomicDriverOfferRejectionConflictReason.offerNotFound
+                    ? DriverRideOfferActionConflict.offerNotFound
+                    : DriverRideOfferActionConflict.offerDoesNotBelongToDriver,
+              ),
+            _ => throw const AtomicRideOfferConflictException(
+              AtomicRideOfferConflict.offerNotPending,
+            ),
+          },
+      };
+      await processOutboxAction?.call(actionId: actionId);
+      final rejectedOffer = await offerRepository.findById(offerId);
+      if (rejectedOffer == null) {
+        throw StateError('Rejected offer could not be reloaded.');
+      }
+      return rejectedOffer;
+    }
+
     final ride = await rideRepository.findById(offer.rideId);
 
     if (ride == null) {

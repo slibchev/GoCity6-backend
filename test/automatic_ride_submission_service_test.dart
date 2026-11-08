@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:gocity6_backend/dispatch/active_driver_shift.dart';
 import 'package:gocity6_backend/dispatch/atomic_ride_bonus_decision_repository.dart';
 import 'package:gocity6_backend/dispatch/atomic_ride_offer_repository.dart';
@@ -8,6 +10,7 @@ import 'package:gocity6_backend/dispatch/dispatch_candidate_service.dart';
 import 'package:gocity6_backend/dispatch/driver_live_location.dart';
 import 'package:gocity6_backend/dispatch/driver_live_location_repository.dart';
 import 'package:gocity6_backend/dispatch/driver_queue_state.dart';
+import 'package:gocity6_backend/dispatch/driver_district_queue.dart';
 import 'package:gocity6_backend/dispatch/driver_shift_repository.dart';
 import 'package:gocity6_backend/dispatch/ride_offer.dart';
 import 'package:gocity6_backend/dispatch/ride_offer_repository.dart';
@@ -17,10 +20,90 @@ import 'package:gocity6_backend/ride/ride_lifecycle_service.dart';
 import 'package:gocity6_backend/ride/ride_request.dart';
 import 'package:gocity6_backend/ride/ride_request_repository.dart';
 import 'package:gocity6_backend/ride/ride_request_status.dart';
+import 'package:gocity6_backend/geography/district_matcher.dart';
+import 'package:gocity6_backend/routing/google_route_estimator.dart';
 import 'package:gocity6_backend/routing/route_estimator.dart';
+import 'package:http/testing.dart';
 import 'package:test/test.dart';
 
 void main() {
+  test('ride submission still creates the local FIFO offer when Google transport throws StateError', () async {
+    final now = DateTime.utc(2026, 11, 8, 12);
+    final rideRepository = _FakeRideRequestRepository();
+    final matcher = DistrictMatcher.fromGeoJsonString(
+      jsonEncode({
+        'type': 'FeatureCollection',
+        'features': [_districtFeature(316, 23.0, 23.5)],
+      }),
+    );
+    final candidate = DriverDistrictQueueCandidate(
+      shiftId: 'shift-route-error',
+      driverId: 'driver-route-error',
+      vehicleId: 'vehicle-route-error',
+      districtObjectId: 316,
+      enteredAt: now.subtract(const Duration(minutes: 11)),
+      fifoPriorityAt: now.subtract(const Duration(minutes: 10)),
+      location: DriverLiveLocation(
+        driverId: 'driver-route-error',
+        latitude: 42.69,
+        longitude: 23.2,
+        updatedAt: now.subtract(const Duration(seconds: 2)),
+        gpsFixAt: now.subtract(const Duration(seconds: 2)),
+      ),
+    );
+    final atomicOfferRepository = _FakeAtomicRideOfferRepositoryWithCreate();
+    final routeEstimator = GoogleRouteEstimator(
+      apiKey: 'test-api-key',
+      client: MockClient((_) async => throw StateError('transport state')),
+    );
+    final orchestrator = AutomaticDispatchOrchestrator(
+      candidateService: DispatchCandidateService(
+        shiftRepository: _FakeDriverShiftRepository(),
+        liveLocationRepository: _FakeDriverLiveLocationRepository(),
+        routeEstimator: routeEstimator,
+      ),
+      offerRepository: _FakeRideOfferRepository(),
+      atomicOfferRepository: atomicOfferRepository,
+      districtMatcher: matcher,
+      findDistrictCandidates: ({
+        required districtObjectId,
+        required now,
+      }) async => districtObjectId == 316 ? [candidate] : const [],
+    );
+    final service = AutomaticRideSubmissionService(
+      lifecycleService: RideLifecycleService(repository: rideRepository),
+      rideRepository: rideRepository,
+      dispatchOrchestrator: orchestrator,
+      exhaustionService: AutomaticDispatchExhaustionService(
+        bonusDecisionRepository: _FakeBonusDecisionRepository(rideRepository),
+      ),
+      offerIdFactory: () => 'offer-route-error',
+      now: () => now,
+    );
+
+    final result = await service.submit(
+      RideRequest(
+        id: 'ride-route-error',
+        pickup: 'ул. Верила 2, София',
+        pickupLatitude: 42.69,
+        pickupLongitude: 23.2,
+        destination: 'Paradise Center',
+        passengers: 1,
+        requestedAt: now,
+      ),
+    );
+
+    expect(result.offer?.driverId, 'driver-route-error');
+    expect(result.offer?.etaSeconds, isNull);
+    expect(result.offer?.distanceMeters, isNull);
+    expect(result.ride.status, RideRequestStatus.pending);
+    expect(
+      rideRepository.rides['ride-route-error']?.status,
+      RideRequestStatus.pending,
+    );
+    expect(atomicOfferRepository.createdOffer?.id, 'offer-route-error');
+  });
+
   test('moves ride to waiting when no dispatch candidate exists', () async {
     final now = DateTime.utc(2026, 10, 7, 20);
 
@@ -143,7 +226,7 @@ void main() {
     expect(result.offer?.id, 'offer-002');
     expect(result.offer?.driverId, 'driver-001');
     expect(result.ride.status, RideRequestStatus.pending);
-    expect(events, ['waiting-board', 'offer']);
+    expect(events, ['offer', 'waiting-board']);
 
     final storedRide = await rideRepository.findById('ride-002');
 
@@ -633,3 +716,25 @@ class _FakeAtomicRideOfferRepositoryWithCreate
     throw UnsupportedError('Not needed by this test.');
   }
 }
+
+Map<String, Object> _districtFeature(int objectId, double west, double east) =>
+    {
+      'type': 'Feature',
+      'properties': {
+        'object_id': objectId,
+        'id': 'district-$objectId',
+        'kvname': 'НДК',
+      },
+      'geometry': {
+        'type': 'Polygon',
+        'coordinates': [
+          [
+            [west, 42.5],
+            [east, 42.5],
+            [east, 43],
+            [west, 43],
+            [west, 42.5],
+          ],
+        ],
+      },
+    };

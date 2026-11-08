@@ -368,6 +368,7 @@ DriverOfferActionOutboxRecord _record({
   String? lastErrorCode,
 }) => DriverOfferActionOutboxRecord(
   actionId: 'action-1',
+  rideId: 'ride-1',
   offerId: 'offer-1',
   driverId: 'driver-1',
   action: DriverOfferAction.reject,
@@ -579,6 +580,7 @@ DriverOfferActionOutboxRecord _copyRecord(
   DateTime? updatedAt,
 }) => DriverOfferActionOutboxRecord(
   actionId: record.actionId,
+  rideId: record.rideId,
   offerId: record.offerId,
   driverId: record.driverId,
   action: record.action,

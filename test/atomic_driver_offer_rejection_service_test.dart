@@ -390,6 +390,7 @@ DriverOfferActionOutboxRecord _record({
   required DateTime now,
 }) => DriverOfferActionOutboxRecord(
   actionId: 'existing-action',
+  rideId: 'ride-1',
   offerId: offerId,
   driverId: 'driver-1',
   action: action,

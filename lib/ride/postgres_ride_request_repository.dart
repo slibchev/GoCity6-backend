@@ -1,3 +1,6 @@
+import 'dart:convert';
+
+import 'package:crypto/crypto.dart';
 import 'package:postgres/postgres.dart';
 
 import 'atomic_ride_completion_repository.dart';
@@ -9,17 +12,28 @@ import 'ride_request_repository.dart';
 import 'ride_request_status.dart';
 import 'atomic_ride_cancellation_repository.dart';
 import 'atomic_reserved_ride_cancellation_repository.dart';
+import '../geography/district_matcher.dart';
+import '../dispatch/driver_offer_action_outbox_repository.dart';
+import '../dispatch/postgres_driver_offer_action_outbox_repository.dart';
 
 class PostgresRideRequestRepository
     implements
         RideRequestRepository,
         AtomicRideClaimRepository,
+        DurableAutomaticDispatchSubmissionRepository,
         AtomicRideCancellationRepository,
         AtomicReservedRideCancellationRepository,
         AtomicRideCompletionRepository {
   final Session database;
+  final DistrictMatcher? districtMatcher;
+  final DriverOfferActionOutboxRepository outboxRepository;
 
-  PostgresRideRequestRepository({required this.database});
+  PostgresRideRequestRepository({
+    required this.database,
+    this.districtMatcher,
+    DriverOfferActionOutboxRepository? outboxRepository,
+  }) : outboxRepository =
+           outboxRepository ?? PostgresDriverOfferActionOutboxRepository();
 
   @override
   Future<RideRequest?> findById(String id) async {
@@ -219,8 +233,10 @@ class PostgresRideRequestRepository
   }
 
   @override
-  Future<void> save(RideRequest request) async {
-    await database.execute(
+  Future<void> save(RideRequest request) => _saveOn(database, request);
+
+  Future<void> _saveOn(Session session, RideRequest request) async {
+    await session.execute(
       Sql.named('''
 
         INSERT INTO rides (
@@ -424,6 +440,141 @@ class PostgresRideRequestRepository
   }
 
   @override
+  Future<void> savePendingRideForAutomaticDispatch(RideRequest request) async {
+    if (request.status != RideRequestStatus.pending) {
+      throw ArgumentError.value(
+        request.status,
+        'request.status',
+        'Only pending rides can be queued for initial dispatch.',
+      );
+    }
+
+    final transactionDatabase = database as SessionExecutor;
+    await transactionDatabase.runTx((transaction) async {
+      await _saveOn(transaction, request);
+      final nowResult = await transaction.execute(
+        Sql('SELECT clock_timestamp() AS database_now'),
+      );
+      final databaseNow =
+          (nowResult.single.toColumnMap()['database_now'] as DateTime).toUtc();
+      final actionId = initialDispatchActionId(request.id);
+      final event = _initialDispatchRecord(
+        rideId: request.id,
+        actionId: actionId,
+        createdAt: databaseNow,
+      );
+      final inserted = await outboxRepository.insert(
+        transaction: transaction,
+        record: event,
+      );
+      if (inserted is! DriverOfferActionInserted &&
+          inserted is! DriverOfferActionAlreadyExists) {
+        throw StateError('Initial ride dispatch could not be queued.');
+      }
+    });
+  }
+
+  /// Repairs pending rides written by a pre-outbox Backend release. It is
+  /// safe to call at every startup: the deterministic action id and unique
+  /// partial index make the insert idempotent.
+  Future<int> recoverPendingDispatchEvents({int limit = 100}) async {
+    if (limit < 1 || limit > 1000) {
+      throw ArgumentError.value(limit, 'limit');
+    }
+    final transactionDatabase = database as SessionExecutor;
+    return transactionDatabase.runTx((transaction) async {
+      final rows = await transaction.execute(
+        Sql.named('''
+          SELECT ride.id
+          FROM rides AS ride
+          WHERE ride.status = 'pending'
+            AND ride.assigned_driver_id IS NULL
+            AND ride.assigned_vehicle_id IS NULL
+            AND ride.bonus_decision <> 'awaiting_customer'
+            AND NOT EXISTS (
+              SELECT 1
+              FROM ride_offers AS offer
+              WHERE offer.ride_id = ride.id
+                AND offer.status IN ('pending', 'accepted')
+            )
+            AND NOT EXISTS (
+              SELECT 1
+              FROM driver_offer_action_outbox AS action
+              WHERE action.ride_id = ride.id
+                AND action.action IN (
+                  'reject', 'timeout', 'initial_dispatch'
+                )
+            )
+          ORDER BY ride.requested_at ASC, ride.id ASC
+          LIMIT @limit
+          FOR UPDATE OF ride SKIP LOCKED
+        '''),
+        parameters: {'limit': limit},
+      );
+      if (rows.isEmpty) return 0;
+      final nowRows = await transaction.execute(
+        Sql('SELECT clock_timestamp() AS database_now'),
+      );
+      final now = (nowRows.single.toColumnMap()['database_now'] as DateTime)
+          .toUtc();
+      var insertedCount = 0;
+      for (final row in rows) {
+        final rideId = row.toColumnMap()['id'] as String;
+        final result = await outboxRepository.insert(
+          transaction: transaction,
+          record: _initialDispatchRecord(
+            rideId: rideId,
+            actionId: initialDispatchActionId(rideId),
+            createdAt: now,
+          ),
+        );
+        if (result is DriverOfferActionInserted) {
+          insertedCount++;
+        } else if (result is! DriverOfferActionAlreadyExists) {
+          throw StateError('Pending ride dispatch recovery conflicted.');
+        }
+      }
+      return insertedCount;
+    });
+  }
+
+  DriverOfferActionOutboxRecord _initialDispatchRecord({
+    required String rideId,
+    required String actionId,
+    required DateTime createdAt,
+  }) {
+    final requestHash = sha256
+        .convert(
+          utf8.encode(
+            '{"version":1,"action":"initial_dispatch",'
+            '"rideId":${jsonEncode(rideId)}}',
+          ),
+        )
+        .toString();
+    return DriverOfferActionOutboxRecord(
+      actionId: actionId,
+      rideId: rideId,
+      offerId: null,
+      driverId: null,
+      action: DriverOfferAction.initialDispatch,
+      idempotencyKey: null,
+      requestHash: requestHash,
+      policyOutcome: null,
+      redispatchStatus: DriverOfferRedispatchStatus.queued,
+      attemptCount: 0,
+      availableAt: createdAt,
+      leaseToken: null,
+      leaseUntil: null,
+      lastErrorCode: null,
+      redispatchResult: null,
+      createdAt: createdAt,
+      settledAt: createdAt,
+      updatedAt: createdAt,
+      redispatchCompletedAt: null,
+    );
+  }
+
+  @override
   Future<RideRequest?> claimWaitingRide({
     required String rideId,
 
@@ -564,7 +715,16 @@ class PostgresRideRequestRepository
           q.availability,
           q.has_pending_offer,
           q.pending_break_kind,
-          q.pending_break_request_id
+          q.pending_break_request_id,
+          q.district_object_id,
+          q.district_entered_at,
+          q.queue_priority_since,
+          q.latitude,
+          q.longitude,
+          q.location_updated_at,
+          q.gps_fix_at,
+          q.pending_district_object_id,
+          q.has_customer_cancellation_priority
         FROM driver_shifts s
         JOIN driver_queue_states q
           ON q.shift_id = s.id
@@ -608,7 +768,11 @@ class PostgresRideRequestRepository
           assigned_driver_id,
           assigned_vehicle_id,
           completed_by_driver_id,
-          completed_at
+          completed_at,
+          manual_acceptance_shift_id,
+          manual_acceptance_district_object_id,
+          manual_acceptance_district_entered_at,
+          manual_acceptance_queue_priority_since
         FROM rides
         WHERE id = @rideId
         FOR UPDATE
@@ -762,6 +926,111 @@ class PostgresRideRequestRepository
         }
       }
 
+      DateTime? restoredQueuePrioritySince;
+      var restoredCancellationPriority = false;
+      if (reservationRow == null) {
+        final manualShiftId =
+            currentRideRow['manual_acceptance_shift_id'] as String?;
+        final manualDistrictId =
+            currentRideRow['manual_acceptance_district_object_id'] as int?;
+        final manualDistrictEnteredAt =
+            (currentRideRow['manual_acceptance_district_entered_at']
+                    as DateTime?)
+                ?.toUtc();
+        final manualPrioritySince =
+            (currentRideRow['manual_acceptance_queue_priority_since']
+                    as DateTime?)
+                ?.toUtc();
+        final currentDistrictId = shiftRow['district_object_id'] as int?;
+        final currentDistrictEnteredAt =
+            (shiftRow['district_entered_at'] as DateTime?)?.toUtc();
+        final currentQueuePrioritySince =
+            (shiftRow['queue_priority_since'] as DateTime?)?.toUtc();
+
+        if (manualShiftId != null) {
+          final stayedInOriginalMembership =
+              manualShiftId == shiftId &&
+              manualDistrictId != null &&
+              manualDistrictEnteredAt != null &&
+              manualPrioritySince != null &&
+              currentDistrictId == manualDistrictId &&
+              currentDistrictEnteredAt == manualDistrictEnteredAt;
+          if (stayedInOriginalMembership) {
+            restoredQueuePrioritySince = manualPrioritySince;
+            restoredCancellationPriority =
+                shiftRow['has_customer_cancellation_priority'] as bool;
+          } else {
+            // The explicitly approved manual-board rule places a driver who
+            // changed districts at the end of the confirmed destination queue.
+            restoredQueuePrioritySince = effectiveCancelledAt;
+          }
+        } else {
+          final acceptedOfferResult = await transaction.execute(
+            Sql.named('''
+              SELECT
+                source,
+                dispatch_district_object_id,
+                dispatch_district_entered_at
+              FROM ride_offers
+              WHERE ride_id = @rideId
+                AND driver_id = @driverId
+                AND status = 'accepted'
+              ORDER BY resolved_at DESC
+              LIMIT 1
+            '''),
+            parameters: {'rideId': cancelledRide.id, 'driverId': driverId},
+          );
+          final acceptedOffer = acceptedOfferResult.isEmpty
+              ? null
+              : acceptedOfferResult.single.toColumnMap();
+          final offerDistrictId =
+              acceptedOffer?['dispatch_district_object_id'] as int?;
+          final offerDistrictEnteredAt =
+              (acceptedOffer?['dispatch_district_entered_at'] as DateTime?)
+                  ?.toUtc();
+          final isAutomaticOffer =
+              acceptedOffer?['source'] == 'automatic' ||
+              acceptedOffer?['source'] == 'waiting_board';
+
+          if (isAutomaticOffer) {
+            // For an automatic assignment with an exact district snapshot,
+            // grant the one-shot first position only when current fresh GPS
+            // still proves the same confirmed membership. If it does not,
+            // preserve the existing timestamp; district entry time naturally
+            // ranks a later confirmed district transition, and signal loss
+            // alone never resets earned FIFO priority.
+            restoredQueuePrioritySince = currentQueuePrioritySince;
+            if (offerDistrictId == null || offerDistrictEnteredAt == null) {
+              // Legacy/global automatic offers have no durable dispatch-area
+              // snapshot. Preserve any existing one-shot priority instead of
+              // guessing which district should receive compensation.
+              restoredCancellationPriority =
+                  shiftRow['has_customer_cancellation_priority'] as bool;
+            } else {
+              final databaseTimeResult = await transaction.execute(
+                Sql('SELECT clock_timestamp() AS database_now'),
+              );
+              final databaseNow =
+                  (databaseTimeResult.single.toColumnMap()['database_now']
+                          as DateTime)
+                      .toUtc();
+              restoredCancellationPriority =
+                  currentDistrictId == offerDistrictId &&
+                  currentDistrictEnteredAt == offerDistrictEnteredAt &&
+                  _locationProvesDistrictMembership(
+                    shiftRow: shiftRow,
+                    districtObjectId: offerDistrictId,
+                    now: databaseNow,
+                  );
+            }
+          } else {
+            // Legacy/manual assignments without a durable queue snapshot keep
+            // their established cancellation behavior.
+            restoredQueuePrioritySince = effectiveCancelledAt;
+          }
+        }
+      }
+
       final cancelledRideResult = await transaction.execute(
         Sql.named('''
         UPDATE rides
@@ -905,6 +1174,8 @@ class PostgresRideRequestRepository
           SET
             availability = 'available',
             queue_priority_since = @queuePrioritySince,
+            has_customer_cancellation_priority =
+              @hasCustomerCancellationPriority,
             break_started_at = NULL,
             has_pending_offer = FALSE,
             pending_break_kind = NULL,
@@ -916,7 +1187,8 @@ class PostgresRideRequestRepository
         '''),
           parameters: {
             'shiftId': shiftId,
-            'queuePrioritySince': effectiveCancelledAt,
+            'queuePrioritySince': restoredQueuePrioritySince,
+            'hasCustomerCancellationPriority': restoredCancellationPriority,
           },
         );
 
@@ -1851,6 +2123,50 @@ class PostgresRideRequestRepository
 
       return _rideFromRow(completedRideResult.single.toColumnMap());
     });
+  }
+
+  bool _locationProvesDistrictMembership({
+    required Map<String, dynamic> shiftRow,
+    required int districtObjectId,
+    required DateTime now,
+  }) {
+    final matcher = districtMatcher;
+    if (matcher == null ||
+        shiftRow['district_object_id'] != districtObjectId ||
+        shiftRow['pending_district_object_id'] != null) {
+      return false;
+    }
+
+    final latitude = (shiftRow['latitude'] as num?)?.toDouble();
+    final longitude = (shiftRow['longitude'] as num?)?.toDouble();
+    final locationUpdatedAt = (shiftRow['location_updated_at'] as DateTime?)
+        ?.toUtc();
+    final gpsFixAt = (shiftRow['gps_fix_at'] as DateTime?)?.toUtc();
+    if (latitude == null ||
+        longitude == null ||
+        locationUpdatedAt == null ||
+        gpsFixAt == null) {
+      return false;
+    }
+
+    final nowUtc = now.toUtc();
+    final locationAge = nowUtc.difference(locationUpdatedAt);
+    final gpsFixAge = nowUtc.difference(gpsFixAt);
+    if (locationAge.isNegative ||
+        locationAge > const Duration(seconds: 30) ||
+        gpsFixAge < const Duration(seconds: -5) ||
+        gpsFixAge > const Duration(seconds: 15)) {
+      return false;
+    }
+
+    try {
+      final match = matcher.match(latitude: latitude, longitude: longitude);
+      return match != null &&
+          match.district.objectId == districtObjectId &&
+          match.resolution != DistrictMatchResolution.overlapTieBreak;
+    } on ArgumentError {
+      return false;
+    }
   }
 
   RideRequest _rideFromRow(Map<String, dynamic> row) {

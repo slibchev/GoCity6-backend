@@ -44,11 +44,10 @@ final class DriverOfferRedispatchOutcomeUnknown
   final DriverOfferActionOutboxErrorCode errorCode;
 }
 
-/// Adapter boundary for future, idempotent redispatch continuation.
+/// Adapter boundary for idempotent dispatch continuation.
 ///
-/// The stable [DriverOfferActionOutboxRecord.actionId] must be available to a
-/// future implementation as its idempotency identity. This interface is not
-/// currently connected to production dispatch services.
+/// The stable [DriverOfferActionOutboxRecord.actionId] is used as its
+/// idempotency identity by the production dispatch continuation services.
 abstract interface class DriverOfferRedispatchExecutor {
   Future<DriverOfferRedispatchExecutionResult> execute(
     DriverOfferActionOutboxRecord action,
@@ -123,7 +122,47 @@ final class DriverOfferActionOutboxWorker {
         disposition: DriverOfferActionOutboxWorkerDisposition.idle,
       );
     }
-    if (action.action != DriverOfferAction.reject ||
+    return _executeClaimed(action, leaseToken);
+  }
+
+  /// Claims and processes one specific durable event, if it is currently due.
+  /// A busy periodic worker owns the event through its PostgreSQL lease and
+  /// cannot be raced by this request path.
+  Future<DriverOfferActionOutboxWorkerResult> runAction(String actionId) async {
+    if (actionId.isEmpty) {
+      throw ArgumentError.value(actionId, 'actionId');
+    }
+    final DriverOfferActionTargetWorkerRepository? targetRepository =
+        repository is DriverOfferActionTargetWorkerRepository
+        ? repository as DriverOfferActionTargetWorkerRepository
+        : null;
+    if (targetRepository == null) {
+      return const DriverOfferActionOutboxWorkerResult(
+        disposition: DriverOfferActionOutboxWorkerDisposition.idle,
+      );
+    }
+    final leaseToken = leaseTokenFactory();
+    final action = await targetRepository.claimByActionId(
+      actionId: actionId,
+      leaseToken: leaseToken,
+      leaseDuration: leaseDuration,
+      maxAttempts: maxAttempts,
+    );
+    if (action == null) {
+      return const DriverOfferActionOutboxWorkerResult(
+        disposition: DriverOfferActionOutboxWorkerDisposition.idle,
+      );
+    }
+    return _executeClaimed(action, leaseToken);
+  }
+
+  Future<DriverOfferActionOutboxWorkerResult> _executeClaimed(
+    DriverOfferActionOutboxRecord action,
+    String leaseToken,
+  ) async {
+    if ((action.action != DriverOfferAction.reject &&
+            action.action != DriverOfferAction.timeout &&
+            action.action != DriverOfferAction.initialDispatch) ||
         action.redispatchStatus != DriverOfferRedispatchStatus.leased ||
         action.leaseToken != leaseToken ||
         action.leaseUntil == null ||
@@ -134,6 +173,15 @@ final class DriverOfferActionOutboxWorker {
     DriverOfferRedispatchExecutionResult executionResult;
     try {
       executionResult = await executor.execute(action);
+    } on Exception {
+      // Database/network adapters report transient operational failures as
+      // Exceptions. Retry them with a bounded backoff; a process crash still
+      // leaves the lease reclaimable after its expiry.
+      return _retryOrReview(
+        action,
+        leaseToken,
+        DriverOfferActionOutboxErrorCode.transientFailure,
+      );
     } on Object {
       // The exception may have happened after an external side effect. Do not
       // persist its text or claim success; stop automatic retries for review.

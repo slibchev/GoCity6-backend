@@ -8,16 +8,22 @@ import 'package:test/test.dart';
 import 'package:uuid/uuid.dart';
 
 Future<Connection> _connect() async {
+  final username = Platform.environment['CITY6_TEST_DB_USER'];
   final password = Platform.environment['CITY6_TEST_DB_PASSWORD'];
-  if (password == null || password.isEmpty) {
-    fail('CITY6_TEST_DB_PASSWORD is required.');
+  final port = int.tryParse(Platform.environment['CITY6_TEST_DB_PORT'] ?? '');
+  if (username == null ||
+      username.isEmpty ||
+      password == null ||
+      password.isEmpty) {
+    fail('Isolated PostgreSQL test credentials are required.');
   }
+  if (port != 5433) fail('This test is restricted to isolated port 5433.');
   final connection = await Connection.open(
     Endpoint(
-      host: 'localhost',
-      port: 5432,
+      host: '127.0.0.1',
+      port: port!,
       database: 'city6_test',
-      username: 'city6_app',
+      username: username,
       password: password,
     ),
     settings: const ConnectionSettings(sslMode: SslMode.disable),
@@ -26,12 +32,16 @@ Future<Connection> _connect() async {
     final result = await connection.execute('''
       SELECT current_database() AS database_name,
              current_user AS role_name,
-             current_schema() AS schema_name
+             current_schema() AS schema_name,
+             host(inet_server_addr()) AS server_address,
+             inet_server_port() AS server_port
     ''');
     expect(result.single.toColumnMap(), {
       'database_name': 'city6_test',
-      'role_name': 'city6_app',
+      'role_name': username,
       'schema_name': 'public',
+      'server_address': '127.0.0.1',
+      'server_port': 5433,
     });
     return connection;
   } catch (_) {
@@ -41,7 +51,7 @@ Future<Connection> _connect() async {
 }
 
 void main() {
-  test('two PostgreSQL workers cannot claim the same outbox job', () async {
+  test('request continuation and periodic recovery cannot claim the same outbox job', () async {
     final firstConnection = await _connect();
     Connection? secondConnection;
     final fixture = _FixtureIds.newIds();
@@ -55,14 +65,17 @@ void main() {
       final secondRepository = PostgresDriverOfferActionOutboxWorkerRepository(
         database: secondConnection,
       );
+      final requestLeaseToken = const Uuid().v4();
+      final recoveryLeaseToken = const Uuid().v4();
       final claims = await Future.wait([
-        firstRepository.claimNext(
-          leaseToken: const Uuid().v4(),
+        firstRepository.claimByActionId(
+          actionId: fixture.actionId,
+          leaseToken: requestLeaseToken,
           leaseDuration: const Duration(seconds: 30),
           maxAttempts: 5,
         ),
         secondRepository.claimNext(
-          leaseToken: const Uuid().v4(),
+          leaseToken: recoveryLeaseToken,
           leaseDuration: const Duration(seconds: 30),
           maxAttempts: 5,
         ),
@@ -90,6 +103,10 @@ void main() {
       final row = persisted.single.toColumnMap();
       expect(row['redispatch_status'], 'leased');
       expect(row['lease_token'], claimed.single.leaseToken);
+      expect(
+        claimed.single.leaseToken,
+        anyOf(requestLeaseToken, recoveryLeaseToken),
+      );
       expect(row['attempt_count'], 1);
     } finally {
       try {
@@ -194,6 +211,7 @@ Future<void> _createFixture(Connection database, _FixtureIds fixture) async {
     );
     final action = DriverOfferActionOutboxRecord(
       actionId: fixture.actionId,
+      rideId: fixture.rideId,
       offerId: fixture.offerId,
       driverId: fixture.driverId,
       action: DriverOfferAction.reject,

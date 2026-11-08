@@ -8,7 +8,9 @@ import 'driver_offer_action_outbox_worker_repository.dart';
 /// Each claim or finalization is a short transaction. The redispatch work is
 /// intentionally performed by the caller after [claimNext] has committed.
 final class PostgresDriverOfferActionOutboxWorkerRepository
-    implements DriverOfferActionOutboxWorkerRepository {
+    implements
+        DriverOfferActionOutboxWorkerRepository,
+        DriverOfferActionTargetWorkerRepository {
   PostgresDriverOfferActionOutboxWorkerRepository({required this.database});
 
   final SessionExecutor database;
@@ -33,7 +35,7 @@ final class PostgresDriverOfferActionOutboxWorkerRepository
           WITH exhausted AS (
             SELECT action_id
             FROM driver_offer_action_outbox
-            WHERE action = 'reject'
+            WHERE action IN ('reject', 'timeout', 'initial_dispatch')
               AND attempt_count >= @maxAttempts
               AND (
                 redispatch_status IN ('queued', 'retryable')
@@ -69,7 +71,7 @@ final class PostgresDriverOfferActionOutboxWorkerRepository
           WITH candidate AS (
             SELECT action_id
             FROM driver_offer_action_outbox
-            WHERE action = 'reject'
+            WHERE action IN ('reject', 'timeout', 'initial_dispatch')
               AND attempt_count < @maxAttempts
               AND (
                 (
@@ -113,6 +115,93 @@ final class PostgresDriverOfferActionOutboxWorkerRepository
   }
 
   @override
+  Future<DriverOfferActionOutboxRecord?> claimByActionId({
+    required String actionId,
+    required String leaseToken,
+    required Duration leaseDuration,
+    required int maxAttempts,
+  }) {
+    if (actionId.isEmpty) throw ArgumentError.value(actionId, 'actionId');
+    _validateLease(leaseToken, leaseDuration, maxAttempts);
+    return database.runTx((transaction) async {
+      await transaction.execute(
+        Sql.named('''
+          UPDATE driver_offer_action_outbox
+          SET redispatch_status = 'needs_review',
+              lease_token = NULL,
+              lease_until = NULL,
+              last_error_code = @attemptsExhaustedCode,
+              redispatch_result = NULL,
+              redispatch_completed_at = NULL,
+              updated_at = clock_timestamp()
+          WHERE action_id = @actionId
+            AND action IN ('reject', 'timeout', 'initial_dispatch')
+            AND attempt_count >= @maxAttempts
+            AND (
+              redispatch_status IN ('queued', 'retryable')
+              OR (
+                redispatch_status = 'leased'
+                AND lease_until <= clock_timestamp()
+              )
+            )
+        '''),
+        parameters: {
+          'actionId': actionId,
+          'maxAttempts': maxAttempts,
+          'attemptsExhaustedCode':
+              DriverOfferActionOutboxErrorCode.attemptsExhausted.databaseValue,
+        },
+      );
+      final rows = await transaction.execute(
+        Sql.named('''
+          WITH candidate AS (
+            SELECT action_id
+            FROM driver_offer_action_outbox
+            WHERE action_id = @actionId
+              AND action IN ('reject', 'timeout', 'initial_dispatch')
+              AND attempt_count < @maxAttempts
+              AND (
+                (
+                  redispatch_status IN ('queued', 'retryable')
+                  AND available_at <= clock_timestamp()
+                )
+                OR (
+                  redispatch_status = 'leased'
+                  AND lease_until <= clock_timestamp()
+                )
+              )
+            FOR UPDATE SKIP LOCKED
+            LIMIT 1
+          )
+          UPDATE driver_offer_action_outbox AS job
+          SET redispatch_status = 'leased',
+              lease_token = @leaseToken,
+              lease_until = clock_timestamp()
+                + (@leaseMilliseconds * INTERVAL '1 millisecond'),
+              attempt_count = job.attempt_count + 1,
+              redispatch_result = NULL,
+              redispatch_completed_at = NULL,
+              updated_at = clock_timestamp()
+          FROM candidate
+          WHERE job.action_id = candidate.action_id
+          RETURNING $_returningColumns
+        '''),
+        parameters: {
+          'actionId': actionId,
+          'maxAttempts': maxAttempts,
+          'leaseToken': leaseToken,
+          'leaseMilliseconds': leaseDuration.inMilliseconds,
+        },
+      );
+      if (rows.isEmpty) return null;
+      if (rows.length != 1) {
+        throw StateError('Outbox claim returned more than one job.');
+      }
+      return DriverOfferActionOutboxRecord.fromResultRow(rows.single);
+    });
+  }
+
+  @override
   Future<bool> markCompleted({
     required String actionId,
     required String leaseToken,
@@ -129,7 +218,7 @@ final class PostgresDriverOfferActionOutboxWorkerRepository
               redispatch_completed_at = clock_timestamp(),
               updated_at = clock_timestamp()
           WHERE action_id = @actionId
-            AND action = 'reject'
+            AND action IN ('reject', 'timeout', 'initial_dispatch')
             AND redispatch_status = 'leased'
             AND lease_token = @leaseToken
             AND lease_until > clock_timestamp()
@@ -165,7 +254,7 @@ final class PostgresDriverOfferActionOutboxWorkerRepository
               + (@retryMilliseconds * INTERVAL '1 millisecond'),
             updated_at = clock_timestamp()
         WHERE action_id = @actionId
-          AND action = 'reject'
+          AND action IN ('reject', 'timeout', 'initial_dispatch')
           AND redispatch_status = 'leased'
           AND lease_token = @leaseToken
           AND lease_until > clock_timestamp()
@@ -192,7 +281,7 @@ final class PostgresDriverOfferActionOutboxWorkerRepository
               redispatch_completed_at = NULL,
               updated_at = clock_timestamp()
           WHERE action_id = @actionId
-            AND action = 'reject'
+            AND action IN ('reject', 'timeout', 'initial_dispatch')
             AND redispatch_status = 'leased'
             AND lease_token = @leaseToken
             AND lease_until > clock_timestamp()

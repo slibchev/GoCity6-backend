@@ -1,5 +1,25 @@
 enum RouteWaypointFailureReason { invalidCoordinates, geocodingNoResults }
 
+enum RouteEstimationFailureReason {
+  timeout,
+  networkUnavailable,
+  providerRejected,
+  routeUnavailable,
+  invalidProviderResponse,
+}
+
+/// A predictable failure while asking the external route provider for a route.
+///
+/// This extends [StateError] for compatibility with callers that historically
+/// observed Google Routes failures as state errors, while providing a narrow
+/// type that dispatch code can safely recover from without swallowing
+/// unrelated programming errors.
+class RouteEstimationFailure extends StateError {
+  RouteEstimationFailure(this.reason) : super('Route estimation unavailable.');
+
+  final RouteEstimationFailureReason reason;
+}
+
 /// A route waypoint could not be resolved from expected input data.
 ///
 /// The reason is safe to log; this exception deliberately carries no address,

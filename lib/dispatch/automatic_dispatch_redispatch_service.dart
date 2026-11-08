@@ -1,8 +1,12 @@
 import '../ride/ride_request_repository.dart';
+import '../ride/ride_request.dart';
 import '../ride/ride_request_status.dart';
+import 'automatic_dispatch_exhaustion_service.dart';
 import 'automatic_dispatch_orchestrator.dart';
 import 'idempotent_automatic_redispatch_repository.dart';
 import 'ride_offer.dart';
+import 'ride_offer_history.dart';
+import 'ride_offer_repository.dart';
 
 sealed class AutomaticDispatchRedispatchResult {
   const AutomaticDispatchRedispatchResult();
@@ -32,12 +36,19 @@ final class AutomaticDispatchRedispatchNoEligibleDriver
   const AutomaticDispatchRedispatchNoEligibleDriver();
 }
 
-/// Opt-in normal-dispatch continuation for a single rejected-offer action.
+/// The event advanced the ride to its durable exhausted-round state or found
+/// that another valid state transition had already superseded dispatch.
+final class AutomaticDispatchRedispatchAdvanced
+    extends AutomaticDispatchRedispatchResult {
+  const AutomaticDispatchRedispatchAdvanced();
+}
+
+/// Durable normal-dispatch continuation for reject, timeout, and initial
+/// dispatch outbox actions.
 ///
-/// This service is intentionally not connected to the live worker or server.
 /// Candidate and route calculation finishes before the atomic offer
-/// transaction begins. It does not resolve exhausted rounds or waiting-board
-/// rides.
+/// transaction begins. When configured with exhaustion and waiting-board
+/// services, it advances those states through their existing flow.
 abstract interface class AutomaticDispatchRedispatcher {
   Future<AutomaticDispatchRedispatchResult> redispatch({
     required String rideId,
@@ -54,6 +65,9 @@ final class AutomaticDispatchRedispatchService
     required this.redispatchOfferRepository,
     required this.offerIdFactory,
     required this.now,
+    this.offerRepository,
+    this.exhaustionService,
+    this.dispatchWaitingBoard,
   });
 
   final RideRequestRepository rideRepository;
@@ -61,6 +75,9 @@ final class AutomaticDispatchRedispatchService
   final IdempotentAutomaticRedispatchOfferRepository redispatchOfferRepository;
   final String Function() offerIdFactory;
   final DateTime Function() now;
+  final RideOfferRepository? offerRepository;
+  final AutomaticDispatchExhaustionService? exhaustionService;
+  final Future<void> Function()? dispatchWaitingBoard;
 
   @override
   Future<AutomaticDispatchRedispatchResult> redispatch({
@@ -88,7 +105,24 @@ final class AutomaticDispatchRedispatchService
       throw StateError('Redispatch ride was not found.');
     }
     if (ride.status != RideRequestStatus.pending) {
+      if (ride.status == RideRequestStatus.waitingForVehicle) {
+        await dispatchWaitingBoard?.call();
+        return const AutomaticDispatchRedispatchAdvanced();
+      }
       throw StateError('Redispatch ride is no longer pending.');
+    }
+    if (ride.bonusDecision == RideBonusDecision.awaitingCustomer) {
+      return const AutomaticDispatchRedispatchAdvanced();
+    }
+
+    final priorOffers = await offerRepository?.findByRideId(rideId);
+    if (priorOffers != null &&
+        priorOffers.any(
+          (offer) =>
+              offer.status == RideOfferStatus.pending ||
+              offer.status == RideOfferStatus.accepted,
+        )) {
+      return const AutomaticDispatchRedispatchAdvanced();
     }
 
     final persisted = await dispatchOrchestrator.createNextOfferForRedispatch(
@@ -101,6 +135,19 @@ final class AutomaticDispatchRedispatchService
     );
 
     if (persisted == null) {
+      final exhaustion = exhaustionService;
+      final offerHistoryRepository = offerRepository;
+      if (exhaustion != null && offerHistoryRepository != null) {
+        final offers =
+            priorOffers ?? await offerHistoryRepository.findByRideId(rideId);
+        await exhaustion.handleExhaustedRound(
+          rideId: rideId,
+          dispatchRound: ride.dispatchRound,
+          history: RideOfferHistory(rideId: rideId, offers: offers),
+        );
+        await dispatchWaitingBoard?.call();
+        return const AutomaticDispatchRedispatchAdvanced();
+      }
       return const AutomaticDispatchRedispatchNoEligibleDriver();
     }
 

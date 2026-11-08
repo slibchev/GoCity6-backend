@@ -8,6 +8,7 @@ final class DriverDistrictQueueEntry {
     required this.districtObjectId,
     required this.enteredAt,
     required this.queuePrioritySince,
+    this.hasCustomerCancellationPriority = false,
     this.lastObservedAt,
   });
 
@@ -20,6 +21,9 @@ final class DriverDistrictQueueEntry {
 
   /// Existing legacy priority, reset by established queue lifecycle events.
   final DateTime queuePrioritySince;
+
+  /// One-shot priority restored after a customer cancels an auto-assigned ride.
+  final bool hasCustomerCancellationPriority;
 
   /// Latest distinct GPS fix processed by the district queue.
   final DateTime? lastObservedAt;
@@ -38,6 +42,7 @@ final class DriverDistrictQueueCandidate {
     required this.enteredAt,
     required this.fifoPriorityAt,
     required this.location,
+    this.hasCustomerCancellationPriority = false,
   });
 
   final String shiftId;
@@ -47,6 +52,7 @@ final class DriverDistrictQueueCandidate {
   final DateTime enteredAt;
   final DateTime fifoPriorityAt;
   final DriverLiveLocation location;
+  final bool hasCustomerCancellationPriority;
 }
 
 enum DriverDistrictObservationResult {

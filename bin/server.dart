@@ -78,6 +78,14 @@ import 'package:gocity6_backend/dispatch/driver_work_state_repository.dart';
 import 'package:gocity6_backend/dispatch/postgres_driver_work_state_repository.dart';
 import 'package:gocity6_backend/dispatch/atomic_ride_offer_repository.dart';
 import 'package:gocity6_backend/dispatch/driver_ride_offer_action_service.dart';
+import 'package:gocity6_backend/dispatch/atomic_driver_offer_rejection_service.dart';
+import 'package:gocity6_backend/dispatch/postgres_atomic_driver_offer_rejection_transaction_runner.dart';
+import 'package:gocity6_backend/dispatch/postgres_driver_offer_action_outbox_repository.dart';
+import 'package:gocity6_backend/dispatch/driver_offer_action_outbox_worker.dart';
+import 'package:gocity6_backend/dispatch/postgres_driver_offer_action_outbox_worker_repository.dart';
+import 'package:gocity6_backend/dispatch/automatic_dispatch_redispatch_executor.dart';
+import 'package:gocity6_backend/dispatch/automatic_dispatch_redispatch_service.dart';
+import 'package:gocity6_backend/dispatch/idempotent_automatic_redispatch_repository.dart';
 import 'package:gocity6_backend/dispatch/driver_offer_status_route.dart';
 import 'package:gocity6_backend/dispatch/driver_offer_status_service.dart';
 import 'package:gocity6_backend/dispatch/postgres_atomic_ride_offer_repository.dart';
@@ -647,6 +655,7 @@ void main(List<String> args) async {
   PostgresIgnoredOfferPenaltyService? ignoredOfferPenaltyService;
   DriverLiveLocationService? driverLiveLocationService;
   DriverDistrictQueueService? driverDistrictQueueService;
+  DriverOfferActionOutboxWorker? dispatchContinuationOutboxWorker;
 
   AssignedDriverInfoService? assignedDriverInfoService;
 
@@ -696,7 +705,10 @@ void main(List<String> args) async {
       ),
     );
 
-    rideRepository = PostgresRideRequestRepository(database: databasePool);
+    rideRepository = PostgresRideRequestRepository(
+      database: databasePool,
+      districtMatcher: _districtMatcher,
+    );
 
     assignedDriverInfoService = AssignedDriverInfoService(
       repository: PostgresAssignedDriverInfoRepository(database: databasePool),
@@ -856,6 +868,9 @@ void main(List<String> args) async {
       candidateService: candidateService,
       offerRepository: offerRepository,
       atomicOfferRepository: atomicOfferRepository,
+      districtMatcher: _districtMatcher,
+      findDistrictCandidates: driverDistrictQueueService?.findAvailableDrivers,
+      currentTime: () => DateTime.now().toUtc(),
     );
 
     final waitingRideRedispatchRepository =
@@ -879,6 +894,7 @@ void main(List<String> args) async {
       offerIdFactory: () => uuid.v4(),
       now: () => DateTime.now().toUtc(),
     );
+
     Future<RideOffer?> continueDispatchOrWaitingBoard({
       required String rideId,
     }) async {
@@ -896,6 +912,56 @@ void main(List<String> args) async {
     driverDispatchPolicyService = DriverDispatchPolicyService(
       repository: dispatchStateRepository,
     );
+
+    final actionOutboxRepository = PostgresDriverOfferActionOutboxRepository();
+    ignoredOfferPenaltyService = PostgresIgnoredOfferPenaltyService(
+      database: databasePool,
+    );
+    final atomicRejectionService = AtomicDriverOfferRejectionService(
+      transactionRunner: PostgresAtomicDriverOfferRejectionTransactionRunner(
+        database: databasePool,
+        dispatchStateRepository:
+            dispatchStateRepository as PostgresDriverDispatchStateRepository,
+        outboxRepository: actionOutboxRepository,
+      ),
+    );
+    final redispatchOfferRepository =
+        atomicOfferRepository as IdempotentAutomaticRedispatchOfferRepository;
+    final redispatchService = AutomaticDispatchRedispatchService(
+      rideRepository: rideRepository,
+      dispatchOrchestrator: dispatchOrchestrator,
+      redispatchOfferRepository: redispatchOfferRepository,
+      offerRepository: offerRepository,
+      exhaustionService: exhaustionService,
+      dispatchWaitingBoard: () async {
+        await waitingBoardRedispatchService?.dispatchAvailableWaiters();
+      },
+      offerIdFactory: () => uuid.v4(),
+      now: () => DateTime.now().toUtc(),
+    );
+    dispatchContinuationOutboxWorker = DriverOfferActionOutboxWorker(
+      repository: PostgresDriverOfferActionOutboxWorkerRepository(
+        database: databasePool,
+      ),
+      executor: AutomaticDispatchRedispatchExecutor(
+        offerRepository: offerRepository,
+        redispatchService: redispatchService,
+        settleTimedOutOffer: (offerId) => ignoredOfferPenaltyService!
+            .recordIgnoredOffer(offerId: offerId, now: DateTime.now().toUtc()),
+        dispatchWaitingBoard: () async {
+          await waitingBoardRedispatchService?.dispatchAvailableWaiters();
+        },
+      ),
+      // Keep temporary failures recoverable with bounded backoff for the
+      // practical lifetime of the service; permanent invariants still move
+      // to needs_review.
+      maxAttempts: 2147483647,
+    );
+
+    Future<void> processOutboxAction({required String actionId}) async {
+      await dispatchContinuationOutboxWorker!.runAction(actionId);
+    }
+
     if (driverShiftRepository != null) {
       driverShiftEndService = DriverShiftEndService(
         shiftRepository: driverShiftRepository,
@@ -909,6 +975,8 @@ void main(List<String> args) async {
       rideRepository: rideRepository,
       dispatchPolicyService: driverDispatchPolicyService,
       continueRide: continueDispatchOrWaitingBoard,
+      atomicRejectionService: atomicRejectionService,
+      processOutboxAction: processOutboxAction,
     );
     customerBonusDecisionService = CustomerBonusDecisionService(
       bonusDecisionRepository: bonusDecisionRepository,
@@ -918,10 +986,6 @@ void main(List<String> args) async {
     final expirationService = RideOfferExpirationService(
       offerRepository: offerRepository,
       atomicOfferRepository: atomicOfferRepository,
-    );
-
-    ignoredOfferPenaltyService = PostgresIgnoredOfferPenaltyService(
-      database: databasePool,
     );
 
     rideOfferTimeoutProcessor = RideOfferTimeoutProcessor(
@@ -934,6 +998,7 @@ void main(List<String> args) async {
               now: now,
             );
           },
+      processOutboxAction: processOutboxAction,
     );
 
     automaticRideSubmissionService = AutomaticRideSubmissionService(
@@ -946,6 +1011,9 @@ void main(List<String> args) async {
       redispatchWaitingRides: () async {
         await waitingBoardRedispatchService?.dispatchAvailableWaiters();
       },
+      processDispatchOutboxAction: processOutboxAction,
+      findOfferForDispatchAction:
+          redispatchOfferRepository.findOfferByRedispatchActionId,
     );
   }
 
@@ -3001,12 +3069,23 @@ void main(List<String> args) async {
     print('Recovered ignored offer penalties: $recoveredCount');
   }
 
+  final rideRepositoryForRecovery = rideRepository;
+  if (rideRepositoryForRecovery is PostgresRideRequestRepository) {
+    final recoveredDispatches = await rideRepositoryForRecovery
+        .recoverPendingDispatchEvents();
+    print('Recovered pending ride dispatch events: $recoveredDispatches');
+  }
+
+  final continuationWorker = dispatchContinuationOutboxWorker;
   final server = await shelf_io.serve(handler, InternetAddress.anyIPv4, port);
 
   print('Server listening on port ${server.port}');
   final timeoutProcessor = rideOfferTimeoutProcessor;
   final waitingBoardService = waitingBoardRedispatchService;
   final rideExpirationService = waitingRideExpirationService;
+  if (continuationWorker != null) {
+    print('Dispatch continuation outbox worker: started');
+  }
 
   if (rideExpirationService != null) {
     try {
@@ -3039,7 +3118,8 @@ void main(List<String> args) async {
 
   if (timeoutProcessor != null ||
       waitingBoardService != null ||
-      rideExpirationService != null) {
+      rideExpirationService != null ||
+      continuationWorker != null) {
     var scanRunning = false;
     var lastWaitingBoardScanAt = DateTime.now().toUtc();
 
@@ -3073,6 +3153,14 @@ void main(List<String> args) async {
             : await timeoutProcessor.process(now: now);
         if (expiredOffers.isNotEmpty) {
           print('Expired ride offers processed: ${expiredOffers.length}');
+        }
+
+        if (continuationWorker != null) {
+          final result = await continuationWorker.runOnce();
+          if (result.disposition !=
+              DriverOfferActionOutboxWorkerDisposition.idle) {
+            print('Dispatch continuation outbox: ${result.disposition.name}.');
+          }
         }
 
         if (waitingBoardService != null &&

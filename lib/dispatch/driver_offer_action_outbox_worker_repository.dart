@@ -53,3 +53,14 @@ abstract interface class DriverOfferActionOutboxWorkerRepository {
     required DriverOfferActionOutboxErrorCode errorCode,
   });
 }
+
+/// Optional targeted claim capability used to start a just-enqueued action
+/// without racing the periodic recovery worker.
+abstract interface class DriverOfferActionTargetWorkerRepository {
+  Future<DriverOfferActionOutboxRecord?> claimByActionId({
+    required String actionId,
+    required String leaseToken,
+    required Duration leaseDuration,
+    required int maxAttempts,
+  });
+}

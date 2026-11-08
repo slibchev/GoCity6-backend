@@ -125,11 +125,11 @@ final class DriverDistrictQueueService {
       // A GPS point outside every approved polygon is never a queue
       // candidate. During a pending transition, a matched point remains in
       // the previously confirmed queue until the transition is confirmed.
-      if (districtMatcher.match(
-            latitude: location.latitude,
-            longitude: location.longitude,
-          ) ==
-          null) {
+      final locationDistrict = districtMatcher.match(
+        latitude: location.latitude,
+        longitude: location.longitude,
+      );
+      if (locationDistrict?.district.objectId != districtObjectId) {
         continue;
       }
 
@@ -142,11 +142,17 @@ final class DriverDistrictQueueService {
           enteredAt: entry.enteredAt.toUtc(),
           fifoPriorityAt: entry.fifoPriorityAt.toUtc(),
           location: location,
+          hasCustomerCancellationPriority:
+              entry.hasCustomerCancellationPriority,
         ),
       );
     }
 
     candidates.sort((a, b) {
+      if (a.hasCustomerCancellationPriority !=
+          b.hasCustomerCancellationPriority) {
+        return a.hasCustomerCancellationPriority ? -1 : 1;
+      }
       final rankOrder = a.fifoPriorityAt.compareTo(b.fifoPriorityAt);
       return rankOrder != 0 ? rankOrder : a.driverId.compareTo(b.driverId);
     });

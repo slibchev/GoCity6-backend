@@ -9,6 +9,7 @@ void main() {
 
   DriverOfferActionOutboxRecord record({
     String actionId = 'action-001',
+    String rideId = 'ride-001',
     String offerId = 'offer-001',
     String driverId = 'driver-001',
     DriverOfferAction action = DriverOfferAction.reject,
@@ -30,6 +31,7 @@ void main() {
     DateTime? redispatchCompletedAt,
   }) => DriverOfferActionOutboxRecord(
     actionId: actionId,
+    rideId: rideId,
     offerId: offerId,
     driverId: driverId,
     action: action,
@@ -53,9 +55,10 @@ void main() {
 
   Map<String, Object?> rowOf(DriverOfferActionOutboxRecord value) => {
     'action_id': value.actionId,
+    'ride_id': value.rideId,
     'offer_id': value.offerId,
     'driver_id': value.driverId,
-    'action': value.action.name,
+    'action': value.action.value,
     'idempotency_key': value.idempotencyKey,
     'request_hash': value.requestHash,
     'policy_outcome': value.policyOutcome,
@@ -188,6 +191,7 @@ void main() {
       expect(
         () => DriverOfferActionOutboxRecord(
           actionId: 'action-001',
+          rideId: 'ride-001',
           offerId: 'offer-001',
           driverId: 'driver-001',
           action: DriverOfferAction.accept,

@@ -110,7 +110,10 @@ class PostgresAtomicWaitingRideAcceptanceRepository
             s.vehicle_id,
             q.availability,
             q.has_pending_offer,
-            q.pending_break_request_id
+            q.pending_break_request_id,
+            q.district_object_id,
+            q.district_entered_at,
+            q.queue_priority_since
           FROM driver_shifts s
           JOIN driver_queue_states q
             ON q.shift_id = s.id
@@ -194,7 +197,11 @@ class PostgresAtomicWaitingRideAcceptanceRepository
           SET
             status = 'accepted',
             assigned_driver_id = @driverId,
-            assigned_vehicle_id = @vehicleId
+            assigned_vehicle_id = @vehicleId,
+            manual_acceptance_shift_id = @shiftId,
+            manual_acceptance_district_object_id = @districtObjectId,
+            manual_acceptance_district_entered_at = @districtEnteredAt,
+            manual_acceptance_queue_priority_since = @queuePrioritySince
           WHERE id = @rideId
             AND status = 'waitingForVehicle'
             AND assigned_driver_id IS NULL
@@ -226,6 +233,10 @@ class PostgresAtomicWaitingRideAcceptanceRepository
           'rideId': rideId,
           'driverId': driverId,
           'vehicleId': vehicleId,
+          'shiftId': shiftId,
+          'districtObjectId': shiftRow['district_object_id'],
+          'districtEnteredAt': shiftRow['district_entered_at'],
+          'queuePrioritySince': shiftRow['queue_priority_since'],
         },
       );
 

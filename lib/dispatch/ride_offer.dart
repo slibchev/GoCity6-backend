@@ -46,8 +46,21 @@ class RideOffer {
   final String vehicleId;
   final RideOfferSource source;
 
-  final int etaSeconds;
-  final int distanceMeters;
+  /// Route metrics are optional for district FIFO offers. They are display
+  /// metadata only and never determine the local queue order.
+  final int? etaSeconds;
+  final int? distanceMeters;
+
+  /// The confirmed driver district at dispatch time. Persisted so customer
+  /// cancellation can restore priority only when the driver never left it.
+  final int? dispatchDistrictObjectId;
+  final DateTime? dispatchDistrictEnteredAt;
+
+  /// Transient compare-and-set values used by atomic district offer creation.
+  /// These are not part of the public API or persisted on the offer row.
+  final DateTime? dispatchLocationUpdatedAt;
+  final DateTime? dispatchGpsFixAt;
+  final bool dispatchHadCancellationPriority;
 
   final int dispatchRound;
   final int bonusMinor;
@@ -67,6 +80,11 @@ class RideOffer {
     required this.source,
     required this.etaSeconds,
     required this.distanceMeters,
+    required this.dispatchDistrictObjectId,
+    required this.dispatchDistrictEnteredAt,
+    required this.dispatchLocationUpdatedAt,
+    required this.dispatchGpsFixAt,
+    required this.dispatchHadCancellationPriority,
     required this.dispatchRound,
     required this.bonusMinor,
     required this.offeredAt,
@@ -81,15 +99,36 @@ class RideOffer {
     required String rideId,
     required String driverId,
     required String vehicleId,
-    required int etaSeconds,
-    required int distanceMeters,
+    required int? etaSeconds,
+    required int? distanceMeters,
+    int? dispatchDistrictObjectId,
+    DateTime? dispatchDistrictEnteredAt,
+    DateTime? dispatchLocationUpdatedAt,
+    DateTime? dispatchGpsFixAt,
+    bool dispatchHadCancellationPriority = false,
     int dispatchRound = normalDispatchRound,
     int bonusMinor = noBonusMinor,
     RideOfferSource source = RideOfferSource.automatic,
     required DateTime offeredAt,
     required Duration timeout,
   }) {
-    if (etaSeconds < 0) {
+    _validateRouteMetrics(etaSeconds, distanceMeters);
+    _validateDispatchDistrict(
+      dispatchDistrictObjectId,
+      dispatchDistrictEnteredAt,
+    );
+
+    if ((dispatchDistrictObjectId == null) !=
+        (dispatchLocationUpdatedAt == null)) {
+      throw ArgumentError(
+        'District offers require the location timestamp used for selection.',
+      );
+    }
+    if (dispatchDistrictObjectId != null && dispatchGpsFixAt == null) {
+      throw ArgumentError('District offers require a GPS fix timestamp.');
+    }
+
+    if (etaSeconds != null && etaSeconds < 0) {
       throw ArgumentError.value(
         etaSeconds,
         'etaSeconds',
@@ -97,7 +136,7 @@ class RideOffer {
       );
     }
 
-    if (distanceMeters < 0) {
+    if (distanceMeters != null && distanceMeters < 0) {
       throw ArgumentError.value(
         distanceMeters,
         'distanceMeters',
@@ -126,6 +165,11 @@ class RideOffer {
       source: source,
       etaSeconds: etaSeconds,
       distanceMeters: distanceMeters,
+      dispatchDistrictObjectId: dispatchDistrictObjectId,
+      dispatchDistrictEnteredAt: dispatchDistrictEnteredAt?.toUtc(),
+      dispatchLocationUpdatedAt: dispatchLocationUpdatedAt?.toUtc(),
+      dispatchGpsFixAt: dispatchGpsFixAt?.toUtc(),
+      dispatchHadCancellationPriority: dispatchHadCancellationPriority,
       dispatchRound: dispatchRound,
       bonusMinor: bonusMinor,
       offeredAt: offeredAt,
@@ -141,8 +185,13 @@ class RideOffer {
     required String rideId,
     required String driverId,
     required String vehicleId,
-    required int etaSeconds,
-    required int distanceMeters,
+    required int? etaSeconds,
+    required int? distanceMeters,
+    int? dispatchDistrictObjectId,
+    DateTime? dispatchDistrictEnteredAt,
+    DateTime? dispatchLocationUpdatedAt,
+    DateTime? dispatchGpsFixAt,
+    bool dispatchHadCancellationPriority = false,
     int dispatchRound = normalDispatchRound,
     int bonusMinor = noBonusMinor,
     RideOfferSource source = RideOfferSource.automatic,
@@ -152,7 +201,13 @@ class RideOffer {
     required DateTime? resolvedAt,
     DateTime? displayedAt,
   }) {
-    if (etaSeconds < 0) {
+    _validateRouteMetrics(etaSeconds, distanceMeters);
+    _validateDispatchDistrict(
+      dispatchDistrictObjectId,
+      dispatchDistrictEnteredAt,
+    );
+
+    if (etaSeconds != null && etaSeconds < 0) {
       throw ArgumentError.value(
         etaSeconds,
         'etaSeconds',
@@ -160,7 +215,7 @@ class RideOffer {
       );
     }
 
-    if (distanceMeters < 0) {
+    if (distanceMeters != null && distanceMeters < 0) {
       throw ArgumentError.value(
         distanceMeters,
         'distanceMeters',
@@ -207,6 +262,11 @@ class RideOffer {
       source: source,
       etaSeconds: etaSeconds,
       distanceMeters: distanceMeters,
+      dispatchDistrictObjectId: dispatchDistrictObjectId,
+      dispatchDistrictEnteredAt: dispatchDistrictEnteredAt?.toUtc(),
+      dispatchLocationUpdatedAt: dispatchLocationUpdatedAt?.toUtc(),
+      dispatchGpsFixAt: dispatchGpsFixAt?.toUtc(),
+      dispatchHadCancellationPriority: dispatchHadCancellationPriority,
       dispatchRound: dispatchRound,
       bonusMinor: bonusMinor,
       offeredAt: offeredAt,
@@ -271,6 +331,11 @@ class RideOffer {
       source: source,
       etaSeconds: etaSeconds,
       distanceMeters: distanceMeters,
+      dispatchDistrictObjectId: dispatchDistrictObjectId,
+      dispatchDistrictEnteredAt: dispatchDistrictEnteredAt,
+      dispatchLocationUpdatedAt: dispatchLocationUpdatedAt,
+      dispatchGpsFixAt: dispatchGpsFixAt,
+      dispatchHadCancellationPriority: dispatchHadCancellationPriority,
       dispatchRound: dispatchRound,
       bonusMinor: bonusMinor,
       offeredAt: offeredAt,
@@ -301,6 +366,24 @@ class RideOffer {
     if (dispatchRound == bonusDispatchRound &&
         bonusMinor != shortRideBonusMinor) {
       throw ArgumentError('Dispatch round 2 must have a 500-cent bonus.');
+    }
+  }
+
+  static void _validateRouteMetrics(int? etaSeconds, int? distanceMeters) {
+    if ((etaSeconds == null) != (distanceMeters == null)) {
+      throw ArgumentError(
+        'ETA and distance must either both be present or both be null.',
+      );
+    }
+  }
+
+  static void _validateDispatchDistrict(
+    int? districtObjectId,
+    DateTime? districtEnteredAt,
+  ) {
+    if ((districtObjectId == null) != (districtEnteredAt == null) ||
+        (districtObjectId != null && districtObjectId <= 0)) {
+      throw ArgumentError('Invalid district dispatch snapshot.');
     }
   }
 }

@@ -32,16 +32,22 @@ Future<T> _traceStage<T>(String stage, Future<T> Function() action) async {
 }
 
 Future<Connection> _connectToCity6Test() async {
+  final username = Platform.environment['CITY6_TEST_DB_USER'];
   final password = Platform.environment['CITY6_TEST_DB_PASSWORD'];
-  if (password == null || password.isEmpty) {
-    fail('CITY6_TEST_DB_PASSWORD is required.');
+  final port = int.tryParse(Platform.environment['CITY6_TEST_DB_PORT'] ?? '');
+  if (username == null ||
+      username.isEmpty ||
+      password == null ||
+      password.isEmpty) {
+    fail('CITY6_TEST_DB_USER and CITY6_TEST_DB_PASSWORD are required.');
   }
+  if (port != 5433) fail('This integration test is restricted to port 5433.');
   final database = await Connection.open(
     Endpoint(
-      host: 'localhost',
-      port: 5432,
+      host: '127.0.0.1',
+      port: port!,
       database: 'city6_test',
-      username: 'city6_app',
+      username: username,
       password: password,
     ),
     settings: const ConnectionSettings(sslMode: SslMode.disable),
@@ -56,10 +62,10 @@ Future<Connection> _connectToCity6Test() async {
     ''');
     expect(identity.single.toColumnMap(), {
       'database_name': 'city6_test',
-      'role_name': 'city6_app',
+      'role_name': username,
       'schema_name': 'public',
       'server_address': anyOf('127.0.0.1', '::1'),
-      'server_port': 5432,
+      'server_port': 5433,
     });
     final requiredObjects = await database.execute('''
       SELECT
@@ -80,6 +86,52 @@ Future<Connection> _connectToCity6Test() async {
     return database;
   } catch (_) {
     await database.close();
+    rethrow;
+  }
+}
+
+Future<Pool<void>> _openCity6TestCandidatePool() async {
+  final username = Platform.environment['CITY6_TEST_DB_USER'];
+  final password = Platform.environment['CITY6_TEST_DB_PASSWORD'];
+  final port = int.tryParse(Platform.environment['CITY6_TEST_DB_PORT'] ?? '');
+  if (username == null ||
+      username.isEmpty ||
+      password == null ||
+      password.isEmpty) {
+    fail('CITY6_TEST_DB_USER and CITY6_TEST_DB_PASSWORD are required.');
+  }
+  if (port != 5433) fail('This integration test is restricted to port 5433.');
+  final pool = Pool<void>.withEndpoints(
+    [
+      Endpoint(
+        host: '127.0.0.1',
+        port: port!,
+        database: 'city6_test',
+        username: username,
+        password: password,
+      ),
+    ],
+    settings: const PoolSettings(
+      sslMode: SslMode.disable,
+      maxConnectionCount: 8,
+    ),
+  );
+  try {
+    final identity = await pool.execute('''
+      SELECT current_database() AS database_name,
+             current_user AS role_name,
+             host(inet_server_addr()) AS server_address,
+             inet_server_port() AS server_port
+    ''');
+    expect(identity.single.toColumnMap(), {
+      'database_name': 'city6_test',
+      'role_name': username,
+      'server_address': anyOf('127.0.0.1', '::1'),
+      'server_port': 5433,
+    });
+    return pool;
+  } catch (_) {
+    await pool.close(force: true);
     rethrow;
   }
 }
@@ -152,6 +204,7 @@ final class _FixtureIds {
 void main() {
   test('committed atomic reject flows through outbox redispatch and recovers safely', () async {
     final database = await _connectToCity6Test();
+    final candidatePool = await _openCity6TestCandidatePool();
     final fixtures = List<_FixtureIds>.generate(3, (_) => _FixtureIds.create());
     final before = await _fingerprints(database);
     final initialOutboxCount = int.parse(
@@ -198,7 +251,11 @@ void main() {
       }
 
       await _verifyOnlyReadyJob(database, fixtures[0].actionId);
-      final worker = _worker(database, leaseToken: 'e2e-first-lease');
+      final worker = _worker(
+        database,
+        candidatePool,
+        leaseToken: 'e2e-first-lease',
+      );
       final workerResult = await _traceStage('worker.runOnce', worker.runOnce);
       expect(
         workerResult.disposition,
@@ -231,6 +288,7 @@ void main() {
       expect(afterRepeatedReject['consecutive_rejects'], 0);
       final repeatedWorker = await _worker(
         database,
+        candidatePool,
         leaseToken: 'e2e-idle-lease',
       ).runOnce();
       expect(
@@ -270,7 +328,7 @@ void main() {
       expect(currentLease?.actionId, fixtures[1].actionId);
       expect(currentLease?.attemptCount, 2);
 
-      final executor = _executor(database);
+      final executor = _executor(database, candidatePool);
       await expectLater(
         executor.execute(staleLease!),
         throwsA(
@@ -327,7 +385,7 @@ void main() {
       );
       expect(workerAAction?.actionId, fixtures[2].actionId);
       expect(
-        await _executor(database).execute(workerAAction!),
+        await _executor(database, candidatePool).execute(workerAAction!),
         isA<DriverOfferRedispatchConfirmed>(),
       );
       final persistedAfterCrashBoundary = await _readRedispatchState(
@@ -347,6 +405,7 @@ void main() {
       );
       final workerBResult = await _worker(
         database,
+        candidatePool,
         leaseToken: 'e2e-crash-worker-b-token',
       ).runOnce();
       expect(
@@ -397,6 +456,7 @@ void main() {
       cleanupStack ??= stackTrace;
     } finally {
       await database.close();
+      await candidatePool.close();
     }
 
     if (testFailure != null) {
@@ -596,13 +656,14 @@ Future<AtomicDriverOfferRejectionResult> _reject(
 }
 
 DriverOfferActionOutboxWorker _worker(
-  Connection database, {
+  Connection database,
+  Pool<void> candidatePool, {
   required String leaseToken,
 }) => DriverOfferActionOutboxWorker(
   repository: PostgresDriverOfferActionOutboxWorkerRepository(
     database: database,
   ),
-  executor: _DiagnosticRedispatchExecutor(_executor(database)),
+  executor: _DiagnosticRedispatchExecutor(_executor(database, candidatePool)),
   leaseDuration: const Duration(minutes: 1),
   maxAttempts: 5,
   leaseTokenFactory: () => leaseToken,
@@ -622,18 +683,21 @@ final class _DiagnosticRedispatchExecutor
   }
 }
 
-AutomaticDispatchRedispatchExecutor _executor(Connection database) {
+AutomaticDispatchRedispatchExecutor _executor(
+  Connection database,
+  Pool<void> candidatePool,
+) {
   final offerRepository = _DiagnosticRideOfferRepository(database: database);
   final atomicOfferRepository = PostgresAtomicRideOfferRepository(
     database: database,
   );
   final candidateService = _DiagnosticCandidateService(
-    shiftRepository: PostgresDriverShiftRepository(database: database),
+    shiftRepository: PostgresDriverShiftRepository(database: candidatePool),
     liveLocationRepository: PostgresDriverLiveLocationRepository(
-      database: database,
+      database: candidatePool,
     ),
     dispatchStateRepository: PostgresDriverDispatchStateRepository(
-      database: database,
+      database: candidatePool,
     ),
     routeEstimator: _FakeRouteEstimator(),
   );

@@ -2,8 +2,21 @@ import 'dart:convert';
 
 import 'package:postgres/postgres.dart';
 
+String initialDispatchActionId(String rideId) => 'initial-dispatch:$rideId';
+
 /// Actions persisted in `driver_offer_action_outbox.action`.
-enum DriverOfferAction { accept, reject }
+enum DriverOfferAction {
+  accept,
+  reject,
+  timeout,
+  initialDispatch('initial_dispatch');
+
+  const DriverOfferAction([this.databaseValue]);
+
+  final String? databaseValue;
+
+  String get value => databaseValue ?? name;
+}
 
 /// Represents the JSONB literal `null`, which differs from SQL NULL.
 enum DriverOfferActionJsonbNull { value }
@@ -45,6 +58,7 @@ enum DriverOfferRedispatchStatus {
 class DriverOfferActionOutboxRecord {
   DriverOfferActionOutboxRecord({
     required this.actionId,
+    required this.rideId,
     required this.offerId,
     required this.driverId,
     required this.action,
@@ -67,8 +81,9 @@ class DriverOfferActionOutboxRecord {
   }
 
   final String actionId;
-  final String offerId;
-  final String driverId;
+  final String rideId;
+  final String? offerId;
+  final String? driverId;
   final DriverOfferAction action;
   final String? idempotencyKey;
   final String requestHash;
@@ -87,6 +102,7 @@ class DriverOfferActionOutboxRecord {
 
   static const List<String> columnNames = [
     'action_id',
+    'ride_id',
     'offer_id',
     'driver_id',
     'action',
@@ -113,8 +129,9 @@ class DriverOfferActionOutboxRecord {
   factory DriverOfferActionOutboxRecord.fromRow(Map<String, Object?> row) {
     return DriverOfferActionOutboxRecord(
       actionId: _string(row, 'action_id'),
-      offerId: _string(row, 'offer_id'),
-      driverId: _string(row, 'driver_id'),
+      rideId: _string(row, 'ride_id'),
+      offerId: _nullableString(row, 'offer_id'),
+      driverId: _nullableString(row, 'driver_id'),
       action: _actionFromDatabase(row['action']),
       idempotencyKey: _nullableString(row, 'idempotency_key'),
       requestHash: _string(row, 'request_hash'),
@@ -156,9 +173,10 @@ class DriverOfferActionOutboxRecord {
     _validateDiagnosticCodeForInsert();
     return {
       'actionId': actionId,
+      'rideId': rideId,
       'offerId': offerId,
       'driverId': driverId,
-      'action': action.name,
+      'action': action.value,
       'idempotencyKey': idempotencyKey,
       'requestHash': requestHash,
       'policyOutcome': policyOutcome,
@@ -181,6 +199,7 @@ class DriverOfferActionOutboxRecord {
   }
 
   bool hasSameRequestAs(DriverOfferActionOutboxRecord other) =>
+      rideId == other.rideId &&
       offerId == other.offerId &&
       driverId == other.driverId &&
       action == other.action &&
@@ -195,16 +214,38 @@ class DriverOfferActionOutboxRecord {
         !_isTrimmedLength(idempotencyKey!, minimum: 1, maximum: 200)) {
       throw const FormatException('Invalid idempotency key.');
     }
+    if (rideId.isEmpty) {
+      throw const FormatException('rideId must be non-empty.');
+    }
+    if (action == DriverOfferAction.initialDispatch) {
+      if (offerId != null ||
+          driverId != null ||
+          idempotencyKey != null ||
+          policyOutcome != null ||
+          redispatchStatus == DriverOfferRedispatchStatus.notRequired) {
+        throw const FormatException('Invalid initial dispatch event state.');
+      }
+    } else if (offerId == null ||
+        offerId!.isEmpty ||
+        driverId == null ||
+        driverId!.isEmpty) {
+      throw const FormatException('Offer and driver IDs are required.');
+    }
     if (action == DriverOfferAction.accept) {
       if (policyOutcome != null ||
           redispatchStatus != DriverOfferRedispatchStatus.notRequired) {
         throw const FormatException('Invalid accept action state.');
       }
-    } else {
+    } else if (action == DriverOfferAction.reject) {
       if (policyOutcome == null ||
           !_isTrimmedLength(policyOutcome!, minimum: 1, maximum: 100) ||
           redispatchStatus == DriverOfferRedispatchStatus.notRequired) {
         throw const FormatException('Invalid reject action state.');
+      }
+    } else if (action == DriverOfferAction.timeout) {
+      if (policyOutcome != 'timeout' ||
+          redispatchStatus == DriverOfferRedispatchStatus.notRequired) {
+        throw const FormatException('Invalid timeout action state.');
       }
     }
     if (attemptCount < 0) {
@@ -315,7 +356,7 @@ class DriverOfferActionOutboxRecord {
   static DriverOfferAction _actionFromDatabase(Object? value) {
     if (value is String) {
       for (final action in DriverOfferAction.values) {
-        if (action.name == value) return action;
+        if (action.value == value) return action;
       }
     }
     throw const FormatException('Unknown action in database row.');

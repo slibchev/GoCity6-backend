@@ -75,7 +75,7 @@ void main() {
       },
     );
 
-    test('waiting-board offer is sent to review without redispatch', () async {
+    test('waiting-board offer uses the waiting-board continuation', () async {
       final original = _originalOffer(
         now: now,
         source: RideOfferSource.waitingBoard,
@@ -83,15 +83,19 @@ void main() {
       final service = _FakeRedispatcher((_, _, _) async {
         fail('Unsupported waiting-board action must not be dispatched.');
       });
-      final executor = _executor(original: original, service: service);
+      var waitingBoardCalls = 0;
+      final executor = _executor(
+        original: original,
+        service: service,
+        dispatchWaitingBoard: () async {
+          waitingBoardCalls++;
+        },
+      );
 
       final result = await executor.execute(_action(now: now));
 
-      expect(result, isA<DriverOfferRedispatchPermanentFailure>());
-      expect(
-        (result as DriverOfferRedispatchPermanentFailure).errorCode,
-        DriverOfferActionOutboxErrorCode.unsupportedOfferSource,
-      );
+      expect(result, isA<DriverOfferRedispatchConfirmed>());
+      expect(waitingBoardCalls, 1);
       expect(service.calls, isEmpty);
     });
 
@@ -108,7 +112,7 @@ void main() {
           isA<DriverOfferRedispatchInvariantException>().having(
             (error) => error.invariant,
             'invariant',
-            DriverOfferRedispatchInvariant.originalOfferNotRejected,
+            DriverOfferRedispatchInvariant.originalOfferStatusMismatch,
           ),
         ),
       );
@@ -215,7 +219,7 @@ void main() {
   });
 
   group('Outbox worker with automatic redispatch executor', () {
-    test('unsupported waiting-board action is not marked completed', () async {
+    test('waiting-board continuation is processed and completed', () async {
       final repository = _MemoryWorkerRepository(now: now);
       final original = _originalOffer(
         now: now,
@@ -224,9 +228,16 @@ void main() {
       final service = _FakeRedispatcher((_, _, _) async {
         fail('Waiting-board work must not enter automatic redispatch.');
       });
+      var waitingBoardCalls = 0;
       final worker = _worker(
         repository: repository,
-        executor: _executor(original: original, service: service),
+        executor: _executor(
+          original: original,
+          service: service,
+          dispatchWaitingBoard: () async {
+            waitingBoardCalls++;
+          },
+        ),
         tokens: ['lease-waiting-board'],
       );
 
@@ -234,10 +245,11 @@ void main() {
 
       expect(
         result.disposition,
-        DriverOfferActionOutboxWorkerDisposition.needsReview,
+        DriverOfferActionOutboxWorkerDisposition.completed,
       );
-      expect(repository.record.lastErrorCode, 'unsupported_offer_source');
-      expect(repository.completedCalls, 0);
+      expect(repository.record.lastErrorCode, isNull);
+      expect(repository.completedCalls, 1);
+      expect(waitingBoardCalls, 1);
       expect(service.calls, isEmpty);
     });
 
@@ -408,9 +420,11 @@ void main() {
 AutomaticDispatchRedispatchExecutor _executor({
   required RideOffer? original,
   required _FakeRedispatcher service,
+  Future<void> Function()? dispatchWaitingBoard,
 }) => AutomaticDispatchRedispatchExecutor(
   offerRepository: _FakeRideOfferRepository(original),
   redispatchService: service,
+  dispatchWaitingBoard: dispatchWaitingBoard,
 );
 
 DriverOfferActionOutboxWorker _worker({
@@ -472,6 +486,7 @@ DriverOfferActionOutboxRecord _action({
   String? leaseToken = 'lease-current',
 }) => DriverOfferActionOutboxRecord(
   actionId: 'action-stable-1',
+  rideId: 'ride-original',
   offerId: 'offer-original',
   driverId: driverId,
   action: action,
@@ -685,6 +700,7 @@ final class _MemoryWorkerRepository
     required DateTime updatedAt,
   }) => DriverOfferActionOutboxRecord(
     actionId: source.actionId,
+    rideId: source.rideId,
     offerId: source.offerId,
     driverId: source.driverId,
     action: source.action,

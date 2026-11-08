@@ -215,10 +215,9 @@ final class PostgresWaitingRideExpirationRepository
           WITH candidates AS (
             SELECT action.action_id
             FROM driver_offer_action_outbox action
-            JOIN ride_offers offer ON offer.id = action.offer_id
-            JOIN rides ride ON ride.id = offer.ride_id
+            JOIN rides ride ON ride.id = action.ride_id
             WHERE ride.status = 'cancelled'
-              AND action.action = 'reject'
+              AND action.action IN ('reject', 'timeout', 'initial_dispatch')
               AND action.redispatch_status IN ('queued', 'retryable', 'leased')
             ORDER BY action.created_at ASC, action.action_id ASC
             FOR UPDATE OF action SKIP LOCKED
@@ -232,10 +231,9 @@ final class PostgresWaitingRideExpirationRepository
               redispatch_result = NULL,
               redispatch_completed_at = NULL,
               updated_at = clock_timestamp()
-          FROM candidates, ride_offers offer, rides ride
+          FROM candidates, rides ride
           WHERE action.action_id = candidates.action_id
-            AND offer.id = action.offer_id
-            AND ride.id = offer.ride_id
+            AND ride.id = action.ride_id
           RETURNING action.action_id
         '''),
         parameters: {

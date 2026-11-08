@@ -220,6 +220,8 @@ class DispatchCandidateService {
           origins: origins,
           destination: destination,
         );
+      } on RouteEstimationFailure {
+        return List<RouteEstimate?>.filled(entries.length, null);
       } on RouteWaypointResolutionException {
         rethrow;
       } on Exception {
@@ -243,6 +245,9 @@ class DispatchCandidateService {
             origin: origins[index],
             destination: destination,
           );
+        } on RouteEstimationFailure {
+          // A predictable provider failure makes only this candidate
+          // unavailable to ETA-based selection.
         } on RouteWaypointResolutionException {
           rethrow;
         } on Exception {

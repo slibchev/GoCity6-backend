@@ -142,6 +142,7 @@ final class PostgresDriverDistrictQueueRepository
             q.district_object_id,
             q.district_entered_at,
             q.queue_priority_since,
+            q.has_customer_cancellation_priority,
             q.district_last_observed_at,
             GREATEST(q.district_entered_at, q.queue_priority_since)
               AS fifo_priority_at
@@ -151,7 +152,10 @@ final class PostgresDriverDistrictQueueRepository
             AND q.district_object_id = @districtObjectId
             AND q.district_entered_at IS NOT NULL
             AND q.queue_priority_since IS NOT NULL
-          ORDER BY fifo_priority_at ASC, s.driver_id ASC
+          ORDER BY
+            q.has_customer_cancellation_priority DESC,
+            fifo_priority_at ASC,
+            s.driver_id ASC
         '''),
         parameters: {'districtObjectId': districtObjectId},
       );
@@ -166,6 +170,8 @@ final class PostgresDriverDistrictQueueRepository
             enteredAt: (row['district_entered_at'] as DateTime).toUtc(),
             queuePrioritySince: (row['queue_priority_since'] as DateTime)
                 .toUtc(),
+            hasCustomerCancellationPriority:
+                row['has_customer_cancellation_priority'] as bool,
             lastObservedAt: (row['district_last_observed_at'] as DateTime?)
                 ?.toUtc(),
           );

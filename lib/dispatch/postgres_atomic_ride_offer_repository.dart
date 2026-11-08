@@ -1,7 +1,12 @@
+import 'dart:convert';
+
+import 'package:crypto/crypto.dart';
 import 'package:postgres/postgres.dart';
 
 import 'atomic_ride_offer_repository.dart';
+import 'driver_offer_action_outbox_repository.dart';
 import 'idempotent_automatic_redispatch_repository.dart';
+import 'postgres_driver_offer_action_outbox_repository.dart';
 import 'ride_offer.dart';
 
 class PostgresAtomicRideOfferRepository
@@ -9,8 +14,13 @@ class PostgresAtomicRideOfferRepository
         AtomicRideOfferRepository,
         IdempotentAutomaticRedispatchOfferRepository {
   final SessionExecutor database;
+  final DriverOfferActionOutboxRepository outboxRepository;
 
-  PostgresAtomicRideOfferRepository({required this.database});
+  PostgresAtomicRideOfferRepository({
+    required this.database,
+    DriverOfferActionOutboxRepository? outboxRepository,
+  }) : outboxRepository =
+           outboxRepository ?? PostgresDriverOfferActionOutboxRepository();
 
   @override
   Future<RideOffer> createPendingOffer({required RideOffer offer}) {
@@ -36,6 +46,8 @@ class PostgresAtomicRideOfferRepository
             source,
             eta_seconds,
             distance_meters,
+            dispatch_district_object_id,
+            dispatch_district_entered_at,
             dispatch_round,
             bonus_minor,
             offered_at,
@@ -79,16 +91,18 @@ class PostgresAtomicRideOfferRepository
         Sql.named('''
           SELECT
             outbox.action,
+            outbox.ride_id,
+            outbox.offer_id,
             outbox.driver_id,
             outbox.redispatch_status,
             outbox.lease_token,
             outbox.lease_until,
-            rejected_offer.ride_id AS action_ride_id,
-            rejected_offer.driver_id AS action_driver_id,
-            rejected_offer.status AS action_offer_status
+            source_offer.ride_id AS source_ride_id,
+            source_offer.driver_id AS source_driver_id,
+            source_offer.status AS source_offer_status
           FROM driver_offer_action_outbox AS outbox
-          JOIN ride_offers AS rejected_offer
-            ON rejected_offer.id = outbox.offer_id
+          LEFT JOIN ride_offers AS source_offer
+            ON source_offer.id = outbox.offer_id
           WHERE outbox.action_id = @actionId
           FOR UPDATE OF outbox
         '''),
@@ -102,14 +116,31 @@ class PostgresAtomicRideOfferRepository
       }
 
       final actionRow = actionResult.single.toColumnMap();
-      if (actionRow['action'] != 'reject') {
+      final action = actionRow['action'];
+      if (action != 'reject' &&
+          action != 'timeout' &&
+          action != 'initial_dispatch') {
         throw const AutomaticRedispatchConflictException(
-          AutomaticRedispatchConflict.actionNotReject,
+          AutomaticRedispatchConflict.actionNotContinuation,
         );
       }
-      if (actionRow['action_offer_status'] != 'rejected' ||
-          actionRow['action_driver_id'] != actionRow['driver_id'] ||
-          actionRow['action_ride_id'] != offer.rideId) {
+      final actionRideId = actionRow['ride_id'];
+      final isInitialDispatch = action == 'initial_dispatch';
+      final sourceOfferIsValid = switch (action) {
+        'reject' =>
+          actionRow['source_offer_status'] == 'rejected' &&
+              actionRow['source_driver_id'] == actionRow['driver_id'],
+        'timeout' =>
+          actionRow['source_offer_status'] == 'expired' &&
+              actionRow['source_driver_id'] == actionRow['driver_id'],
+        _ => true,
+      };
+      if (actionRideId != offer.rideId ||
+          actionRow['source_ride_id'] != null &&
+              actionRow['source_ride_id'] != offer.rideId ||
+          isInitialDispatch != (actionRow['offer_id'] == null) ||
+          isInitialDispatch != (actionRow['driver_id'] == null) ||
+          !sourceOfferIsValid) {
         throw const AutomaticRedispatchConflictException(
           AutomaticRedispatchConflict.rideMismatch,
         );
@@ -125,6 +156,8 @@ class PostgresAtomicRideOfferRepository
             source,
             eta_seconds,
             distance_meters,
+            dispatch_district_object_id,
+            dispatch_district_entered_at,
             dispatch_round,
             bonus_minor,
             offered_at,
@@ -297,7 +330,15 @@ class PostgresAtomicRideOfferRepository
             s.vehicle_id,
             q.availability,
             q.has_pending_offer,
-            q.location_updated_at
+            q.pending_break_request_id,
+            q.location_updated_at,
+            q.gps_fix_at,
+            q.latitude,
+            q.longitude,
+            q.district_object_id,
+            q.district_entered_at,
+            q.pending_district_object_id,
+            q.has_customer_cancellation_priority
           FROM driver_shifts s
           JOIN driver_queue_states q
             ON q.shift_id = s.id
@@ -332,6 +373,111 @@ class PostgresAtomicRideOfferRepository
       throw const AtomicRideOfferConflictException(
         AtomicRideOfferConflict.driverAlreadyHasPendingOffer,
       );
+    }
+
+    if (shiftRow['pending_break_request_id'] != null) {
+      throw const AtomicRideOfferConflictException(
+        AtomicRideOfferConflict.driverNotAvailable,
+      );
+    }
+
+    // Queue state is authoritative, but fail closed if an inconsistent row
+    // still says available while the driver has an active or reserved ride.
+    // Those transitions serialize on the same locked shift/queue row.
+    final activeRideResult = await transaction.execute(
+      Sql.named('''
+          SELECT 1
+          FROM rides
+          WHERE assigned_driver_id = @driverId
+            AND status IN ('accepted', 'driverArriving', 'inProgress')
+          LIMIT 1
+        '''),
+      parameters: {'driverId': offer.driverId},
+    );
+    if (activeRideResult.isNotEmpty) {
+      throw const AtomicRideOfferConflictException(
+        AtomicRideOfferConflict.driverNotAvailable,
+      );
+    }
+
+    final activeReservationResult = await transaction.execute(
+      Sql.named('''
+          SELECT 1
+          FROM ride_reservations rr
+          JOIN rides reserved_ride ON reserved_ride.id = rr.ride_id
+          WHERE rr.ended_at IS NULL
+            AND reserved_ride.status = 'reserved'
+            AND (rr.driver_id = @driverId OR rr.vehicle_id = @vehicleId)
+          LIMIT 1
+        '''),
+      parameters: {'driverId': offer.driverId, 'vehicleId': offer.vehicleId},
+    );
+    if (activeReservationResult.isNotEmpty) {
+      throw const AtomicRideOfferConflictException(
+        AtomicRideOfferConflict.driverNotAvailable,
+      );
+    }
+
+    if (offer.dispatchDistrictObjectId != null) {
+      final districtEnteredAt = offer.dispatchDistrictEnteredAt;
+      final expectedLocationUpdatedAt = offer.dispatchLocationUpdatedAt;
+      final expectedGpsFixAt = offer.dispatchGpsFixAt;
+      if (districtEnteredAt == null ||
+          expectedLocationUpdatedAt == null ||
+          expectedGpsFixAt == null) {
+        throw ArgumentError(
+          'District offer is missing its selection snapshot.',
+        );
+      }
+
+      if (shiftRow['district_object_id'] != offer.dispatchDistrictObjectId ||
+          (shiftRow['district_entered_at'] as DateTime?)?.toUtc() !=
+              districtEnteredAt.toUtc() ||
+          (shiftRow['location_updated_at'] as DateTime?)?.toUtc() !=
+              expectedLocationUpdatedAt.toUtc() ||
+          (shiftRow['gps_fix_at'] as DateTime?)?.toUtc() !=
+              expectedGpsFixAt.toUtc() ||
+          shiftRow['pending_district_object_id'] != null) {
+        throw const AtomicRideOfferConflictException(
+          AtomicRideOfferConflict.driverDistrictChanged,
+        );
+      }
+      if (shiftRow['has_customer_cancellation_priority'] !=
+          offer.dispatchHadCancellationPriority) {
+        throw const AtomicRideOfferConflictException(
+          AtomicRideOfferConflict.driverCancellationPriorityChanged,
+        );
+      }
+
+      final databaseTimeResult = await transaction.execute(
+        Sql('SELECT clock_timestamp() AS database_now'),
+      );
+      final databaseNow =
+          (databaseTimeResult.single.toColumnMap()['database_now'] as DateTime)
+              .toUtc();
+      final locationUpdatedAt = (shiftRow['location_updated_at'] as DateTime?)
+          ?.toUtc();
+      final gpsFixAt = (shiftRow['gps_fix_at'] as DateTime?)?.toUtc();
+      final locationAge = locationUpdatedAt == null
+          ? null
+          : databaseNow.difference(locationUpdatedAt);
+      final gpsFixAge = gpsFixAt == null
+          ? null
+          : databaseNow.difference(gpsFixAt);
+      final latitude = shiftRow['latitude'] as double?;
+      final longitude = shiftRow['longitude'] as double?;
+      if (latitude == null ||
+          longitude == null ||
+          locationAge == null ||
+          locationAge.isNegative ||
+          locationAge > const Duration(seconds: 30) ||
+          gpsFixAge == null ||
+          gpsFixAge < const Duration(seconds: -5) ||
+          gpsFixAge > const Duration(seconds: 15)) {
+        throw const AtomicRideOfferConflictException(
+          AtomicRideOfferConflict.driverLocationStale,
+        );
+      }
     }
 
     var persistedOffer = offer;
@@ -374,6 +520,11 @@ class PostgresAtomicRideOfferRepository
         vehicleId: offer.vehicleId,
         etaSeconds: offer.etaSeconds,
         distanceMeters: offer.distanceMeters,
+        dispatchDistrictObjectId: offer.dispatchDistrictObjectId,
+        dispatchDistrictEnteredAt: offer.dispatchDistrictEnteredAt,
+        dispatchLocationUpdatedAt: offer.dispatchLocationUpdatedAt,
+        dispatchGpsFixAt: offer.dispatchGpsFixAt,
+        dispatchHadCancellationPriority: offer.dispatchHadCancellationPriority,
         dispatchRound: offer.dispatchRound,
         bonusMinor: offer.bonusMinor,
         source: offer.source,
@@ -392,6 +543,8 @@ class PostgresAtomicRideOfferRepository
             source,
             eta_seconds,
             distance_meters,
+            dispatch_district_object_id,
+            dispatch_district_entered_at,
             dispatch_round,
             bonus_minor,
             offered_at,
@@ -407,6 +560,8 @@ class PostgresAtomicRideOfferRepository
             @source,
             @etaSeconds,
             @distanceMeters,
+            @dispatchDistrictObjectId,
+            @dispatchDistrictEnteredAt,
             @dispatchRound,
             @bonusMinor,
             @offeredAt,
@@ -424,6 +579,8 @@ class PostgresAtomicRideOfferRepository
             source,
             eta_seconds,
             distance_meters,
+            dispatch_district_object_id,
+            dispatch_district_entered_at,
             dispatch_round,
             bonus_minor,
             offered_at,
@@ -440,6 +597,8 @@ class PostgresAtomicRideOfferRepository
             @source,
             @etaSeconds,
             @distanceMeters,
+            @dispatchDistrictObjectId,
+            @dispatchDistrictEnteredAt,
             @dispatchRound,
             @bonusMinor,
             @offeredAt,
@@ -459,6 +618,8 @@ class PostgresAtomicRideOfferRepository
         'source': persistedOffer.source.databaseValue,
         'etaSeconds': persistedOffer.etaSeconds,
         'distanceMeters': persistedOffer.distanceMeters,
+        'dispatchDistrictObjectId': persistedOffer.dispatchDistrictObjectId,
+        'dispatchDistrictEnteredAt': persistedOffer.dispatchDistrictEnteredAt,
         'dispatchRound': persistedOffer.dispatchRound,
         'bonusMinor': persistedOffer.bonusMinor,
         'offeredAt': persistedOffer.offeredAt.toUtc(),
@@ -472,13 +633,27 @@ class PostgresAtomicRideOfferRepository
     final queueUpdate = await transaction.execute(
       Sql.named('''
           UPDATE driver_queue_states
-          SET has_pending_offer = TRUE
+          SET
+            has_pending_offer = TRUE,
+            has_customer_cancellation_priority = CASE
+              WHEN @districtOffer THEN FALSE
+              ELSE has_customer_cancellation_priority
+            END
           WHERE shift_id = @shiftId
             AND availability = 'available'
             AND has_pending_offer = FALSE
+            AND (
+              @districtOffer = FALSE
+              OR has_customer_cancellation_priority =
+                @expectedCancellationPriority
+            )
           RETURNING shift_id
         '''),
-      parameters: {'shiftId': shiftRow['shift_id']},
+      parameters: {
+        'shiftId': shiftRow['shift_id'],
+        'districtOffer': offer.dispatchDistrictObjectId != null,
+        'expectedCancellationPriority': offer.dispatchHadCancellationPriority,
+      },
     );
 
     if (queueUpdate.isEmpty) {
@@ -822,6 +997,46 @@ class PostgresAtomicRideOfferRepository
         );
       }
 
+      final requestHash = sha256
+          .convert(
+            utf8.encode(
+              '{"version":1,"action":"timeout",'
+              '"rideId":${jsonEncode(offer.rideId)},'
+              '"offerId":${jsonEncode(offer.id)},'
+              '"driverId":${jsonEncode(offer.driverId)}}',
+            ),
+          )
+          .toString();
+      final timeoutRecord = DriverOfferActionOutboxRecord(
+        actionId: 'timeout:${offer.id}',
+        rideId: offer.rideId,
+        offerId: offer.id,
+        driverId: offer.driverId,
+        action: DriverOfferAction.timeout,
+        idempotencyKey: null,
+        requestHash: requestHash,
+        policyOutcome: 'timeout',
+        redispatchStatus: DriverOfferRedispatchStatus.queued,
+        attemptCount: 0,
+        availableAt: nowUtc,
+        leaseToken: null,
+        leaseUntil: null,
+        lastErrorCode: null,
+        redispatchResult: null,
+        createdAt: nowUtc,
+        settledAt: nowUtc,
+        updatedAt: nowUtc,
+        redispatchCompletedAt: null,
+      );
+      final outboxResult = await outboxRepository.insert(
+        transaction: transaction,
+        record: timeoutRecord,
+      );
+      if (outboxResult is! DriverOfferActionInserted &&
+          outboxResult is! DriverOfferActionAlreadyExists) {
+        throw StateError('Timed-out offer continuation could not be queued.');
+      }
+
       return expired;
     });
   }
@@ -920,6 +1135,8 @@ class PostgresAtomicRideOfferRepository
             source,
           eta_seconds,
           distance_meters,
+          dispatch_district_object_id,
+          dispatch_district_entered_at,
           dispatch_round,
           bonus_minor,
           offered_at,
@@ -954,8 +1171,11 @@ FROM ride_offers
       driverId: row['driver_id'] as String,
       vehicleId: row['vehicle_id'] as String,
       source: RideOfferSource.fromDatabaseValue(row['source'] as String),
-      etaSeconds: row['eta_seconds'] as int,
-      distanceMeters: row['distance_meters'] as int,
+      etaSeconds: row['eta_seconds'] as int?,
+      distanceMeters: row['distance_meters'] as int?,
+      dispatchDistrictObjectId: row['dispatch_district_object_id'] as int?,
+      dispatchDistrictEnteredAt:
+          (row['dispatch_district_entered_at'] as DateTime?)?.toUtc(),
       dispatchRound: row['dispatch_round'] as int,
       bonusMinor: row['bonus_minor'] as int,
       offeredAt: (row['offered_at'] as DateTime).toUtc(),
@@ -973,8 +1193,11 @@ FROM ride_offers
       driverId: row['driver_id'] as String,
       vehicleId: row['vehicle_id'] as String,
       source: RideOfferSource.fromDatabaseValue(row['source'] as String),
-      etaSeconds: row['eta_seconds'] as int,
-      distanceMeters: row['distance_meters'] as int,
+      etaSeconds: row['eta_seconds'] as int?,
+      distanceMeters: row['distance_meters'] as int?,
+      dispatchDistrictObjectId: row['dispatch_district_object_id'] as int?,
+      dispatchDistrictEnteredAt:
+          (row['dispatch_district_entered_at'] as DateTime?)?.toUtc(),
       dispatchRound: row['dispatch_round'] as int,
       bonusMinor: row['bonus_minor'] as int,
       offeredAt: (row['offered_at'] as DateTime).toUtc(),

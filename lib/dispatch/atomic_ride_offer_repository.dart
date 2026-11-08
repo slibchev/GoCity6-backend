@@ -18,6 +18,8 @@ enum AtomicRideOfferConflict {
   vehicleDoesNotMatchShift,
   driverNotAvailable,
   driverLocationStale,
+  driverDistrictChanged,
+  driverCancellationPriorityChanged,
   driverAlreadyHasPendingOffer,
   driverPendingOfferMissing,
 

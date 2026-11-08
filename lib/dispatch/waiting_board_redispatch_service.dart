@@ -109,6 +109,8 @@ class WaitingBoardRedispatchService {
               case AtomicRideOfferConflict.vehicleDoesNotMatchShift:
               case AtomicRideOfferConflict.driverNotAvailable:
               case AtomicRideOfferConflict.driverLocationStale:
+              case AtomicRideOfferConflict.driverDistrictChanged:
+              case AtomicRideOfferConflict.driverCancellationPriorityChanged:
               case AtomicRideOfferConflict.driverAlreadyHasPendingOffer:
               case AtomicRideOfferConflict.driverPendingOfferMissing:
               case AtomicRideOfferConflict.rideAlreadyOfferedToDriver:

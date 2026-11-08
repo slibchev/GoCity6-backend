@@ -75,6 +75,25 @@ class RideLifecycleService {
     return request;
   }
 
+  /// Saves a pending ride and, when supported by the repository, queues its
+  /// initial automatic dispatch in the same database transaction.
+  ///
+  /// The boolean result indicates whether durable dispatch work was written.
+  /// In-memory repositories keep the synchronous legacy path used by unit
+  /// tests and non-PostgreSQL callers.
+  Future<bool> submitPendingRideForAutomaticDispatch(
+    RideRequest request,
+  ) async {
+    await _validateNewRide(request);
+    if (repository is DurableAutomaticDispatchSubmissionRepository) {
+      await (repository as DurableAutomaticDispatchSubmissionRepository)
+          .savePendingRideForAutomaticDispatch(request);
+      return true;
+    }
+    await repository.save(request);
+    return false;
+  }
+
   Future<RideRequest> getRide(String rideId) {
     return _requireRide(rideId);
   }
