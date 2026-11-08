@@ -162,6 +162,8 @@ void main() {
         'pickup': 'Моето местоположение',
         'pickupLatitude': 42.6977,
         'pickupLongitude': 23.3219,
+        'destinationLatitude': 42.65,
+        'destinationLongitude': 23.38,
         'destination': 'Sofia Airport',
         'passengers': 1,
       }),
@@ -173,6 +175,8 @@ void main() {
     expect(body.containsKey('pickupDisplayAddress'), isFalse);
     expect(body.containsKey('pickupLatitude'), isFalse);
     expect(body.containsKey('pickupLongitude'), isFalse);
+    expect(body.containsKey('destinationLatitude'), isFalse);
+    expect(body.containsKey('destinationLongitude'), isFalse);
   });
 
   test('POST rides rejects invalid or missing pickup coordinates', () async {
@@ -188,6 +192,21 @@ void main() {
       {'pickupLatitude': 42.7},
       {'pickupLatitude': '42.7', 'pickupLongitude': 23.3},
       {'pickupLatitude': 91, 'pickupLongitude': 23.3},
+    ]) {
+      final response = await post(
+        url,
+        headers: headers,
+        body: jsonEncode({...base, ...invalidFields}),
+      );
+      expect(response.statusCode, 400);
+    }
+
+    for (final invalidFields in <Map<String, Object?>>[
+      {'destinationLatitude': 42.7},
+      {'destinationLongitude': 23.3},
+      {'destinationLatitude': '42.7', 'destinationLongitude': 23.3},
+      {'destinationLatitude': 90.1, 'destinationLongitude': 23.3},
+      {'destinationLatitude': 42.7, 'destinationLongitude': -180.1},
     ]) {
       final response = await post(
         url,
@@ -216,6 +235,8 @@ void main() {
       'pickup': 'My location',
       'pickupLatitude': 42.6977,
       'pickupLongitude': 23.3219,
+      'destinationLatitude': 42.65,
+      'destinationLongitude': 23.38,
       'destination': 'Sofia Airport',
       'passengers': 1,
     };
@@ -227,6 +248,11 @@ void main() {
       headers: headers,
       body: jsonEncode({...payload, 'pickupLongitude': 23.322}),
     );
+    final differentDestination = await post(
+      url,
+      headers: headers,
+      body: jsonEncode({...payload, 'destinationLatitude': 42.651}),
+    );
 
     expect(first.statusCode, 201);
     expect(repeat.statusCode, 201);
@@ -235,6 +261,7 @@ void main() {
       (jsonDecode(first.body) as Map<String, dynamic>)['id'],
     );
     expect(differentCoordinates.statusCode, 409);
+    expect(differentDestination.statusCode, 409);
   });
 
   test('GET rides returns previously created ride', () async {

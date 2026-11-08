@@ -22,6 +22,7 @@ import 'package:gocity6_backend/ride/ride_lifecycle_service.dart';
 import 'package:gocity6_backend/ride/ride_request.dart';
 import 'package:gocity6_backend/ride/ride_request_status.dart';
 import 'package:gocity6_backend/ride/ride_pickup_coordinates.dart';
+import 'package:gocity6_backend/ride/ride_destination_coordinates.dart';
 import 'package:gocity6_backend/ride/driver_ride_pickup_json.dart';
 import 'package:gocity6_backend/ride/resolve_pickup_display_address.dart';
 import 'package:gocity6_backend/ride/ride_submission_payload.dart';
@@ -1590,6 +1591,21 @@ void main(List<String> args) async {
         );
       }
 
+      late final RideDestinationCoordinates? destinationCoordinates;
+      try {
+        destinationCoordinates = RideDestinationCoordinates.parseJson(
+          decodedBody,
+        );
+      } on InvalidRideDestinationCoordinatesException {
+        return Response(
+          400,
+          body: jsonEncode({
+            'error': 'destinationLatitude and destinationLongitude must be a valid WGS84 pair.',
+          }),
+          headers: {'Content-Type': 'application/json'},
+        );
+      }
+
       if (pickup is! String ||
           pickup.trim().isEmpty ||
           destination is! String ||
@@ -1669,6 +1685,8 @@ void main(List<String> args) async {
             hasLuggage: hasLuggage ?? false,
             pickupLatitude: pickupCoordinates?.latitude,
             pickupLongitude: pickupCoordinates?.longitude,
+            destinationLatitude: destinationCoordinates?.latitude,
+            destinationLongitude: destinationCoordinates?.longitude,
           )) {
             return Response(
               409,
@@ -1711,6 +1729,10 @@ void main(List<String> args) async {
         pickupLongitude: pickupCoordinates?.longitude,
 
         destination: destination.trim(),
+
+        destinationLatitude: destinationCoordinates?.latitude,
+
+        destinationLongitude: destinationCoordinates?.longitude,
 
         passengers: passengers,
 
@@ -1757,6 +1779,8 @@ void main(List<String> args) async {
           hasLuggage: ride.hasLuggage,
           pickupLatitude: ride.pickupLatitude,
           pickupLongitude: ride.pickupLongitude,
+          destinationLatitude: ride.destinationLatitude,
+          destinationLongitude: ride.destinationLongitude,
         )) {
           return Response(
             409,

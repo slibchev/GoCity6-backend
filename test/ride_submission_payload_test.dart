@@ -10,6 +10,8 @@ void main() {
     pickupLatitude: 42.7,
     pickupLongitude: 23.3,
     destination: 'Airport',
+    destinationLatitude: 42.6,
+    destinationLongitude: 23.2,
     passengers: 2,
     hasLuggage: true,
     requestedAt: DateTime.utc(2026),
@@ -18,6 +20,8 @@ void main() {
   Map<String, Object?> payload({
     double latitude = 42.7,
     double longitude = 23.3,
+    double destinationLatitude = 42.6,
+    double destinationLongitude = 23.2,
   }) => {
     'existing': existing,
     'pickup': 'My location',
@@ -26,6 +30,8 @@ void main() {
     'hasLuggage': true,
     'pickupLatitude': latitude,
     'pickupLongitude': longitude,
+    'destinationLatitude': destinationLatitude,
+    'destinationLongitude': destinationLongitude,
   };
 
   bool matches(Map<String, Object?> values) => rideSubmissionMatchesExisting(
@@ -36,6 +42,8 @@ void main() {
     hasLuggage: values['hasLuggage']! as bool,
     pickupLatitude: values['pickupLatitude']! as double,
     pickupLongitude: values['pickupLongitude']! as double,
+    destinationLatitude: values['destinationLatitude']! as double,
+    destinationLongitude: values['destinationLongitude']! as double,
   );
 
   test('same idempotency payload includes identical GPS coordinates', () {
@@ -47,6 +55,8 @@ void main() {
     () {
       expect(matches(payload(latitude: 42.7001)), isFalse);
       expect(matches(payload(longitude: 23.3001)), isFalse);
+      expect(matches(payload(destinationLatitude: 42.6001)), isFalse);
+      expect(matches(payload(destinationLongitude: 23.2001)), isFalse);
     },
   );
 
@@ -57,6 +67,8 @@ void main() {
         pickup: 'Sofia Center',
         pickupLatitude: null,
         pickupLongitude: null,
+        destinationLatitude: null,
+        destinationLongitude: null,
       );
 
       expect(
@@ -68,9 +80,33 @@ void main() {
           hasLuggage: true,
           pickupLatitude: null,
           pickupLongitude: null,
+          destinationLatitude: null,
+          destinationLongitude: null,
         ),
         isTrue,
       );
     },
   );
+
+  test('legacy destination without coordinates differs from supplied pair', () {
+    final legacyRide = existing.copyWith(
+      destinationLatitude: null,
+      destinationLongitude: null,
+    );
+
+    expect(
+      rideSubmissionMatchesExisting(
+        existing: legacyRide,
+        pickup: 'My location',
+        destination: 'Airport',
+        passengers: 2,
+        hasLuggage: true,
+        pickupLatitude: 42.7,
+        pickupLongitude: 23.3,
+        destinationLatitude: 42.6,
+        destinationLongitude: 23.2,
+      ),
+      isFalse,
+    );
+  });
 }

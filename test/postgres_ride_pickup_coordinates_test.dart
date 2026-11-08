@@ -15,6 +15,8 @@ import 'package:gocity6_backend/ride/ride_request_status.dart';
 
 const _pickupLatitude = 42.6977123;
 const _pickupLongitude = 23.3219876;
+const _destinationLatitude = 42.6523456;
+const _destinationLongitude = 23.3890123;
 
 Future<Connection> _connectToCity6Test() async {
   final username = Platform.environment['CITY6_TEST_DB_USER'];
@@ -66,6 +68,8 @@ RideRequest _waitingRide({
   String? displayAddress,
   double? latitude,
   double? longitude,
+  double? destinationLatitude,
+  double? destinationLongitude,
   String? clientRequestId,
   int dispatchRound = RideRequest.normalDispatchRound,
   int driverBonusMinor = RideRequest.noDriverBonusMinor,
@@ -79,6 +83,8 @@ RideRequest _waitingRide({
     pickupLatitude: latitude,
     pickupLongitude: longitude,
     destination: 'Test destination',
+    destinationLatitude: destinationLatitude,
+    destinationLongitude: destinationLongitude,
     passengers: 1,
     requestedAt: requestedAt,
     status: RideRequestStatus.waitingForVehicle,
@@ -174,6 +180,8 @@ void main() {
             displayAddress: 'ул. Верила 2, София',
             latitude: _pickupLatitude,
             longitude: _pickupLongitude,
+            destinationLatitude: _destinationLatitude,
+            destinationLongitude: _destinationLongitude,
           ),
         );
         await rideRepository.save(
@@ -182,6 +190,8 @@ void main() {
             requestedAt: requestedAt.add(const Duration(milliseconds: 1)),
             latitude: _pickupLatitude + 0.001,
             longitude: _pickupLongitude + 0.001,
+            destinationLatitude: _destinationLatitude + 0.001,
+            destinationLongitude: _destinationLongitude + 0.001,
             dispatchRound: RideRequest.bonusDispatchRound,
             driverBonusMinor: RideRequest.driverBonusFiveEuroMinor,
             bonusDecision: RideBonusDecision.accepted,
@@ -193,6 +203,8 @@ void main() {
             requestedAt: requestedAt.add(const Duration(milliseconds: 2)),
             latitude: _pickupLatitude + 0.002,
             longitude: _pickupLongitude + 0.002,
+            destinationLatitude: _destinationLatitude + 0.002,
+            destinationLongitude: _destinationLongitude + 0.002,
             clientRequestId: uuid.v4(),
             dispatchRound: RideRequest.bonusDispatchRound,
             driverBonusMinor: RideRequest.driverBonusFiveEuroMinor,
@@ -212,6 +224,8 @@ void main() {
         expect(savedCoordinateRide, isNotNull);
         expect(savedCoordinateRide!.pickupLatitude, _pickupLatitude);
         expect(savedCoordinateRide.pickupLongitude, _pickupLongitude);
+        expect(savedCoordinateRide.destinationLatitude, _destinationLatitude);
+        expect(savedCoordinateRide.destinationLongitude, _destinationLongitude);
         expect(savedCoordinateRide.pickupDisplayAddress, 'ул. Верила 2, София');
 
         final waitingBoard = PostgresWaitingRideRedispatchRepository(
@@ -225,6 +239,14 @@ void main() {
         expect(boardById[currentRideId]?.pickupLatitude, _pickupLatitude);
         expect(boardById[currentRideId]?.pickupLongitude, _pickupLongitude);
         expect(
+          boardById[currentRideId]?.destinationLatitude,
+          _destinationLatitude,
+        );
+        expect(
+          boardById[currentRideId]?.destinationLongitude,
+          _destinationLongitude,
+        );
+        expect(
           boardById[currentRideId]?.pickupDisplayAddress,
           'ул. Верила 2, София',
         );
@@ -236,10 +258,33 @@ void main() {
           boardById[waitingRideId]?.pickupLongitude,
           _pickupLongitude + 0.002,
         );
+        expect(
+          boardById[waitingRideId]?.destinationLatitude,
+          _destinationLatitude + 0.002,
+        );
+        expect(
+          boardById[waitingRideId]?.destinationLongitude,
+          _destinationLongitude + 0.002,
+        );
         expect(boardById[waitingRideId]?.dispatchRound, 2);
         expect(boardById[waitingRideId]?.driverBonusMinor, 500);
         expect(boardById[legacyRideId]?.pickupLatitude, isNull);
         expect(boardById[legacyRideId]?.pickupLongitude, isNull);
+        expect(boardById[legacyRideId]?.destinationLatitude, isNull);
+        expect(boardById[legacyRideId]?.destinationLongitude, isNull);
+
+        final waitingForVehicle = await rideRepository.findWaitingForVehicle();
+        final waitingForVehicleById = {
+          for (final ride in waitingForVehicle) ride.id: ride,
+        };
+        expect(
+          waitingForVehicleById[waitingRideId]?.destinationLatitude,
+          _destinationLatitude + 0.002,
+        );
+        expect(
+          waitingForVehicleById[waitingRideId]?.destinationLongitude,
+          _destinationLongitude + 0.002,
+        );
 
         final acceptanceRepository =
             PostgresAtomicWaitingRideAcceptanceRepository(database: db);
@@ -252,6 +297,8 @@ void main() {
         expect(acceptedRide.pickupDisplayAddress, 'ул. Верила 2, София');
         expect(acceptedRide.pickupLatitude, _pickupLatitude);
         expect(acceptedRide.pickupLongitude, _pickupLongitude);
+        expect(acceptedRide.destinationLatitude, _destinationLatitude);
+        expect(acceptedRide.destinationLongitude, _destinationLongitude);
 
         final workStateRepository = PostgresDriverWorkStateRepository(
           database: db,
@@ -260,6 +307,14 @@ void main() {
         expect(workState.currentRide?.id, currentRideId);
         expect(workState.currentRide?.pickupLatitude, _pickupLatitude);
         expect(workState.currentRide?.pickupLongitude, _pickupLongitude);
+        expect(
+          workState.currentRide?.destinationLatitude,
+          _destinationLatitude,
+        );
+        expect(
+          workState.currentRide?.destinationLongitude,
+          _destinationLongitude,
+        );
         expect(
           workState.currentRide?.pickupDisplayAddress,
           'ул. Верила 2, София',
@@ -275,12 +330,16 @@ void main() {
         );
         expect(arrivingRide.pickupLatitude, _pickupLatitude);
         expect(arrivingRide.pickupLongitude, _pickupLongitude);
+        expect(arrivingRide.destinationLatitude, _destinationLatitude);
+        expect(arrivingRide.destinationLongitude, _destinationLongitude);
         final inProgressRide = await lifecycle.startRide(
           rideId: currentRideId,
           driverId: driverId,
         );
         expect(inProgressRide.pickupLatitude, _pickupLatitude);
         expect(inProgressRide.pickupLongitude, _pickupLongitude);
+        expect(inProgressRide.destinationLatitude, _destinationLatitude);
+        expect(inProgressRide.destinationLongitude, _destinationLongitude);
 
         final reservationRepository = PostgresAtomicRideReservationRepository(
           database: db,
@@ -300,6 +359,14 @@ void main() {
           workState.reservedRide?.pickupLongitude,
           _pickupLongitude + 0.001,
         );
+        expect(
+          workState.reservedRide?.destinationLatitude,
+          _destinationLatitude + 0.001,
+        );
+        expect(
+          workState.reservedRide?.destinationLongitude,
+          _destinationLongitude + 0.001,
+        );
         expect(workState.reservedRide?.dispatchRound, 2);
         expect(workState.reservedRide?.driverBonusMinor, 500);
 
@@ -311,12 +378,22 @@ void main() {
         expect(completedRide.status, RideRequestStatus.completed);
         expect(completedRide.pickupLatitude, _pickupLatitude);
         expect(completedRide.pickupLongitude, _pickupLongitude);
+        expect(completedRide.destinationLatitude, _destinationLatitude);
+        expect(completedRide.destinationLongitude, _destinationLongitude);
         expect(completedRide.pickupDisplayAddress, 'ул. Верила 2, София');
         final reloadedCompletedRide = await rideRepository.findById(
           currentRideId,
         );
         expect(reloadedCompletedRide?.pickupLatitude, _pickupLatitude);
         expect(reloadedCompletedRide?.pickupLongitude, _pickupLongitude);
+        expect(
+          reloadedCompletedRide?.destinationLatitude,
+          _destinationLatitude,
+        );
+        expect(
+          reloadedCompletedRide?.destinationLongitude,
+          _destinationLongitude,
+        );
         expect(
           reloadedCompletedRide?.pickupDisplayAddress,
           'ул. Верила 2, София',
@@ -328,6 +405,14 @@ void main() {
         expect(
           workState.currentRide?.pickupLongitude,
           _pickupLongitude + 0.001,
+        );
+        expect(
+          workState.currentRide?.destinationLatitude,
+          _destinationLatitude + 0.001,
+        );
+        expect(
+          workState.currentRide?.destinationLongitude,
+          _destinationLongitude + 0.001,
         );
         expect(workState.currentRide?.dispatchRound, 2);
         expect(workState.currentRide?.driverBonusMinor, 500);
@@ -346,6 +431,14 @@ void main() {
           promotedRideInProgress.pickupLongitude,
           _pickupLongitude + 0.001,
         );
+        expect(
+          promotedRideInProgress.destinationLatitude,
+          _destinationLatitude + 0.001,
+        );
+        expect(
+          promotedRideInProgress.destinationLongitude,
+          _destinationLongitude + 0.001,
+        );
 
         final completedReservedRide = await lifecycle.completeRide(
           rideId: reservedRideId,
@@ -355,11 +448,21 @@ void main() {
         expect(completedReservedRide.status, RideRequestStatus.completed);
         expect(completedReservedRide.pickupLatitude, _pickupLatitude + 0.001);
         expect(completedReservedRide.pickupLongitude, _pickupLongitude + 0.001);
+        expect(
+          completedReservedRide.destinationLatitude,
+          _destinationLatitude + 0.001,
+        );
+        expect(
+          completedReservedRide.destinationLongitude,
+          _destinationLongitude + 0.001,
+        );
 
         final reloadedLegacyRide = await rideRepository.findById(legacyRideId);
         expect(reloadedLegacyRide, isNotNull);
         expect(reloadedLegacyRide!.pickupLatitude, isNull);
         expect(reloadedLegacyRide.pickupLongitude, isNull);
+        expect(reloadedLegacyRide.destinationLatitude, isNull);
+        expect(reloadedLegacyRide.destinationLongitude, isNull);
         final finalBoardRides = await waitingBoard.findOldestPage(
           notBefore: requestedAt.subtract(const Duration(seconds: 1)),
           limit: 200,
@@ -369,6 +472,8 @@ void main() {
         };
         expect(finalBoardById[legacyRideId]?.pickupLatitude, isNull);
         expect(finalBoardById[legacyRideId]?.pickupLongitude, isNull);
+        expect(finalBoardById[legacyRideId]?.destinationLatitude, isNull);
+        expect(finalBoardById[legacyRideId]?.destinationLongitude, isNull);
       } finally {
         try {
           await db.execute(

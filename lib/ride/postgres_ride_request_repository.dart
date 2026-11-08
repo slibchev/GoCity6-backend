@@ -52,6 +52,8 @@ class PostgresRideRequestRepository
           pickup_longitude,
 
           destination,
+          destination_latitude,
+          destination_longitude,
 
           passengers,
 
@@ -139,6 +141,8 @@ class PostgresRideRequestRepository
           pickup_longitude,
 
           destination,
+          destination_latitude,
+          destination_longitude,
 
           passengers,
 
@@ -197,6 +201,8 @@ class PostgresRideRequestRepository
           pickup_latitude,
           pickup_longitude,
           destination,
+          destination_latitude,
+          destination_longitude,
           passengers,
           has_luggage,
           requested_at,
@@ -251,6 +257,8 @@ class PostgresRideRequestRepository
           pickup_longitude,
 
           destination,
+          destination_latitude,
+          destination_longitude,
 
           passengers,
 
@@ -299,6 +307,8 @@ class PostgresRideRequestRepository
           @pickupLongitude,
 
           @destination,
+          @destinationLatitude,
+          @destinationLongitude,
 
           @passengers,
 
@@ -352,6 +362,8 @@ class PostgresRideRequestRepository
           pickup_longitude = EXCLUDED.pickup_longitude,
 
           destination = EXCLUDED.destination,
+          destination_latitude = EXCLUDED.destination_latitude,
+          destination_longitude = EXCLUDED.destination_longitude,
 
           passengers = EXCLUDED.passengers,
 
@@ -401,6 +413,8 @@ class PostgresRideRequestRepository
         'pickupLongitude': request.pickupLongitude,
 
         'destination': request.destination,
+        'destinationLatitude': request.destinationLatitude,
+        'destinationLongitude': request.destinationLongitude,
 
         'passengers': request.passengers,
 
@@ -628,6 +642,8 @@ class PostgresRideRequestRepository
           pickup_longitude,
 
           destination,
+          destination_latitude,
+          destination_longitude,
 
           passengers,
 
@@ -1048,6 +1064,8 @@ class PostgresRideRequestRepository
           pickup_latitude,
           pickup_longitude,
           destination,
+          destination_latitude,
+          destination_longitude,
           passengers,
           has_luggage,
           requested_at,
@@ -1441,6 +1459,8 @@ class PostgresRideRequestRepository
           pickup_latitude,
           pickup_longitude,
           destination,
+          destination_latitude,
+          destination_longitude,
           passengers,
           has_luggage,
           requested_at,
@@ -1861,6 +1881,8 @@ class PostgresRideRequestRepository
           pickup_longitude,
 
             destination,
+          destination_latitude,
+          destination_longitude,
 
             passengers,
 
@@ -2182,6 +2204,8 @@ class PostgresRideRequestRepository
       pickupLongitude: (row['pickup_longitude'] as num?)?.toDouble(),
 
       destination: row['destination'] as String,
+      destinationLatitude: (row['destination_latitude'] as num?)?.toDouble(),
+      destinationLongitude: (row['destination_longitude'] as num?)?.toDouble(),
 
       passengers: row['passengers'] as int,
 

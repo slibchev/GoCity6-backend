@@ -5,4 +5,6 @@ Map<String, Object?> driverRidePickupJson(RideRequest ride) => {
   'pickupDisplayAddress': ride.pickupDisplayAddress,
   'pickupLatitude': ride.pickupLatitude,
   'pickupLongitude': ride.pickupLongitude,
+  'destinationLatitude': ride.destinationLatitude,
+  'destinationLongitude': ride.destinationLongitude,
 };
