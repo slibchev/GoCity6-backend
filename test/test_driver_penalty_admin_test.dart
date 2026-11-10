@@ -3,6 +3,16 @@ import 'package:gocity6_backend/admin/test_driver_penalty_admin.dart';
 import 'package:gocity6_backend/dispatch/driver_dispatch_state.dart';
 
 void main() {
+  test(
+    'test penalty admin allowlist is limited to the two authorized drivers',
+    () {
+      expect(TestDriverPenaltyAdmin.allowedDriverIds, {
+        'driver-e2e-001',
+        'driver-city6-test-2-48966f02-c34b-4c4c-9ca3-f0411d5ea457',
+      });
+    },
+  );
+
   final resetAt = DateTime.utc(2026, 10, 25, 12);
 
   DriverDispatchState state() => DriverDispatchState(

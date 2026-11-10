@@ -4,17 +4,24 @@ import 'dart:io';
 import 'package:postgres/postgres.dart';
 
 import 'package:gocity6_backend/admin/test_driver_penalty_admin.dart';
+import 'package:gocity6_backend/admin/postgres_test_driver_penalty_reset_service.dart';
 import 'package:gocity6_backend/dispatch/driver_dispatch_state.dart';
 
 Future<void> main(List<String> args) async {
   final options = _parse(args);
   final driverId = options['driver'];
   final actionText = options['action'];
+  if (actionText == 'FULL_RESET_BOTH') {
+    await _runFullResetBoth(options);
+    return;
+  }
   if (driverId == null || actionText == null) {
     stderr.writeln(
       'Usage: manage_test_driver_penalties.dart --driver=<id> '
       '--action=UNBLOCK|FULL_RESET [--reason=<text> --apply '
-      '--confirm=<same-id>]',
+      '--confirm=<same-id>]\n'
+      '  or --action=FULL_RESET_BOTH --apply '
+      '--confirm=both-test-drivers [--reason=<text>]',
     );
     exitCode = 2;
     return;
@@ -239,6 +246,96 @@ Future<void> main(List<String> args) async {
   }
 }
 
+Future<void> _runFullResetBoth(Map<String, String> options) async {
+  const confirmation = 'both-test-drivers';
+  const reason = 'FIFO test reset';
+  if (!options.containsKey('apply') || options['confirm'] != confirmation) {
+    stderr.writeln(
+      'FULL_RESET_BOTH requires --apply and '
+      '--confirm=$confirmation.',
+    );
+    exitCode = 2;
+    return;
+  }
+  if (options.containsKey('driver')) {
+    stderr.writeln('FULL_RESET_BOTH does not accept --driver.');
+    exitCode = 2;
+    return;
+  }
+
+  final password = Platform.environment['CITY6_DB_PASSWORD'];
+  if (password == null || password.isEmpty) {
+    stderr.writeln('Protected City6 settings were not loaded.');
+    exitCode = 2;
+    return;
+  }
+
+  Connection? connection;
+  try {
+    connection = await Connection.open(
+      Endpoint(
+        host: 'localhost',
+        port: 5432,
+        database: 'city6',
+        username: 'city6_app',
+        password: password,
+      ),
+      settings: const ConnectionSettings(sslMode: SslMode.disable),
+    );
+    final resetService = PostgresTestDriverPenaltyResetService(
+      database: connection,
+      driverIds: TestDriverPenaltyAdmin.allowedDriverIds.toList(),
+      expectedDatabase: 'city6',
+      expectedUsername: 'city6_app',
+      expectedPort: 5432,
+    );
+    final result = await resetService.resetAll();
+
+    // The database transaction is authoritative. A local audit-log failure
+    // must not misreport a committed reset as a failed reset.
+    var auditLogWarning = false;
+    for (final driver in result.drivers) {
+      try {
+        await _appendResetReport(
+          completedAt: result.completedAt,
+          driverId: driver.driverId,
+          reason: reason,
+          suppressedOfferIds: driver.suppressedOfferIds,
+        );
+      } catch (_) {
+        auditLogWarning = true;
+      }
+    }
+
+    stdout.writeln(
+      auditLogWarning ? 'RESET OK (local audit log unavailable)' : 'RESET OK',
+    );
+    stdout.writeln('database: city6 (localhost:5432)');
+    stdout.writeln('suppressedExpiredOffers=${result.suppressedOfferCount}');
+    for (final driver in result.drivers) {
+      stdout.writeln(
+        'driver=${driver.driverId} '
+        'consecutive_rejects=${driver.after.consecutiveRejects} '
+        'penalty_level=${driver.after.penaltyLevel} '
+        'dispatch_blocked_until=${driver.after.dispatchBlockedUntil} '
+        'penalty_reset_eligible_at=${driver.after.penaltyResetEligibleAt} '
+        'requires_completed_ride_after_penalty='
+        '${driver.after.requiresCompletedRideAfterPenalty}',
+      );
+    }
+  } on TestDriverPenaltyResetException catch (error) {
+    stderr.writeln('RESET FAILED: ${error.code} — ${error.message}');
+    exitCode = 1;
+  } on Object catch (error) {
+    stderr.writeln(
+      'RESET FAILED: ${error.runtimeType}; the transaction was not committed.',
+    );
+    exitCode = 1;
+  } finally {
+    await connection?.close();
+  }
+}
+
 Map<String, String> _parse(List<String> args) {
   final result = <String, String>{};
   for (final arg in args) {
@@ -298,6 +395,32 @@ Future<void> _appendReport(
   );
   await file.writeAsString(
     '${jsonEncode({'at': DateTime.now().toUtc().toIso8601String(), 'driverId': driverId, 'action': action, 'reason': reason})}\n',
+    mode: FileMode.append,
+    flush: true,
+  );
+}
+
+Future<void> _appendResetReport({
+  required DateTime completedAt,
+  required String driverId,
+  required String reason,
+  required List<String> suppressedOfferIds,
+}) async {
+  final localAppData = Platform.environment['LOCALAPPDATA'];
+  if (localAppData == null || localAppData.isEmpty) {
+    throw StateError('LOCALAPPDATA is unavailable.');
+  }
+  final directory = Directory(
+    '$localAppData${Platform.pathSeparator}'
+    'City6${Platform.pathSeparator}admin',
+  );
+  await directory.create(recursive: true);
+  final file = File(
+    '${directory.path}${Platform.pathSeparator}'
+    'test-driver-penalty-actions.jsonl',
+  );
+  await file.writeAsString(
+    '${jsonEncode({'at': completedAt.toUtc().toIso8601String(), 'driverId': driverId, 'action': 'FULL_RESET', 'reason': reason, 'suppressedOfferIds': suppressedOfferIds})}\n',
     mode: FileMode.append,
     flush: true,
   );
