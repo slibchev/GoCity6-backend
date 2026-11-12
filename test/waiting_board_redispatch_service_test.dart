@@ -5,6 +5,7 @@ import 'package:gocity6_backend/dispatch/active_driver_shift.dart';
 import 'package:gocity6_backend/dispatch/atomic_ride_offer_repository.dart';
 import 'package:gocity6_backend/dispatch/automatic_dispatch_orchestrator.dart';
 import 'package:gocity6_backend/dispatch/dispatch_candidate_service.dart';
+import 'package:gocity6_backend/dispatch/driver_district_queue.dart';
 import 'package:gocity6_backend/dispatch/driver_live_location.dart';
 import 'package:gocity6_backend/dispatch/driver_live_location_repository.dart';
 import 'package:gocity6_backend/dispatch/driver_queue_state.dart';
@@ -13,23 +14,27 @@ import 'package:gocity6_backend/dispatch/ride_offer.dart';
 import 'package:gocity6_backend/dispatch/ride_offer_repository.dart';
 import 'package:gocity6_backend/dispatch/waiting_board_redispatch_service.dart';
 import 'package:gocity6_backend/dispatch/waiting_ride_redispatch_repository.dart';
+import 'package:gocity6_backend/geography/district_matcher.dart';
 import 'package:gocity6_backend/ride/ride_request.dart';
 import 'package:gocity6_backend/ride/ride_request_status.dart';
-import 'package:gocity6_backend/routing/google_route_estimator.dart';
 import 'package:gocity6_backend/routing/route_estimator.dart';
-import 'package:http/http.dart' as http;
-import 'package:http/testing.dart';
 import 'package:test/test.dart';
+
+typedef DistrictCandidatesAt =
+    Future<List<DriverDistrictQueueCandidate>> Function({
+      required int districtObjectId,
+      required DateTime now,
+    });
 
 void main() {
   final now = DateTime.utc(2026, 10, 21, 12);
 
   test(
-    'skips an unsuitable oldest ride and preserves an accepted bonus',
+    'offers the oldest local ride first and preserves an accepted bonus',
     () async {
-      final tooFar = _ride(
+      final oldest = _ride(
         id: 'ride-oldest',
-        pickup: 'far',
+        pickup: 'Oldest local pickup',
         requestedAt: now.subtract(const Duration(minutes: 8)),
       );
       final bonusRide = _ride(
@@ -43,20 +48,19 @@ void main() {
       final offerRepository = _FakeRideOfferRepository();
       final service = _service(
         now: now,
-        rides: [tooFar, bonusRide],
-        drivers: [_driver('driver-1', now)],
+        rides: [oldest, bonusRide],
+        drivers: [_driver('driver-1', now), _driver('driver-2', now)],
         offerRepository: offerRepository,
       );
 
       final offers = await service.dispatchAvailableWaiters();
 
-      expect(offers, hasLength(1));
-      expect(offers.single.rideId, bonusRide.id);
-      expect(offers.single.source, RideOfferSource.waitingBoard);
-      expect(offers.single.dispatchRound, RideOffer.bonusDispatchRound);
-      expect(offers.single.bonusMinor, RideOffer.shortRideBonusMinor);
+      expect(offers.map((offer) => offer.rideId), [oldest.id, bonusRide.id]);
+      expect(offers.first.source, RideOfferSource.waitingBoard);
+      expect(offers.last.dispatchRound, RideOffer.bonusDispatchRound);
+      expect(offers.last.bonusMinor, RideOffer.shortRideBonusMinor);
       expect(
-        offers.single.expiresAt.difference(offers.single.offeredAt),
+        offers.last.expiresAt.difference(offers.last.offeredAt),
         const Duration(seconds: 15),
       );
       expect(bonusRide.bonusDecision, RideBonusDecision.accepted);
@@ -64,108 +68,34 @@ void main() {
   );
 
   test(
-    'skips one unresolvable ride once and continues through later waiters',
+    'leaves an unlocated ride manual and continues to localized waiters',
     () async {
-      final invalidAddress = 'Private pickup address';
-      final invalidRide = _ride(
+      final unlocatedRide = _ride(
         id: 'ride-unresolvable',
-        pickup: invalidAddress,
+        pickup: 'Private pickup address',
         requestedAt: now.subtract(const Duration(minutes: 9)),
+        pickupLatitude: null,
+        pickupLongitude: null,
       );
-      final firstValidRide = _ride(
-        id: 'ride-valid-1',
-        pickup: 'Valid pickup one',
-        requestedAt: now.subtract(const Duration(minutes: 8)),
-      );
-      final secondValidRide = _ride(
-        id: 'ride-valid-2',
-        pickup: 'Valid pickup two',
+      final localizedRide = _ride(
+        id: 'ride-valid',
+        pickup: 'Valid pickup',
         requestedAt: now.subtract(const Duration(minutes: 7)),
-      );
-      final geocodeCalls = <String, int>{};
-      final routeEstimator = GoogleRouteEstimator(
-        apiKey: 'test-api-key',
-        client: MockClient((request) async {
-          if (request.method == 'GET' &&
-              request.url.host == 'maps.googleapis.com') {
-            final address = request.url.queryParameters['address']!;
-            geocodeCalls.update(
-              address,
-              (count) => count + 1,
-              ifAbsent: () => 1,
-            );
-
-            if (address == invalidAddress) {
-              return http.Response(
-                jsonEncode({'status': 'ZERO_RESULTS', 'results': <Object>[]}),
-                200,
-              );
-            }
-
-            return http.Response(
-              jsonEncode({
-                'status': 'OK',
-                'results': [
-                  {
-                    'geometry': {
-                      'location': {'lat': 42.7, 'lng': 23.3},
-                    },
-                  },
-                ],
-              }),
-              200,
-            );
-          }
-
-          final requestBody = jsonDecode(request.body) as Map<String, dynamic>;
-          final origins = requestBody['origins'] as List<dynamic>;
-          final elements = List.generate(
-            origins.length,
-            (index) => {
-              'originIndex': index,
-              'destinationIndex': 0,
-              'condition': 'ROUTE_EXISTS',
-              'duration': '120s',
-              'distanceMeters': 1000,
-            },
-          );
-          return http.Response(jsonEncode(elements), 200);
-        }),
       );
       final offersRepository = _FakeRideOfferRepository();
       final service = _service(
         now: now,
-        rides: [invalidRide, firstValidRide, secondValidRide],
+        rides: [unlocatedRide, localizedRide],
         drivers: [_driver('driver-1', now), _driver('driver-2', now)],
         offerRepository: offersRepository,
-        routeEstimator: routeEstimator,
-      );
-      final logMessages = <String>[];
-
-      final offers = await runZoned(
-        () => service.dispatchAvailableWaiters(),
-        zoneSpecification: ZoneSpecification(
-          print: (self, parent, zone, line) => logMessages.add(line),
-        ),
       );
 
-      expect(offers.map((offer) => offer.rideId), [
-        firstValidRide.id,
-        secondValidRide.id,
-      ]);
-      expect(geocodeCalls[invalidAddress], 1);
-      expect(
-        logMessages,
-        contains(
-          'Waiting-board ride skipped: '
-          'rideId=${invalidRide.id}; '
-          'reason=${RouteWaypointFailureReason.geocodingNoResults.name}.',
-        ),
-      );
-      expect(logMessages.join('\n'), isNot(contains(invalidAddress)));
+      final offers = await service.dispatchAvailableWaiters();
+
+      expect(offers.map((offer) => offer.rideId), [localizedRide.id]);
       expect(
         offersRepository.offers.map((offer) => offer.rideId),
-        isNot(contains(invalidRide.id)),
+        isNot(contains(unlocatedRide.id)),
       );
     },
   );
@@ -177,6 +107,8 @@ void main() {
         id: 'ride-legacy-location',
         pickup: 'My location',
         requestedAt: now.subtract(const Duration(minutes: 8)),
+        pickupLatitude: null,
+        pickupLongitude: null,
       );
       final validRide = _ride(
         id: 'ride-valid-after-legacy',
@@ -192,6 +124,205 @@ void main() {
       final offers = await service.dispatchAvailableWaiters();
 
       expect(offers.map((offer) => offer.rideId), [validRide.id]);
+    },
+  );
+
+  test(
+    'a free driver in another district receives no automatic offer',
+    () async {
+      final ride = _ride(
+        id: 'ride-local-only',
+        pickup: 'District 316 pickup',
+        requestedAt: now.subtract(const Duration(minutes: 5)),
+      );
+      final offerRepository = _FakeRideOfferRepository();
+      final service = _service(
+        now: now,
+        rides: [ride],
+        drivers: [_driver('driver-other-district', now)],
+        districtByDriver: const {'driver-other-district': 317},
+        offerRepository: offerRepository,
+      );
+
+      expect(await service.dispatchAvailableWaiters(), isEmpty);
+      expect(offerRepository.offers, isEmpty);
+    },
+  );
+
+  test(
+    'an ambiguous pickup remains manual instead of guessing a district',
+    () async {
+      final ride = _ride(
+        id: 'ride-ambiguous-pickup',
+        pickup: 'District boundary pickup',
+        requestedAt: now.subtract(const Duration(minutes: 5)),
+        pickupLongitude: 23.45,
+      );
+      final offerRepository = _FakeRideOfferRepository();
+      final service = _service(
+        now: now,
+        rides: [ride],
+        drivers: [_driver('driver-a', now), _driver('driver-b', now)],
+        matcher: _overlappingDistrictMatcher(),
+        offerRepository: offerRepository,
+      );
+
+      expect(await service.dispatchAvailableWaiters(), isEmpty);
+      expect(offerRepository.offers, isEmpty);
+    },
+  );
+
+  test('a newly available local driver receives the next scan offer', () async {
+    final ride = _ride(
+      id: 'ride-waits-for-local-car',
+      pickup: 'District 316 pickup',
+      requestedAt: now.subtract(const Duration(minutes: 5)),
+    );
+    final driver = _driver('driver-local', now);
+    final candidate = _candidate(
+      driver: driver,
+      districtObjectId: 316,
+      now: now,
+    );
+    var localDriverAvailable = false;
+    final offers = _FakeRideOfferRepository();
+    final service = _service(
+      now: now,
+      rides: [ride],
+      drivers: [driver, _driver('driver-other', now)],
+      districtByDriver: const {'driver-other': 317},
+      districtCandidates: ({required districtObjectId, required now}) async =>
+          districtObjectId == 316 && localDriverAvailable
+          ? [candidate]
+          : const [],
+      offerRepository: offers,
+    );
+
+    expect(await service.dispatchAvailableWaiters(), isEmpty);
+    localDriverAvailable = true;
+    final nextScan = await service.dispatchAvailableWaiters(
+      at: now.add(const Duration(seconds: 10)),
+    );
+
+    expect(nextScan, hasLength(1));
+    expect(nextScan.single.driverId, 'driver-local');
+    expect(nextScan.single.dispatchDistrictObjectId, 316);
+  });
+
+  test(
+    'local offer order is FIFO and ETA cannot promote a later driver',
+    () async {
+      final ride = _ride(
+        id: 'ride-fifo',
+        pickup: 'District 316 pickup',
+        requestedAt: now.subtract(const Duration(minutes: 5)),
+      );
+      final first = _candidate(
+        driver: _driver('driver-first', now),
+        districtObjectId: 316,
+        now: now,
+        fifoPriorityAt: now.subtract(const Duration(minutes: 20)),
+        longitude: 23.2,
+      );
+      final second = _candidate(
+        driver: _driver('driver-second', now),
+        districtObjectId: 316,
+        now: now,
+        fifoPriorityAt: now.subtract(const Duration(minutes: 10)),
+        longitude: 23.3,
+      );
+      final service = _service(
+        now: now,
+        rides: [ride],
+        drivers: [_driver('driver-first', now), _driver('driver-second', now)],
+        districtCandidates: ({required districtObjectId, required now}) async =>
+            [second, first],
+        routeEstimator: _EtaOpposesFifoRouteEstimator(),
+      );
+
+      final offers = await service.dispatchAvailableWaiters();
+
+      expect(offers, hasLength(1));
+      expect(offers.single.driverId, 'driver-first');
+      expect(offers.single.etaSeconds, 900);
+    },
+  );
+
+  test(
+    'customer-cancellation priority precedes ordinary local FIFO rank',
+    () async {
+      final ride = _ride(
+        id: 'ride-cancellation-priority',
+        pickup: 'District 316 pickup',
+        requestedAt: now.subtract(const Duration(minutes: 5)),
+      );
+      final ordinary = _candidate(
+        driver: _driver('driver-ordinary', now),
+        districtObjectId: 316,
+        now: now,
+        fifoPriorityAt: now.subtract(const Duration(hours: 1)),
+      );
+      final cancellationPriority = _candidate(
+        driver: _driver('driver-cancellation-priority', now),
+        districtObjectId: 316,
+        now: now,
+        fifoPriorityAt: now.subtract(const Duration(minutes: 1)),
+        hasCustomerCancellationPriority: true,
+      );
+      final service = _service(
+        now: now,
+        rides: [ride],
+        drivers: [
+          _driver('driver-ordinary', now),
+          _driver('driver-cancellation-priority', now),
+        ],
+        districtCandidates: ({required districtObjectId, required now}) async =>
+            [ordinary, cancellationPriority],
+      );
+
+      final offers = await service.dispatchAvailableWaiters();
+
+      expect(offers.single.driverId, 'driver-cancellation-priority');
+    },
+  );
+
+  test(
+    'route estimation failure leaves ETA null and keeps FIFO head',
+    () async {
+      final ride = _ride(
+        id: 'ride-no-eta',
+        pickup: 'District 316 pickup',
+        requestedAt: now.subtract(const Duration(minutes: 5)),
+      );
+      final first = _candidate(
+        driver: _driver('driver-first-no-eta', now),
+        districtObjectId: 316,
+        now: now,
+        fifoPriorityAt: now.subtract(const Duration(minutes: 20)),
+      );
+      final second = _candidate(
+        driver: _driver('driver-second-no-eta', now),
+        districtObjectId: 316,
+        now: now,
+        fifoPriorityAt: now.subtract(const Duration(minutes: 10)),
+      );
+      final service = _service(
+        now: now,
+        rides: [ride],
+        drivers: [
+          _driver('driver-first-no-eta', now),
+          _driver('driver-second-no-eta', now),
+        ],
+        districtCandidates: ({required districtObjectId, required now}) async =>
+            [second, first],
+        routeEstimator: _RouteEstimationFailureEstimator(),
+      );
+
+      final offers = await service.dispatchAvailableWaiters();
+
+      expect(offers.single.driverId, 'driver-first-no-eta');
+      expect(offers.single.etaSeconds, isNull);
+      expect(offers.single.distanceMeters, isNull);
     },
   );
 
@@ -281,6 +412,8 @@ RideRequest _ride({
   required String id,
   required String pickup,
   required DateTime requestedAt,
+  double? pickupLatitude = 42.7,
+  double? pickupLongitude = 23.3,
   int dispatchRound = RideRequest.normalDispatchRound,
   int driverBonusMinor = RideRequest.noDriverBonusMinor,
   RideBonusDecision bonusDecision = RideBonusDecision.notOffered,
@@ -288,6 +421,8 @@ RideRequest _ride({
   return RideRequest(
     id: id,
     pickup: pickup,
+    pickupLatitude: pickupLatitude,
+    pickupLongitude: pickupLongitude,
     destination: 'destination',
     passengers: 1,
     requestedAt: requestedAt,
@@ -321,15 +456,18 @@ WaitingBoardRedispatchService _service({
   required List<ActiveDriverShift> drivers,
   _FakeRideOfferRepository? offerRepository,
   RouteEstimator? routeEstimator,
+  Map<String, int> districtByDriver = const {},
+  DistrictCandidatesAt? districtCandidates,
+  DistrictMatcher? matcher,
 }) {
+  final districtMatcher = matcher ?? _testDistrictMatcher();
   final shiftRepository = _FakeShiftRepository(drivers);
   final locationRepository = _FakeLocationRepository(
     drivers.map(
-      (shift) => DriverLiveLocation(
+      (shift) => _locationForDriver(
         driverId: shift.driverId,
-        latitude: shift.driverId.endsWith('2') ? 42.1 : 42.0,
-        longitude: 23.3,
-        updatedAt: now.subtract(const Duration(seconds: 1)),
+        districtObjectId: districtByDriver[shift.driverId] ?? 316,
+        now: now,
       ),
     ),
   );
@@ -344,6 +482,18 @@ WaitingBoardRedispatchService _service({
     candidateService: candidates,
     offerRepository: offers,
     atomicOfferRepository: atomicOffers,
+    districtMatcher: districtMatcher,
+    findDistrictCandidates:
+        districtCandidates ??
+        ({required districtObjectId, required now}) async => [
+          for (final shift in drivers)
+            if ((districtByDriver[shift.driverId] ?? 316) == districtObjectId)
+              _candidate(
+                driver: shift,
+                districtObjectId: districtObjectId,
+                now: now,
+              ),
+        ],
   );
 
   return WaitingBoardRedispatchService(
@@ -354,6 +504,88 @@ WaitingBoardRedispatchService _service({
     now: () => now,
   );
 }
+
+DistrictMatcher _testDistrictMatcher() => DistrictMatcher.fromGeoJsonString(
+  jsonEncode({
+    'type': 'FeatureCollection',
+    'features': [
+      _districtFeature(316, 23.0, 23.5),
+      _districtFeature(317, 23.5, 24.0),
+    ],
+  }),
+);
+
+DistrictMatcher _overlappingDistrictMatcher() =>
+    DistrictMatcher.fromGeoJsonString(
+      jsonEncode({
+        'type': 'FeatureCollection',
+        'features': [
+          _districtFeature(316, 23.0, 23.6),
+          _districtFeature(317, 23.4, 24.0),
+        ],
+      }),
+    );
+
+Map<String, Object> _districtFeature(int objectId, double west, double east) =>
+    {
+      'type': 'Feature',
+      'properties': {
+        'object_id': objectId,
+        'id': 'district-$objectId',
+        'kvname': 'District $objectId',
+      },
+      'geometry': {
+        'type': 'Polygon',
+        'coordinates': [
+          [
+            [west, 42.5],
+            [east, 42.5],
+            [east, 43.0],
+            [west, 43.0],
+            [west, 42.5],
+          ],
+        ],
+      },
+    };
+
+DriverDistrictQueueCandidate _candidate({
+  required ActiveDriverShift driver,
+  required int districtObjectId,
+  required DateTime now,
+  DateTime? fifoPriorityAt,
+  bool hasCustomerCancellationPriority = false,
+  double? longitude,
+}) {
+  final location = _locationForDriver(
+    driverId: driver.driverId,
+    districtObjectId: districtObjectId,
+    now: now,
+    longitude: longitude,
+  );
+  return DriverDistrictQueueCandidate(
+    shiftId: driver.id,
+    driverId: driver.driverId,
+    vehicleId: driver.vehicleId,
+    districtObjectId: districtObjectId,
+    enteredAt: now.subtract(const Duration(hours: 1)),
+    fifoPriorityAt: fifoPriorityAt ?? driver.queueState.queuePrioritySince,
+    location: location,
+    hasCustomerCancellationPriority: hasCustomerCancellationPriority,
+  );
+}
+
+DriverLiveLocation _locationForDriver({
+  required String driverId,
+  required int districtObjectId,
+  required DateTime now,
+  double? longitude,
+}) => DriverLiveLocation(
+  driverId: driverId,
+  latitude: 42.7,
+  longitude: longitude ?? (districtObjectId == 317 ? 23.8 : 23.3),
+  updatedAt: now.subtract(const Duration(seconds: 1)),
+  gpsFixAt: now.subtract(const Duration(seconds: 1)),
+);
 
 class _FakeWaitingRideRepository implements WaitingRideRedispatchRepository {
   final List<RideRequest> rides;
@@ -449,11 +681,31 @@ class _FakeRouteEstimator implements RouteEstimator {
     required RouteWaypoint origin,
     required RouteWaypoint destination,
   }) async {
-    final tooFar = destination.address == 'far';
+    return RouteEstimate(distanceMeters: 500, durationSeconds: 120);
+  }
+}
+
+class _EtaOpposesFifoRouteEstimator implements RouteEstimator {
+  @override
+  Future<RouteEstimate> estimate({
+    required RouteWaypoint origin,
+    required RouteWaypoint destination,
+  }) async {
+    final fifoHead = origin.longitude == 23.2;
     return RouteEstimate(
-      distanceMeters: tooFar ? 20000 : 500,
-      durationSeconds: tooFar ? 700 : 120,
+      distanceMeters: fifoHead ? 30000 : 10,
+      durationSeconds: fifoHead ? 900 : 1,
     );
+  }
+}
+
+class _RouteEstimationFailureEstimator implements RouteEstimator {
+  @override
+  Future<RouteEstimate> estimate({
+    required RouteWaypoint origin,
+    required RouteWaypoint destination,
+  }) async {
+    throw RouteEstimationFailure(RouteEstimationFailureReason.timeout);
   }
 }
 

@@ -16,18 +16,28 @@ void main() {
   test(
     'waiting-board offers are exclusive and preserve accepted bonus',
     () async {
+      final username = Platform.environment['CITY6_TEST_DB_USER'];
       final password = Platform.environment['CITY6_TEST_DB_PASSWORD'];
+      final port = int.tryParse(
+        Platform.environment['CITY6_TEST_DB_PORT'] ?? '',
+      );
 
-      if (password == null || password.isEmpty) {
-        fail('CITY6_TEST_DB_PASSWORD is required.');
+      if (username == null ||
+          username.isEmpty ||
+          password == null ||
+          password.isEmpty) {
+        fail('CITY6_TEST_DB_USER and CITY6_TEST_DB_PASSWORD are required.');
+      }
+      if (port != 5433) {
+        fail('This integration test is restricted to the isolated port 5433.');
       }
 
       final db = await Connection.open(
         Endpoint(
-          host: 'localhost',
-          port: 5432,
+          host: '127.0.0.1',
+          port: port!,
           database: 'city6_test',
-          username: 'city6_app',
+          username: username,
           password: password,
         ),
         settings: const ConnectionSettings(sslMode: SslMode.disable),
@@ -46,8 +56,12 @@ void main() {
       final requestedAt = offeredAt.subtract(const Duration(minutes: 5));
 
       try {
-        final databaseName = await db.execute('SELECT current_database()');
-        expect(databaseName.single[0], 'city6_test');
+        final identity = await db.execute(
+          'SELECT current_database(), current_user, inet_server_port()',
+        );
+        expect(identity.single[0], 'city6_test');
+        expect(identity.single[1], username);
+        expect(identity.single[2], 5433);
 
         await db.execute(
           Sql.named('''
@@ -192,6 +206,20 @@ void main() {
         expect(rideRow['dispatch_round'], RideOffer.bonusDispatchRound);
         expect(rideRow['driver_bonus_minor'], RideOffer.shortRideBonusMinor);
         expect(rideRow['bonus_decision'], 'accepted');
+
+        // The next assertion isolates the stale-location guard. Release the
+        // accepted ride fixture first so the atomic active-ride guard does
+        // not correctly reject it earlier as driverNotAvailable.
+        await db.execute(
+          Sql.named('''
+            UPDATE rides
+            SET status = 'cancelled',
+                assigned_driver_id = NULL,
+                assigned_vehicle_id = NULL
+            WHERE id = @rideId
+          '''),
+          parameters: {'rideId': rideId},
+        );
 
         await _insertRide(
           db,

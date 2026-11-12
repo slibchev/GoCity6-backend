@@ -84,6 +84,7 @@ class AutomaticDispatchOrchestrator {
         offerId: offerId,
         now: nowUtc,
         history: history,
+        source: RideOfferSource.automatic,
         persist: (offer) async {
           final result = await redispatchOfferRepository
               .createPendingOfferForRedispatch(
@@ -133,13 +134,7 @@ class AutomaticDispatchOrchestrator {
     required String offerId,
     required DateTime now,
   }) {
-    return _createNextOffer(
-      ride: ride,
-      offerId: offerId,
-      now: now,
-      requiredStatus: RideRequestStatus.waitingForVehicle,
-      source: RideOfferSource.waitingBoard,
-    );
+    return _createNextWaitingBoardOffer(ride: ride, offerId: offerId, now: now);
   }
 
   Future<RideOffer?> createNextWaitingBoardOfferFromPool({
@@ -157,84 +152,55 @@ class AutomaticDispatchOrchestrator {
       );
     }
 
+    if (candidatePool.isEmpty) return null;
+
+    return _createNextWaitingBoardOffer(
+      ride: ride,
+      offerId: offerId,
+      now: now,
+      offerTime: offerTime,
+      eligibleDriverIds: {
+        for (final entry in candidatePool.entries) entry.shift.driverId,
+      },
+    );
+  }
+
+  Future<RideOffer?> _createNextWaitingBoardOffer({
+    required RideRequest ride,
+    required String offerId,
+    required DateTime now,
+    DateTime Function()? offerTime,
+    Set<String>? eligibleDriverIds,
+  }) async {
+    if (ride.status != RideRequestStatus.waitingForVehicle) {
+      throw ArgumentError.value(
+        ride.status,
+        'ride.status',
+        'Waiting-board dispatch requires a waiting ride.',
+      );
+    }
+
+    // If pickup cannot be matched to the approved map, or the district queue
+    // is unavailable, leave the ride for manual selection. Never fall back to
+    // the global ETA pool for automatic waiting-board offers.
+    if (!_districtFifoIsConfigured) return null;
+
     final nowUtc = now.toUtc();
     final history = RideOfferHistory(
       rideId: ride.id,
       offers: await offerRepository.findByRideId(ride.id),
     );
-    var pool = candidatePool;
-
-    while (!pool.isEmpty) {
-      final batch = await candidateService.buildBatchForRide(
-        ride: ride,
-        now: nowUtc,
-        pool: pool,
-      );
-      final result = dispatchService.createNextOffer(
-        rideId: ride.id,
-        offerId: offerId,
-        // Route estimation happens before this point. Start the driver's
-        // response window only after that potentially slow work is complete.
-        now: (offerTime?.call() ?? nowUtc).toUtc(),
-        candidates: batch.candidates,
-        driverStates: batch.driverStates,
-        history: history,
-        dispatchRound: ride.dispatchRound,
-        bonusMinor: ride.driverBonusMinor,
-        source: RideOfferSource.waitingBoard,
-      );
-
-      if (result == null) {
-        return null;
-      }
-
-      final selectedPoolEntry = pool.entries.firstWhere(
-        (entry) => entry.shift.driverId == result.offer.driverId,
-      );
-      final offerWithDistrictSnapshot =
-          await _waitingBoardOfferWithDistrictSnapshot(
-            offer: result.offer,
-            latitude: selectedPoolEntry.location.latitude,
-            longitude: selectedPoolEntry.location.longitude,
-            now: nowUtc,
-          );
-
-      try {
-        return await atomicOfferRepository.createPendingOffer(
-          offer: offerWithDistrictSnapshot,
-        );
-      } on AtomicRideOfferConflictException catch (error) {
-        switch (error.conflict) {
-          case AtomicRideOfferConflict.driverShiftNotFound:
-          case AtomicRideOfferConflict.vehicleDoesNotMatchShift:
-          case AtomicRideOfferConflict.driverNotAvailable:
-          case AtomicRideOfferConflict.driverLocationStale:
-          case AtomicRideOfferConflict.driverDistrictChanged:
-          case AtomicRideOfferConflict.driverCancellationPriorityChanged:
-          case AtomicRideOfferConflict.driverAlreadyHasPendingOffer:
-          case AtomicRideOfferConflict.rideAlreadyOfferedToDriver:
-            pool = pool.withoutDriver(result.offer.driverId);
-            continue;
-
-          case AtomicRideOfferConflict.rideNotFound:
-          case AtomicRideOfferConflict.rideNotPending:
-          case AtomicRideOfferConflict.rideNotWaitingForVehicle:
-          case AtomicRideOfferConflict.rideTooOld:
-          case AtomicRideOfferConflict.rideAlreadyAssigned:
-          case AtomicRideOfferConflict.rideDispatchStateMismatch:
-          case AtomicRideOfferConflict.rideHasPendingOffer:
-          case AtomicRideOfferConflict.offerNotFound:
-          case AtomicRideOfferConflict.offerNotPending:
-          case AtomicRideOfferConflict.offerAlreadyExpired:
-          case AtomicRideOfferConflict.offerNotExpiredYet:
-          case AtomicRideOfferConflict.driverPendingOfferMissing:
-          case AtomicRideOfferConflict.rideAlreadyHasPendingOffer:
-            rethrow;
-        }
-      }
-    }
-
-    return null;
+    return _createDistrictFifoOffer(
+      ride: ride,
+      offerId: offerId,
+      now: nowUtc,
+      history: history,
+      source: RideOfferSource.waitingBoard,
+      offerTime: offerTime,
+      eligibleDriverIds: eligibleDriverIds,
+      persist: (offer) =>
+          atomicOfferRepository.createPendingOffer(offer: offer),
+    );
   }
 
   Future<RideOffer?> _createNextOffer({
@@ -266,6 +232,7 @@ class AutomaticDispatchOrchestrator {
         offerId: offerId,
         now: nowUtc,
         history: history,
+        source: source,
         persist: (offer) =>
             atomicOfferRepository.createPendingOffer(offer: offer),
       );
@@ -298,63 +265,14 @@ class AutomaticDispatchOrchestrator {
   bool get _districtFifoIsConfigured =>
       districtMatcher != null && findDistrictCandidates != null;
 
-  Future<RideOffer> _waitingBoardOfferWithDistrictSnapshot({
-    required RideOffer offer,
-    required double latitude,
-    required double longitude,
-    required DateTime now,
-  }) async {
-    if (!_districtFifoIsConfigured) return offer;
-
-    final match = districtMatcher!.match(
-      latitude: latitude,
-      longitude: longitude,
-    );
-    if (match == null ||
-        match.resolution == DistrictMatchResolution.overlapTieBreak) {
-      return offer;
-    }
-
-    final districtCandidates = await findDistrictCandidates!(
-      districtObjectId: match.district.objectId,
-      now: now,
-    );
-    DriverDistrictQueueCandidate? selectedDistrictCandidate;
-    for (final candidate in districtCandidates) {
-      if (candidate.driverId == offer.driverId) {
-        selectedDistrictCandidate = candidate;
-        break;
-      }
-    }
-    if (selectedDistrictCandidate == null) return offer;
-
-    final candidate = selectedDistrictCandidate;
-    return RideOffer.create(
-      id: offer.id,
-      rideId: offer.rideId,
-      driverId: offer.driverId,
-      vehicleId: offer.vehicleId,
-      etaSeconds: offer.etaSeconds,
-      distanceMeters: offer.distanceMeters,
-      dispatchDistrictObjectId: candidate.districtObjectId,
-      dispatchDistrictEnteredAt: candidate.enteredAt,
-      dispatchLocationUpdatedAt: candidate.location.updatedAt,
-      dispatchGpsFixAt: candidate.location.gpsFixAt,
-      dispatchHadCancellationPriority:
-          candidate.hasCustomerCancellationPriority,
-      dispatchRound: offer.dispatchRound,
-      bonusMinor: offer.bonusMinor,
-      source: offer.source,
-      offeredAt: offer.offeredAt,
-      timeout: offer.expiresAt.difference(offer.offeredAt),
-    );
-  }
-
   Future<RideOffer?> _createDistrictFifoOffer({
     required RideRequest ride,
     required String offerId,
     required DateTime now,
     required RideOfferHistory history,
+    required RideOfferSource source,
+    DateTime Function()? offerTime,
+    Set<String>? eligibleDriverIds,
     required Future<RideOffer> Function(RideOffer offer) persist,
   }) async {
     if (history.hasPendingOffer) {
@@ -380,20 +298,26 @@ class AutomaticDispatchOrchestrator {
       );
     } on ArgumentError {
       // Invalid or incomplete pickup coordinates cannot establish a district.
-      // Let the existing waiting-board flow handle this ride.
+      // Do not guess a district for automatic dispatch.
       return null;
     }
     if (pickupMatch == null ||
         pickupMatch.resolution == DistrictMatchResolution.overlapTieBreak) {
-      // Unknown or overlapping pickup locations use the existing waiting
-      // board path; no district is guessed for this ride.
+      // Unknown or overlapping pickup locations are left for manual selection.
       return null;
     }
 
-    final candidates = (await findDistrictCandidates!(
-      districtObjectId: pickupMatch.district.objectId,
-      now: now,
-    )).toList();
+    final candidates =
+        (await findDistrictCandidates!(
+              districtObjectId: pickupMatch.district.objectId,
+              now: now,
+            ))
+            .where(
+              (candidate) =>
+                  eligibleDriverIds == null ||
+                  eligibleDriverIds.contains(candidate.driverId),
+            )
+            .toList();
     candidates.sort((a, b) {
       if (a.hasCustomerCancellationPriority !=
           b.hasCustomerCancellationPriority) {
@@ -447,8 +371,8 @@ class AutomaticDispatchOrchestrator {
             candidate.hasCustomerCancellationPriority,
         dispatchRound: ride.dispatchRound,
         bonusMinor: ride.driverBonusMinor,
-        source: RideOfferSource.automatic,
-        offeredAt: (currentTime?.call() ?? now).toUtc(),
+        source: source,
+        offeredAt: (offerTime?.call() ?? currentTime?.call() ?? now).toUtc(),
         timeout: dispatchService.policy.offerTimeout,
       );
 
