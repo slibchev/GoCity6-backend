@@ -63,6 +63,7 @@ import 'package:gocity6_backend/dispatch/postgres_driver_assigned_vehicle_reposi
 
 import 'package:gocity6_backend/routing/google_route_estimator.dart';
 import 'package:gocity6_backend/routing/google_reverse_geocoder.dart';
+import 'package:gocity6_backend/routing/google_route_api.dart';
 
 import 'package:gocity6_backend/routing/route_estimator.dart';
 import 'package:gocity6_backend/auth/driver_authentication_service.dart';
@@ -257,210 +258,6 @@ Map<String, dynamic> _currentDriverDistrictJson({
   }
 }
 
-Future<Map<String, double>> geocodeAddress(
-  String address,
-
-  String apiKey,
-) async {
-  final uri = Uri.https('maps.googleapis.com', '/maps/api/geocode/json', {
-    'address': address,
-
-    'key': apiKey,
-  });
-
-  final response = await http.get(uri);
-
-  if (response.statusCode != 200) {
-    throw Exception('Geocoding request failed.');
-  }
-
-  final data = jsonDecode(response.body) as Map<String, dynamic>;
-
-  if (data['status'] != 'OK') {
-    throw Exception(
-      'Geocoding failed for "$address". '
-      'Status: ${data['status']}. '
-      'Message: ${data['error_message'] ?? 'No error message'}',
-    );
-  }
-
-  final results = data['results'] as List<dynamic>;
-
-  final location =
-      results.first['geometry']['location'] as Map<String, dynamic>;
-
-  return {
-    'lat': (location['lat'] as num).toDouble(),
-
-    'lng': (location['lng'] as num).toDouble(),
-  };
-}
-
-Future<Map<String, dynamic>> buildRouteWaypoint({
-  required String address,
-
-  required String apiKey,
-
-  String? placeId,
-
-  double? latitude,
-
-  double? longitude,
-}) async {
-  if (latitude != null && longitude != null) {
-    return {
-      'location': {
-        'latLng': {'latitude': latitude, 'longitude': longitude},
-      },
-    };
-  }
-
-  if (placeId != null && placeId.isNotEmpty) {
-    return {'placeId': placeId};
-  }
-
-  final coordinates = await geocodeAddress(address, apiKey);
-
-  return {
-    'location': {
-      'latLng': {
-        'latitude': coordinates['lat'],
-
-        'longitude': coordinates['lng'],
-      },
-    },
-  };
-}
-
-Future<Map<String, dynamic>> calculateRoute(
-  String pickup,
-
-  String destination,
-
-  String apiKey, {
-
-  String? pickupPlaceId,
-
-  String? destinationPlaceId,
-
-  double? pickupLatitude,
-
-  double? pickupLongitude,
-}) async {
-  final origin = await buildRouteWaypoint(
-    address: pickup,
-
-    apiKey: apiKey,
-
-    placeId: pickupPlaceId,
-
-    latitude: pickupLatitude,
-
-    longitude: pickupLongitude,
-  );
-
-  final destinationWaypoint = await buildRouteWaypoint(
-    address: destination,
-
-    apiKey: apiKey,
-
-    placeId: destinationPlaceId,
-  );
-
-  final uri = Uri.parse(
-    'https://routes.googleapis.com/directions/v2:computeRoutes',
-  );
-
-  final response = await http.post(
-    uri,
-
-    headers: {
-      'Content-Type': 'application/json',
-
-      'X-Goog-Api-Key': apiKey,
-
-      'X-Goog-FieldMask':
-          'routes.distanceMeters,'
-          'routes.duration,'
-          'routes.legs.startLocation,'
-          'routes.legs.endLocation,'
-          'routes.polyline.encodedPolyline',
-    },
-
-    body: jsonEncode({
-      'origin': origin,
-
-      'destination': destinationWaypoint,
-
-      'travelMode': 'DRIVE',
-
-      'routingPreference': 'TRAFFIC_AWARE',
-
-      'units': 'METRIC',
-    }),
-  );
-
-  if (response.statusCode != 200) {
-    throw Exception('Route request failed.');
-  }
-
-  final data = jsonDecode(response.body) as Map<String, dynamic>;
-
-  final routes = data['routes'] as List<dynamic>? ?? <dynamic>[];
-
-  if (routes.isEmpty) {
-    throw Exception('No route found. Google response: ${response.body}');
-  }
-
-  final route = routes.first as Map<String, dynamic>;
-
-  print('Google route response: ${response.body}');
-
-  final polyline = route['polyline'] as Map<String, dynamic>?;
-
-  final encodedPolyline = polyline?['encodedPolyline'] as String?;
-
-  final distanceMeters = (route['distanceMeters'] as num?)?.toDouble() ?? 0.0;
-
-  final durationText = route['duration'] as String? ?? '0s';
-
-  final durationSeconds = double.parse(durationText.replaceAll('s', ''));
-
-  final legs = route['legs'] as List<dynamic>?;
-
-  if (legs == null || legs.isEmpty) {
-    throw Exception('Route has no legs.');
-  }
-
-  final firstLeg = legs.first as Map<String, dynamic>;
-
-  final lastLeg = legs.last as Map<String, dynamic>;
-
-  final startLocation = firstLeg['startLocation'] as Map<String, dynamic>;
-
-  final startLatLng = startLocation['latLng'] as Map<String, dynamic>;
-
-  final endLocation = lastLeg['endLocation'] as Map<String, dynamic>;
-
-  final endLatLng = endLocation['latLng'] as Map<String, dynamic>;
-
-  return {
-    'distanceKm': distanceMeters / 1000,
-
-    'durationMinutes': durationSeconds / 60,
-
-    'pickupLatitude': (startLatLng['latitude'] as num).toDouble(),
-
-    'pickupLongitude': (startLatLng['longitude'] as num).toDouble(),
-
-    'destinationLatitude': (endLatLng['latitude'] as num).toDouble(),
-
-    'destinationLongitude': (endLatLng['longitude'] as num).toDouble(),
-
-    'encodedPolyline': encodedPolyline,
-  };
-}
-
 Future<Map<String, dynamic>> rideRequestToJson(
   RideRequest ride, {
 
@@ -627,6 +424,7 @@ void main(List<String> args) async {
   _districtMatcher = await DistrictMatcher.loadApproved();
 
   final router = Router();
+  final routeApi = GoogleRouteApi(apiKey: apiKey);
 
   final rideStorage = Platform.environment['CITY6_RIDE_STORAGE'] ?? 'memory';
 
@@ -2967,67 +2765,7 @@ void main(List<String> args) async {
       );
     }
   });
-  router.post('/route', (Request request) async {
-    try {
-      final body =
-          jsonDecode(await request.readAsString()) as Map<String, dynamic>;
-
-      final pickup = body['pickup'] as String?;
-
-      final destination = body['destination'] as String?;
-
-      final pickupPlaceId = body['pickupPlaceId'] as String?;
-
-      final destinationPlaceId = body['destinationPlaceId'] as String?;
-
-      final pickupLatitude = (body['pickupLatitude'] as num?)?.toDouble();
-
-      final pickupLongitude = (body['pickupLongitude'] as num?)?.toDouble();
-
-      if (pickup == null ||
-          pickup.trim().isEmpty ||
-          destination == null ||
-          destination.trim().isEmpty) {
-        return Response(
-          400,
-
-          body: jsonEncode({'error': 'Pickup and destination are required.'}),
-
-          headers: {'Content-Type': 'application/json'},
-        );
-      }
-
-      final result = await calculateRoute(
-        pickup,
-
-        destination,
-
-        apiKey,
-
-        pickupPlaceId: pickupPlaceId,
-
-        destinationPlaceId: destinationPlaceId,
-
-        pickupLatitude: pickupLatitude,
-
-        pickupLongitude: pickupLongitude,
-      );
-
-      return Response.ok(
-        jsonEncode(result),
-
-        headers: {'Content-Type': 'application/json'},
-      );
-    } catch (error) {
-      print('Route error: $error');
-
-      return Response.internalServerError(
-        body: jsonEncode({'error': 'Route calculation failed.'}),
-
-        headers: {'Content-Type': 'application/json'},
-      );
-    }
-  });
+  router.post('/route', routeApi.handle);
 
   router.post('/places/autocomplete', (Request request) async {
     try {
